@@ -823,6 +823,7 @@ float g_shadow_distance = 300;
 std::string g_worldrender;  // --worldrender "Field=value,..."
 std::string g_overgrowth;   // --overgrowth "Field=value,..."
 std::string g_emitter;      // --emitter "Field=value,..."
+float g_wind_cli = -1.0f;   // --wind (-1: the PLANT WIND setting)
 float g_fov = 0.0f;         // --fov, the FIELD OF VIEW setting
 std::atomic<bool> g_aiming{false};
 float g_lod = 4.0f;         // --lod N: N times the vegetation detail (1 = the game's)

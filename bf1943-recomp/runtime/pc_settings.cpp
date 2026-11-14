@@ -239,6 +239,9 @@ void Build() {
   v.push_back(Choice(kEffects, "flash", L"MUZZLE FLASH LIGHT",
                      L"On: a short, shadowed light at the gun. Off: the game's own.", kOffOn,
                      {"0", "1"}, 1));
+  v.push_back(Choice(kEffects, "wind", L"PLANT WIND",
+                     L"Gusts sway palms and bushes; their ray-traced shadows sway with them.",
+                     {L"OFF", L"LIGHT", L"NORMAL", L"STRONG"}, {"0", "0.2", "0.4", "0.8"}, 2));
   // The effects are the launcher's too (its EFFECTS card): fx_<key> there.
   static std::deque<std::string> fx_keys;
   for (Setting& s : v)
@@ -454,7 +457,8 @@ int g_running_look = -1;  // the look this run started with (stock needs a resta
 void ApplyLive() {
   std::string fx;
   for (const Setting& s : g_settings) {
-    if (s.category != kEffects || !std::strcmp(s.key, "quality")) continue;
+    // (PLANT WIND is the renderer's, not a scene effect: below.)
+    if (s.category != kEffects || !std::strcmp(s.key, "quality") || !std::strcmp(s.key, "wind")) continue;
     fx += std::string(fx.empty() ? "" : ",") + s.key + "=" + s.values[s.index];
   }
   // The preset's rays and steps (no rows of their own).
@@ -466,6 +470,8 @@ void ApplyLive() {
                           : ",gi_rays=2,steps=32,cloud_steps=24,shadow_steps=48";
   }
   xgpu::ApplySceneFx(fx.c_str());
+  // --wind on the command line wins (test runs).
+  xgpu::SetWind(g_wind_cli >= 0.0f ? g_wind_cli : float(std::atof(Value("wind").c_str())));
   // Particles: the game's renderer settings, ours.
   {
     // (Not in the stock look: the game as it was.)
@@ -707,6 +713,7 @@ const PresetValue kPresets[] = {
     {"water_refract", "0", "1", "1", "1"},        {"water_shallow", "0", "1", "1", "1"},
     {"detail", "0", "1", "1", "1.5"},             {"particle_quality", "0", "1", "1", "1"},
     {"soft_particles", "0", "1", "1", "1"},       {"explosion_smoke", "0", "0", "0", "1"},
+    {"wind", "0", "0.4", "0.4", "0.4"},
 };
 void ApplyPreset(const std::string& q) {
   for (const PresetValue& p : kPresets) {

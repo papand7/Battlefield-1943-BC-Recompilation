@@ -36,6 +36,7 @@ const fxRows = [
   ['fx_soft_particles', 'Soft particles', offOn, '1'],
   ['fx_explosion_smoke', 'Explosion smoke', offOn, '0'],
   ['fx_flash', 'Muzzle flash light', offOn, '1'],
+  ['fx_wind', 'Plant wind', [['Off', '0'], ['Light', '0.2'], ['Normal', '0.4'], ['Strong', '0.8']], '0.4'],
 ];
 // The quality presets' effect values (pc_settings.cpp kPresets: low, medium, high, ultra).
 const fxPresets = {
@@ -44,6 +45,7 @@ const fxPresets = {
   reflect: ['0', '1', '1', '1'], gloss: ['0', '0', '1', '1'], water_foam: ['0', '0', '1', '1'],
   water_refract: ['0', '1', '1', '1'], water_shallow: ['0', '1', '1', '1'], detail: ['0', '1', '1', '1.5'],
   particle_quality: ['0', '1', '1', '1'], soft_particles: ['0', '1', '1', '1'], explosion_smoke: ['0', '0', '0', '1'],
+  wind: ['0', '0.4', '0.4', '0.4'],
 };
 function buildFxRows() {
   $('fxrows').textContent = '';
