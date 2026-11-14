@@ -225,6 +225,7 @@ int main(int argc, char** argv) {
     else if (a == "--press" && i + 1 < argc) ParsePresses(argv[++i]);
     else if (a == "--capture" && i + 1 < argc) g_capture_seconds = uint32_t(atoi(argv[++i]));
     else if (a == "--capture-burst" && i + 1 < argc) g_capture_burst = uint32_t(atoi(argv[++i]));
+    else if (a == "--look-showcase" && i + 1 < argc) g_look_showcase = uint32_t(atoi(argv[++i]));
     else if (a == "--look" && i + 1 < argc) {
       std::string l = argv[++i];
       xgpu::SetLook(l == "toon" ? 1 : l == "noir" ? 2 : l == "ww2" ? 3 : l == "vivid" ? 4 : 0);

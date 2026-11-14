@@ -2,6 +2,7 @@
 #include "../xenia_bridge.h"
 
 #include <algorithm>
+#include <cmath>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -518,6 +519,33 @@ bool CaptureFrame(const char* png_path, FrameStats* stats) {
   if (!g_graphics || !g_graphics->presenter()) return false;
   xe::ui::RawImage image;
   if (!g_graphics->presenter()->CaptureGuestOutput(image) || !image.width) return false;
+  // HDR10 output: the frame holds PQ-encoded BT.2020 (bf_look_apply.xesli),
+  // which looks washed out in a PNG. Undone back to the SDR frame: PQ to nits,
+  // over the game's white, BT.2020 to BT.709, the stretched highlights rolled
+  // off into 1, gamma 2.2.
+  if (float white = HdrWhite(); white > 0.0f) {
+    float to_lin[256];
+    for (int v = 0; v < 256; ++v) {
+      double vp = std::pow(v / 255.0, 1.0 / 78.84375);
+      double y = std::max(vp - 0.8359375, 0.0) / (18.8515625 - 18.6875 * vp);
+      to_lin[v] = float(std::pow(y, 1.0 / 0.1593017578125) * 10000.0 / white);
+    }
+    auto encode = [](float l) {
+      l = std::max(l, 0.0f);
+      if (l > 0.55f) l = 0.55f + 0.45f * (1.0f - std::exp(-(l - 0.55f) / 0.45f));  // (the stretch's knee)
+      return uint8_t(std::lround(std::pow(std::min(l, 1.0f), 1.0f / 2.2f) * 255.0f));
+    };
+    for (uint32_t y = 0; y < image.height; ++y) {
+      uint8_t* row = image.data.data() + y * image.stride;
+      for (uint32_t x = 0; x < image.width; ++x) {
+        uint8_t* p = row + x * 4;
+        float r = to_lin[p[0]], g = to_lin[p[1]], b = to_lin[p[2]];
+        p[0] = encode(1.6605f * r - 0.5876f * g - 0.0728f * b);
+        p[1] = encode(-0.1246f * r + 1.1329f * g - 0.0083f * b);
+        p[2] = encode(-0.0182f * r - 0.1006f * g + 1.1187f * b);
+      }
+    }
+  }
   std::vector<bool> seen(1 << 12);
   uint64_t non_black = 0;
   for (uint32_t y = 0; y < image.height; ++y) {

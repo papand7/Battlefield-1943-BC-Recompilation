@@ -35,6 +35,7 @@ bool g_use_xenia_gpu = true;
 bool g_present = true;
 uint32_t g_capture_seconds = 0;
 uint32_t g_capture_burst = 0;
+uint32_t g_look_showcase = 0;
 bool g_blood = false;
 }
 
@@ -588,6 +589,25 @@ void StartGpu() {
         }).detach();
       }
       if (g_blood) std::thread(HealthWatchThread).detach();
+      if (g_look_showcase) {
+        // --look-showcase T: at T s the same frame in every look, one capture
+        // each (frames/look_<name>.png), then back to enhanced.
+        std::thread([] {
+          std::filesystem::create_directories("frames");
+          std::this_thread::sleep_for(std::chrono::seconds(g_look_showcase));
+          static const std::pair<int, const char*> kLooks[] = {
+              {0, "enhanced"}, {4, "vivid"}, {1, "toon"}, {2, "noir"}, {3, "ww2"}};
+          for (auto [look, name] : kLooks) {
+            xgpu::SetLook(look);
+            std::this_thread::sleep_for(std::chrono::milliseconds(1500));
+            char path[64];
+            snprintf(path, sizeof(path), "frames/look_%s.png", name);
+            xgpu::FrameStats st;
+            if (xgpu::CaptureFrame(path, &st)) RT_INFO("capture %s", path);
+          }
+          xgpu::SetLook(0);
+        }).detach();
+      }
       if (g_capture_burst) {
         std::thread([] {
           std::filesystem::create_directories("frames");

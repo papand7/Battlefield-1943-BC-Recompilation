@@ -89,6 +89,7 @@ void StartKernelServices();  // timestamp bundle, timers
 extern bool g_use_xenia_gpu;
 extern bool g_present;  // open a window and show frames
 extern uint32_t g_capture_seconds;
+extern uint32_t g_look_showcase;  // seconds: then one capture per look (look_<name>.png)
 extern uint32_t g_capture_burst;  // seconds: then 8 frames back to back (burst_N.png)
 extern bool g_blood;              // --blood: blood on soldiers hit, gibs on big kills
 void DumpGuestThreads();  // --dump-threads <seconds>

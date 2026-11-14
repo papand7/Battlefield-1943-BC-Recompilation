@@ -290,6 +290,12 @@ float InterleavedGradientNoise(vec2 pixel, float frame) {
   return fract(52.9829189 * fract(dot(pixel, vec2(0.06711056, 0.00583715))));
 }
 
+// The sea's height: the measured waterline, while it is below the eye (a
+// level kept from where the camera was before, above it now, put the sea
+// plane behind the camera: negative distances and a black band of haze along
+// the horizon); else the eye height's guess.
+float SeaLevel() { return sea.w != 0.0 && sea.x < camera.y - 0.5 ? sea.x : camera.y - water.x; }
+
 bool IsSky(float depth) {
   // Nothing drawn: the depth clear value (0 with reverse Z).
   return water.y != 0.0 ? depth <= 0.0 : depth >= 1.0;
@@ -419,8 +425,10 @@ void MeasureHorizon() {
     float level = 1e9;
     for (int i = 0; i < 64; ++i) level = min(level, waterline[i]);
     if (level < camera.y && level > camera.y - 500.0) {
-      sea = sea.w != 0.0 ? vec4(mix(sea.x, level, 0.1), 0.0, 0.0, 1.0)
-                         : vec4(level, 0.0, 0.0, 1.0);
+      // Eased towards a new waterline, unless the kept one is above the eye
+      // (the camera moved down, as from the spawn screen to the deck).
+      sea = sea.w != 0.0 && sea.x < camera.y - 0.5 ? vec4(mix(sea.x, level, 0.1), 0.0, 0.0, 1.0)
+                                                   : vec4(level, 0.0, 0.0, 1.0);
     }
     vec4 total = vec4(0.0);
     for (int i = 0; i < 64; ++i) total += vec4(horizon[i].rgb * horizon[i].w, horizon[i].w);
@@ -796,7 +804,7 @@ float CloudNoise2(vec2 p) {
              f.y);
 }
 
-float CloudSeaLevel() { return sea.w != 0.0 ? sea.x : camera.y - water.x; }
+float CloudSeaLevel() { return SeaLevel(); }
 
 // 0...1 at p; detail adds the 3D wear (left out for the light and shadows,
 // which also take only the two broadest octaves of the fields).
@@ -1048,7 +1056,7 @@ void TraceOcclusion() {
   float ground = -1.0;
 #ifdef SCENE_FX_RT
   if (rt.x > 0.0 && detail.x > 0.0 && dist < detail.y) {
-    float sea_level = sea.w != 0.0 ? sea.x : camera.y - water.x;
+    float sea_level = SeaLevel();
     ground = GroundAt(camera.xyz + p, n, p / dist, dist, sea_level) ? 1.0 : 0.0;
   }
 #endif
@@ -1116,7 +1124,7 @@ void RefractWater() {
   if (any(greaterThanEqual(local, size))) return;
   ivec2 pixel = local + ivec2(screen.xy);
   vec4 c = imageLoad(scene, pixel);
-  float sea_level = sea.w != 0.0 ? sea.x : camera.y - water.x;
+  float sea_level = SeaLevel();
   if (WaterPixel(local, sea_level)) {
     vec3 dir = ViewDir(vec2(local));
     float t = (sea_level - camera.y) / dir.y;
@@ -1541,7 +1549,7 @@ void HazeMarch(vec3 dir, float len, bool sky, float jitter, out float scattered,
   int steps = int(march.y);
   float dt = len / float(steps);
   // The densest fog is at the (measured) sea level.
-  float fog_base = (sea.w != 0.0 ? sea.x : camera.y - water.x) + ambient.w;
+  float fog_base = SeaLevel() + ambient.w;
   // The game's sky already has its haze: thinner fog in front of it.
   float density_scale = sky ? water.z : 1.0;
   scattered = 0.0;
@@ -1599,7 +1607,7 @@ void MarchHazeHalf() {
   bool sky = IsSky(depth) || world4.w <= 1e-6;
   float dist = sky ? 1e9 : length(world4.xyz / world4.w);
   if (sky && dir.y < -1e-4) {
-    float sea_level = sea.w != 0.0 ? sea.x : camera.y - water.x;
+    float sea_level = SeaLevel();
     dist = (sea_level - camera.y) / dir.y;
     sky = false;
   }
@@ -1746,7 +1754,7 @@ void main() {
   float dist = sky ? 1e9 : length(world4.xyz / world4.w);
   if (sky && dir.y < -1e-4) {
     // The sea beyond what the game drew: the plane at sea level.
-    float sea_level = sea.w != 0.0 ? sea.x : camera.y - water.x;
+    float sea_level = SeaLevel();
     dist = (sea_level - camera.y) / dir.y;
     sky = false;
   }
@@ -1759,7 +1767,7 @@ void main() {
   // the sea and what is seen through it (drawn after the copy too).
   vec3 overlay = vec3(0.0);
   if (!sky && depth > 0.0 &&
-      world.y > (sea.w != 0.0 ? sea.x : camera.y - water.x) + 0.5) {
+      world.y > SeaLevel() + 0.5) {
     vec3 before = imageLoad(world_color, local).rgb;
     overlay = color.rgb - before;
     color.rgb = before;
@@ -1781,7 +1789,7 @@ void main() {
   // All sun shadows drawn here (the game's own test always passes): the
   // ray-traced meshes and terrain, and the game's map for what only it has.
   bool own = gi2.z > 0.0;
-  float sea_level = sea.w != 0.0 ? sea.x : camera.y - water.x;
+  float sea_level = SeaLevel();
   // Far away the depth is coarse: a looser height and no normal test.
   // Within 0.3 m of the measured sea level close by (the sea is drawn flat at
   // it), looser further out where the depth is coarse: at 0.75 m Guadalcanal's
