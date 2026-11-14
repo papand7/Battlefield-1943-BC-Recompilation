@@ -108,6 +108,16 @@ Place your Battlefield 1943 files in `bf1943-recomp/original/v106/`, with `defau
 ### 4. Build the Project
 Recompile the game's code with XenonRecomp and build the game; the commands are in [`bf1943-recomp/README.md`](bf1943-recomp/README.md), and how it all works in [the developer guide](docs/DEVELOPERS.md).
 
+### macOS (experimental, untested)
+The code for a Mac build is in the repository, but no one has run it on a Mac yet; expect to fix things, and please report what you find in an issue. It is built from your own game files, like the other builds: an x86-64 program (Apple Silicon runs it through Rosetta), with Vulkan through MoltenVK.
+
+- macOS 15 or newer on Apple Silicon (macOS 14.4 or newer on an Intel Mac)
+- `xcode-select --install`, then `brew install cmake ninja python glslang spirv-tools`
+- The [LunarG Vulkan SDK](https://vulkan.lunarg.com/sdk/home#mac) (its libraries are universal; Homebrew's Vulkan is arm64 only and will not do)
+- `cd bf1943-recomp && ./build_macos.sh --game <folder with default.xex, or the game package>` (Bad Company: add `--bfbc1` and its `.iso`)
+
+The script prints the exact run command when it is done. If it fails, the end of `build/macos-client/logs/build.log` is what to put in the issue. A GitHub Action (`macos-check.yml`) checks that the Mac-specific code compiles.
+
 ---
 
 Battlefield is a trademark of Electronic Arts. This is a fan project, not affiliated with EA or DICE.

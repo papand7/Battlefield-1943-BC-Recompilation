@@ -1,0 +1,17 @@
+name: macOS compile check
+# The macOS port's platform code compiles (x86-64, macOS 14.4+). No game files:
+# this is a syntax check, not a build of the game.
+on:
+  push:
+    paths: ['bf1943-recomp/runtime/**', 'bf1943-recomp/thirdparty/xenia/**', 'bf1943-recomp/tools/ci_macos_check.sh', '.github/workflows/macos-check.yml']
+  pull_request:
+  workflow_dispatch:
+jobs:
+  check:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - run: brew install sdl3
+      - run: bf1943-recomp/tools/ci_macos_check.sh
