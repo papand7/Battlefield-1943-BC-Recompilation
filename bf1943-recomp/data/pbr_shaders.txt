@@ -60,7 +60,8 @@ E20CB2628975A77D soft=0.6
 05985EBDB5931D2F rm=13 n=r15.xyz@42 v=r10.xyz@14 a=r0.xzy@132 lit=r1.w@125 env=r14.yzw@53 ao=r9.y@12 out=r0.xyz@145 pow=c250.y rough_scale=0.66 bump=5
 086C7069DFBCFB3E rm=51 n=r6.xyz@91 v=r2.xyz@56 a=r1.xzy@123 lit=r3.w@82 env=r4.yzw@116 ao=r0.x@30 out=r0.xyz@134 pow=c250.z rough_scale=0.66 bump=5
 2715129AEB1C7AE7 rm=15 n=r6.xyz@59 v=r3.xyz@31 a=r0.ywz@118 lit=r3.w@124 env=r14.xyz@101 out=r2.xyz@137 pow=c251.x rough_scale=0.66 bump=5
-2723ADFD24DE090D rm=16 n=r4.xzw@84 v=r15.xyz@24 a=r6.xyz@123 lit=r0.w@111 env=r8.xyz@93 ao=r10.y@14 out=r0.xyz@134 rough_scale=0.66 bump=5
+# Left out: the concrete seawall and benches at Guadalcanal's USMC spawn came out pink (its taps misread; found by bisecting the table).
+# 2723ADFD24DE090D rm=16 n=r4.xzw@84 v=r15.xyz@24 a=r6.xyz@123 lit=r0.w@111 env=r8.xyz@93 ao=r10.y@14 out=r0.xyz@134 rough_scale=0.66 bump=5
 28ABFC17D96E2B30 rm=47 n=r2.xyz@81 v=r12.xyz@54 a=r4.xzy@119 lit=r3.y@82 env=r6.yzw@93 ao=r11.x@46 out=r0.xyz@131 pow=c250.z rough_scale=0.66 bump=5
 36DCB8BE39883928 rm=22 n=r9.xyz@67 v=r2.xyz@31 a=r6.xzy@99 env=r6.xyz@76 ao=r2.w@77 out=r0.xzy@105 pow=c248.z rough_scale=0.66 bump=5
 3CC9B3BD3F915743 rm=10 n=r9.xyz@53 v=r9.xyz@21 a=r5.xzy@84 env=r4.xyz@68 ao=r3.x@73 out=r0.xzy@108 rough_scale=0.66 bump=5
