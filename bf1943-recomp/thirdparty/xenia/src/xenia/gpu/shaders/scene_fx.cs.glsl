@@ -1883,8 +1883,11 @@ void main() {
       }
       if (own && traced == 0.0) {
         float t_occ, texel_m;
+        // An occluder within 0.75 m is the edge of the surface's own object
+        // (a step, a wall's top): the traced ray only just misses it there,
+        // and those edges were lit lines through the shadow.
         if (SunVisibilityAt(world, t_occ, texel_m) < 0.5 &&
-            (rt.x <= 0.0 ||
+            (rt.x <= 0.0 || t_occ < 0.75 ||
              !OccluderTraced(world + normalize(sun_dir.xyz) * t_occ, 3.0 * texel_m + 0.15))) {
           map_only = 1.0;
           // Filtered: the map's texels showed as steps along the edges.
