@@ -21,7 +21,8 @@ void SetLook(int look);
 void SetPicture(float brightness, float gamma);
 void SetGrade(float strength);
 float Grade();
-void SetWind(float metres);  // the plants' extra gust sway at the top (0 off)  // the enhanced look's colour grade (0 off)
+void SetWind(float metres);
+void SetRtFoliage(bool on);  // RAY-TRACED FOLIAGE (next start)  // the plants' extra gust sway at the top (0 off)  // the enhanced look's colour grade (0 off)
 // VSync: the swapchain waits for the screen's refresh (from its next creation).
 void SetVsync(bool on);
 // HDR10 output where the display has it (Windows HDR on), before Start: the

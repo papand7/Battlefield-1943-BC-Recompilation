@@ -19,6 +19,7 @@ const fxRows = [
   ['fx_quality', 'Quality preset', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra'],
     ['Custom', 'custom']], 'high'],
   ['fx_rt', 'Ray-traced shadows', offOn, '1'],
+  ['fx_rt_foliage', 'Ray-traced foliage', offOn, '0'],
   ['fx_shadows', 'Screen shadows', [['Off', '0'], ['Low', '0.5'], ['Full', '1']], '1'],
   ['fx_gi', 'Bounce light', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
   ['fx_ao', 'Ambient occlusion', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
@@ -45,7 +46,7 @@ const fxPresets = {
   reflect: ['0', '1', '1', '1'], gloss: ['0', '0', '1', '1'], water_foam: ['0', '0', '1', '1'],
   water_refract: ['0', '1', '1', '1'], water_shallow: ['0', '1', '1', '1'], detail: ['0', '1', '1', '1.5'],
   particle_quality: ['0', '1', '1', '1'], soft_particles: ['0', '1', '1', '1'], explosion_smoke: ['0', '0', '0', '1'],
-  wind: ['0', '0.4', '0.4', '0.4'],
+  wind: ['0', '0.4', '0.4', '0.4'], rt_foliage: ['0', '0', '0', '1'],
 };
 function buildFxRows() {
   $('fxrows').textContent = '';

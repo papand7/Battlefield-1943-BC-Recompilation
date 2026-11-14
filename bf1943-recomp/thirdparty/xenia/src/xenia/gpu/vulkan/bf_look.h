@@ -24,6 +24,10 @@ inline std::atomic<float> grade{0.0f};
 // The plants' extra gust sway, metres at a plant's top (0 off). The game's own
 // wind is in the shaders; this adds a gust that varies across the plant.
 inline std::atomic<float> wind{0.4f};
+// RAY-TRACED FOLIAGE: solid plants and leaves masked by a DXT1 colour
+// channel cast traced shadows too (costs frame rate; read as draws are first
+// seen, so a change takes effect at the next start).
+inline std::atomic<bool> rt_foliage{false};
 // The wind's clock (seconds), shared by the vertex push constants and the
 // ray-traced shadows' refit.
 inline float WindTime() {
@@ -32,12 +36,22 @@ inline float WindTime() {
 }
 // The gust at an object-space position: the CPU twin of the translator's
 // WindOffset (spirv_shader_translator_alu.cc); keep both the same.
-inline void WindGust(const float p[3], float time, float amp, float out[3]) {
-  float s1 = std::sin(time * 1.3f + p[0] * 0.21f + p[2] * 0.17f);
-  float s2 = std::sin(time * 2.7f + p[0] * -0.31f + p[2] * 0.43f);
-  float s3 = std::sin(time * 0.6f + p[0] * 0.07f + p[2] * 0.05f);
+// Copies of a plant sway out of step: one of kWindPhases phases picked from
+// its world position (the world matrix's translation x, z).
+constexpr int kWindPhases = 4;
+inline int WindPhase(float tx, float tz) {
+  float f = tx * 0.173f + tz * 0.291f;
+  f -= std::floor(f);
+  return std::clamp(int(f * float(kWindPhases)), 0, kWindPhases - 1);
+}
+inline void WindGust(const float p[3], float time, float amp, int phase, float out[3]) {
+  float ph = float(phase) * 1.5707964f;
+  float s1 = std::sin(time * 1.3f + p[0] * 0.21f + p[2] * 0.17f + ph);
+  float s2 = std::sin(time * 2.7f + p[0] * -0.31f + p[2] * 0.43f + ph * 2.0f);
+  float s3 = std::sin(time * 0.6f + p[0] * 0.07f + p[2] * 0.05f + ph);
   float gust = s1 * 0.5f + (s2 * 0.3f + s3 * 0.4f);
-  float weight = amp * std::clamp((p[1] - 0.3f) * 0.45f, 0.0f, 1.0f);
+  float high = std::clamp((p[1] - 0.5f) * 0.125f, 0.0f, 1.0f);
+  float weight = amp * (high * high);
   out[0] = weight * gust;
   out[1] = weight * (s2 * 0.25f);
   out[2] = weight * (gust * 0.6f);

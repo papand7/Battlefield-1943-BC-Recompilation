@@ -144,6 +144,7 @@ struct AlphaSource {
   uint8_t components[2] = {};
   uint8_t texel_component = 3;  // of the fetched texel, read as alpha
   bool doubled = false;         // the pixel shader samples at twice the coordinates
+  bool alpha_one = false;       // the pixel shader writes alpha as the constant 1
 };
 
 uint32_t FormatWords(xenos::VertexFormat format) {
@@ -200,7 +201,14 @@ struct Mesh {
   std::vector<float> base;
   std::vector<uint32_t> base_indices;
   uint64_t built_frame = 0;
-  VkDeviceSize update_scratch = 0;
+  VkDeviceSize build_scratch = 0, update_scratch = 0, as_size = 0;
+  // Its copies in the other gust phases (bflook::WindPhase 1-3), made when
+  // first drawn.
+  VkAccelerationStructureKHR phase_blas[bflook::kWindPhases - 1] = {};
+  VkDeviceAddress phase_address[bflook::kWindPhases - 1] = {};
+  VkDeviceAddress PhaseAddress(int phase) const {
+    return phase > 0 && phase_address[phase - 1] ? phase_address[phase - 1] : address;
+  }
 };
 
 // A unit vector as two 16-bit signed normalized octahedral coordinates.
@@ -249,6 +257,7 @@ struct Draw {
   float wvp[16];
   float height;  // terrain: added to world y
   const void* depth_target;
+  int phase;  // plants: the gust phase (bflook::WindPhase)
 };
 
 struct Instance {
@@ -256,6 +265,7 @@ struct Instance {
   float w[12];
   float wmin[3], wmax[3];
   uint64_t first_frame, last_frame;
+  int phase;
 };
 
 std::unordered_map<uint64_t, PositionFetch> position_fetches;
@@ -293,6 +303,11 @@ struct Terrain {
 std::vector<Terrain> terrains;
 uint64_t total_triangles = 0;
 // Draws left out, by reason (logged with the frame stats).
+// Alpha-tested draws left out, by why: decal, no mask source, coordinates in
+// another stream, mask unreadable; and how many of them were plants (wind).
+uint32_t skipped_alpha_why[4] = {}, skipped_alpha_wind = 0;
+// (BF_RT_ALPHA_DEBUG) skipped draws by vertex and pixel shader and why.
+std::unordered_map<std::string, uint32_t> skipped_alpha_pairs;
 uint32_t skipped_alpha = 0, skipped_kill = 0, skipped_position = 0,
          skipped_primitive = 0, skipped_decode = 0, skipped_c255 = 0;
 
@@ -709,7 +724,15 @@ const AlphaSource& GetAlphaSource(const Shader& vertex_shader, const Shader& pix
   // left out too: those are the ground decals, which traced shadowed the
   // ground they lie on.)
   const std::string& p = pixel_shader.ucode_disassembly();
+  as.alpha_one = p.find("oC0.xyz1") != std::string::npos;
   static const char kFetch[] = "tfetch2D r";
+  if (const char* dir = std::getenv("BF_RT_ALPHA_DEBUG")) {
+    std::string path = fmt::format("{}/ps_{:016X}.txt", dir, pixel_shader.ucode_data_hash());
+    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+      std::fwrite(p.data(), 1, p.size(), f);
+      std::fclose(f);
+    }
+  }
   uint32_t interpolator = UINT32_MAX;
   int coords[2] = {};
   for (size_t f = 0; (f = p.find(kFetch, f)) != std::string::npos; ++f) {
@@ -773,7 +796,9 @@ const AlphaSource& GetAlphaSource(const Shader& vertex_shader, const Shader& pix
     as.texel_component = uint8_t(texel);
     break;
   }
-  if (interpolator == UINT32_MAX) return reject("no texture fetch from an interpolator");
+  if (interpolator == UINT32_MAX) {
+    return reject("no texture fetch from an interpolator");
+  }
   // The vertex shader's copy of a register to it (`max oN.mask, rR.swizzle,
   // rR.swizzle`, or whole).
   const std::string& v = vertex_shader.ucode_disassembly();
@@ -836,6 +861,18 @@ uint32_t BlockAlpha(xenos::TextureFormat format, const uint8_t* b, uint32_t x, u
     case xenos::TextureFormat::k_DXT1: {
       uint32_t c0 = b[0] | b[1] << 8, c1 = b[2] | b[3] << 8;
       uint32_t index = (Load32(b + 4) >> (2 * i)) & 3;
+      if (component < 3) {
+        // A colour channel (565): its endpoints and the index's mix.
+        auto channel = [&](uint32_t c) {
+          uint32_t v = component == 0 ? c >> 11 : component == 1 ? (c >> 5) & 63 : c & 31;
+          return component == 1 ? v * 255 / 63 : v * 255 / 31;
+        };
+        uint32_t a = channel(c0), z = channel(c1);
+        if (index == 0) return a;
+        if (index == 1) return z;
+        if (c0 > c1) return index == 2 ? (2 * a + z) / 3 : (a + 2 * z) / 3;
+        return index == 2 ? (a + z) / 2 : 0;
+      }
       return c0 <= c1 && index == 3 ? 0 : 255;
     }
     case xenos::TextureFormat::k_DXT2_3:
@@ -901,7 +938,10 @@ uint32_t GetMask(const RegisterFile& regs, uint32_t texture, uint32_t texel_comp
     XELOGI("scenefx rt: alpha texture format {} is opaque", uint32_t(tf.format));
     return it->second = kOpaqueMask;
   }
-  if (!(dxt && alpha == 3) && !(single && alpha == 0) &&
+  if (!(dxt && alpha == 3) &&
+      !(tf.format == xenos::TextureFormat::k_DXT1 && alpha < 3 &&
+        bflook::rt_foliage.load(std::memory_order_relaxed)) &&
+      !(single && alpha == 0) &&
       !(tf.format == xenos::TextureFormat::k_8_8_8_8 && alpha < 4)) {
     XELOGI("scenefx rt: alpha texture format {} (alpha from {}) not read", uint32_t(tf.format),
            alpha);
@@ -1417,10 +1457,17 @@ void RecordDraw(const Shader& vertex_shader, const Shader& pixel_shader,
     if (!regs.Get<reg::RB_DEPTHCONTROL>().z_write_enable ||
         regs.Get<reg::PA_SU_SC_MODE_CNTL>().poly_offset_front_enable) {
       ++skipped_alpha;
+      ++skipped_alpha_why[0];
+      skipped_alpha_wind += pf.wind;
       return;
     }
     alpha = &GetAlphaSource(vertex_shader, pixel_shader);
-    if (alpha->ok && alpha->fetch_constant == pf.fetch_constant) {
+    if (pf.wind && alpha->alpha_one && bflook::rt_foliage.load(std::memory_order_relaxed)) {
+      // Plants whose alpha is the constant 1 (palm trunks and bushes on Wake
+      // Island): the test always passes, solid. (Not other draws: ground
+      // decals write it too, and traced they shadowed the ground under them.)
+      mask = kOpaqueMask;
+    } else if (alpha->ok && alpha->fetch_constant == pf.fetch_constant) {
       mask = GetMask(regs, alpha->texture, alpha->texel_component, memory);
     } else if (alpha->ok) {
       static uint32_t logs = 0;
@@ -1433,6 +1480,14 @@ void RecordDraw(const Shader& vertex_shader, const Shader& pixel_shader,
       alpha = nullptr;
     } else if (mask == kNoAlpha) {
       ++skipped_alpha;
+      ++skipped_alpha_why[!alpha->ok ? 1 : alpha->fetch_constant != pf.fetch_constant ? 2 : 3];
+      skipped_alpha_wind += pf.wind;
+      if (std::getenv("BF_RT_ALPHA_DEBUG")) {
+        ++skipped_alpha_pairs[fmt::format("{:016X} {:016X} why{} wind{}", vertex_shader.ucode_data_hash(),
+                                          pixel_shader.ucode_data_hash(),
+                                          !alpha->ok ? 1 : alpha->fetch_constant != pf.fetch_constant ? 2 : 3,
+                                          int(pf.wind))];
+      }
       return;
     }
   }
@@ -1561,6 +1616,7 @@ void AddDraw(const MeshKey& key, const PositionFetch& pf, const RegisterFile& re
                 sizeof(draw.wvp));
   }
   draw.depth_target = depth_target;
+  draw.phase = meshes[id].wind && !draw.world_from_view ? bflook::WindPhase(draw.w[3], draw.w[11]) : 0;
 }
 }  // namespace
 
@@ -1660,6 +1716,13 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
       vk.doomed.emplace_back(meshes[id].blas, current);
       meshes[id].blas = VK_NULL_HANDLE;
     }
+    for (int k = 0; k < bflook::kWindPhases - 1; ++k) {
+      if (meshes[id].phase_blas[k] != VK_NULL_HANDLE) {
+        vk.doomed.emplace_back(meshes[id].phase_blas[k], current);
+        meshes[id].phase_blas[k] = VK_NULL_HANDLE;
+        meshes[id].phase_address[k] = 0;
+      }
+    }
     PendingMesh* p = nullptr;
     for (auto& pm : pending) {
       if (pm.mesh == id) p = &pm;
@@ -1754,7 +1817,9 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
     vk.sizes(d, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info,
              &mesh.triangles, &sizes);
     VkDeviceSize scratch = Align(sizes.buildScratchSize, 256);
+    mesh.build_scratch = scratch;
     mesh.update_scratch = Align(sizes.updateScratchSize, 256);
+    mesh.as_size = sizes.accelerationStructureSize;
     mesh.built_frame = frame;
     VkBuffer storage;
     VkDeviceSize storage_offset;
@@ -1838,33 +1903,52 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
   }
   pending.erase(pending.begin(), pending.begin() + done);
   // Plants drawn this frame: their structures refit to the gust's current
-  // shape, so the shadows sway with the leaves (a budget per frame).
+  // shape, one per phase in use, so the shadows sway with the leaves (a
+  // budget per frame). Once more after the gust is turned off.
   float wind_amp = bflook::wind.load(std::memory_order_relaxed);
-  if (wind_amp > 0.0f) {
+  static float last_wind_amp = 0.0f;
+  if (wind_amp > 0.0f || last_wind_amp > 0.0f) {
     float wind_time = bflook::WindTime();
-    std::unordered_set<uint32_t> refit;
+    std::unordered_set<uint64_t> refit;
     uint32_t refit_triangles = 0;
     for (const Draw& draw : draws) {
       if (draw.depth_target != depth_target || draw.mesh >= meshes.size()) continue;
       Mesh& mesh = meshes[draw.mesh];
-      if (!mesh.wind || mesh.dead || mesh.blas == VK_NULL_HANDLE || mesh.built_frame == frame ||
-          mesh.update_scratch == 0 && mesh.triangles == 0) {
-        continue;
-      }
-      if (refit.count(draw.mesh) || refit.size() >= 400 || refit_triangles + mesh.triangles > 300000) continue;
+      if (!mesh.wind || mesh.dead || mesh.blas == VK_NULL_HANDLE || !mesh.as_size) continue;
+      int phase = wind_amp > 0.0f ? draw.phase : 0;
+      // (Phase 0 is the mesh's own structure, just built if new.)
+      if (phase == 0 && mesh.built_frame == frame) continue;
+      uint64_t key = uint64_t(draw.mesh) << 8 | uint32_t(phase);
+      if (refit.count(key) || refit.size() >= 400 || refit_triangles + mesh.triangles > 300000) continue;
+      VkAccelerationStructureKHR* target = phase ? &mesh.phase_blas[phase - 1] : &mesh.blas;
+      bool create = *target == VK_NULL_HANDLE;
       VkDeviceSize vertex_bytes = Align(mesh.base.size() * 4, 16);
       VkDeviceSize index_bytes = Align(mesh.base_indices.size() * 4, 16);
-      VkDeviceSize scratch = std::max<VkDeviceSize>(mesh.update_scratch, 256);
+      VkDeviceSize scratch = std::max<VkDeviceSize>(create ? mesh.build_scratch : mesh.update_scratch, 256);
       if (upload_at + vertex_bytes + index_bytes > kUploadSegment || scratch_at + scratch > kScratchSize) {
         break;
       }
-      refit.insert(draw.mesh);
+      if (create) {
+        VkBuffer storage;
+        VkDeviceSize storage_offset;
+        if (!AllocatePool(mesh.as_size, storage, storage_offset)) continue;
+        VkAccelerationStructureCreateInfoKHR create_info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_CREATE_INFO_KHR};
+        create_info.buffer = storage;
+        create_info.offset = storage_offset;
+        create_info.size = mesh.as_size;
+        create_info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+        if (vk.create(d, &create_info, nullptr, target) != VK_SUCCESS) {
+          *target = VK_NULL_HANDLE;
+          continue;
+        }
+      }
+      refit.insert(key);
       refit_triangles += mesh.triangles;
       uint8_t* to = vk.upload.mapping + slot * kUploadSegment + upload_at;
       float* out = reinterpret_cast<float*>(to);
       for (size_t v = 0; v + 2 < mesh.base.size(); v += 3) {
         float gust[3];
-        bflook::WindGust(&mesh.base[v], wind_time, wind_amp, gust);
+        bflook::WindGust(&mesh.base[v], wind_time, wind_amp, phase, gust);
         out[v] = mesh.base[v] + gust[0];
         out[v + 1] = mesh.base[v + 1] + gust[1];
         out[v + 2] = mesh.base[v + 2] + gust[2];
@@ -1886,10 +1970,11 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
       info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
       info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
                    VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
-      info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+      info.mode = create ? VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR
+                         : VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
       info.geometryCount = 1;
-      info.srcAccelerationStructure = mesh.blas;
-      info.dstAccelerationStructure = mesh.blas;
+      info.srcAccelerationStructure = create ? VK_NULL_HANDLE : *target;
+      info.dstAccelerationStructure = *target;
       info.scratchData.deviceAddress = vk.scratch.address + scratch_at;
       batch->infos.push_back(info);
       VkAccelerationStructureBuildRangeInfoKHR& range = batch->ranges.emplace_back();
@@ -1897,13 +1982,20 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
       range.primitiveCount = mesh.triangles;
       upload_at += vertex_bytes + index_bytes;
       scratch_at += scratch;
+      if (create) {
+        VkAccelerationStructureDeviceAddressInfoKHR address = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_DEVICE_ADDRESS_INFO_KHR};
+        address.accelerationStructure = *target;
+        mesh.phase_address[phase - 1] = vk.as_address(d, &address);
+      }
     }
     static bool logged_refit = false;
     if (!refit.empty() && !logged_refit) {
       logged_refit = true;
-      XELOGI("scenefx rt: wind refit of {} plant meshes ({} triangles) per frame", refit.size(), refit_triangles);
+      XELOGI("scenefx rt: wind refit of {} plant structures ({} triangles) per frame", refit.size(),
+             refit_triangles);
     }
   }
+  last_wind_amp = wind_amp;
   for (size_t i = 0; i < batch->infos.size(); ++i) {
     batch->infos[i].pGeometries = &batch->geometries[i];
   }
@@ -1953,6 +2045,7 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
       std::memcpy(instance.w, draw.w, sizeof(draw.w));
       WorldBounds(meshes[draw.mesh], draw.w, instance.wmin, instance.wmax);
       instance.first_frame = frame;
+      instance.phase = draw.phase;
     }
     instance.last_frame = frame;
   }
@@ -1989,7 +2082,7 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
       o.mask = mesh.alpha_base == kNoAlpha ? kMaskObjects : kMaskFoliage;
       o.instanceShaderBindingTableRecordOffset = mesh.alpha_base == kNoAlpha ? 0 : mesh.alpha_base;
       o.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
-      o.accelerationStructureReference = mesh.address;
+      o.accelerationStructureReference = mesh.PhaseAddress(instance.phase);
     }
     ++it;
   }
@@ -2087,6 +2180,12 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
         ((vk.pool.empty() ? 0 : (vk.pool.size() - 1) * kPoolChunk) + vk.pool_used) >> 20,
         skipped_alpha, skipped_kill, skipped_position, skipped_c255, skipped_primitive,
         skipped_decode);
+    XELOGI("scenefx rt: alpha skipped: decal {}, no source {}, other stream {}, mask {}; plants {}",
+           skipped_alpha_why[0], skipped_alpha_why[1], skipped_alpha_why[2], skipped_alpha_why[3],
+           skipped_alpha_wind);
+    for (const auto& [pair, n] : skipped_alpha_pairs) {
+      if (n > 1000) XELOGI("scenefx rt:   skipped {} {}", pair, n);
+    }
   }
   vk.last_count = count;
   return count;

@@ -990,6 +990,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
 
   spv::Id ext_inst_glsl_std_450_;
   spv::Id wind_push_ = spv::NoResult;
+  // The world matrix's first constant (c16 or c20) for the gust's phase; -1
+  // none, -2 not looked for yet.
+  int wind_world_ = -2;
 
   spv::Id type_void_;
 

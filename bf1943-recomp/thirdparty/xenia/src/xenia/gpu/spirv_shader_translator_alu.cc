@@ -1487,20 +1487,52 @@ spv::Id SpirvShaderTranslator::WindOffset(spv::Id position) {
   spv::Id time = LoadWindPush(0);
   spv::Id amp = LoadWindPush(1);
   spv::Id px = comp(0), py = comp(1), pz = comp(2);
-  auto wave = [&](float speed, float cx, float cz) {
+  // The copy's phase (bflook::WindPhase) from its world translation.
+  if (wind_world_ == -2) {
+    const std::string& d = current_shader().ucode_disassembly();
+    auto rows = [&](int c) {
+      for (int r = 0; r < 3; ++r) {
+        if (d.find("c" + std::to_string(c + r) + ".zxyw, r") == std::string::npos) return false;
+      }
+      return true;
+    };
+    wind_world_ = rows(20) ? 20 : rows(16) ? 16 : -1;
+  }
+  spv::Id ph = fk(0.0f);
+  if (wind_world_ >= 0) {
+    auto constant_w = [&](int c) {
+      InstructionOperand op;
+      op.storage_source = InstructionStorageSource::kConstantFloat;
+      op.storage_addressing_mode = InstructionStorageAddressingMode::kAbsolute;
+      op.storage_index = uint32_t(c);
+      op.component_count = 1;
+      op.components[0] = SwizzleSource::kW;
+      return GetOperandComponents(LoadOperandStorage(op), op, 0b0001);
+    };
+    spv::Id f = fop(spv::OpFAdd, fop(spv::OpFMul, constant_w(wind_world_), fk(0.173f)),
+                    fop(spv::OpFMul, constant_w(wind_world_ + 2), fk(0.291f)));
+    f = fn1(GLSLstd450Fract, f);
+    spv::Id bucket = builder_->createTriBuiltinCall(
+        type_float_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+        fn1(GLSLstd450Floor, fop(spv::OpFMul, f, fk(4.0f))), fk(0.0f), fk(3.0f));
+    ph = fop(spv::OpFMul, bucket, fk(1.5707964f));
+  }
+  auto wave = [&](float speed, float cx, float cz, float phase_scale) {
     spv::Id phase = fop(spv::OpFAdd, fop(spv::OpFMul, time, fk(speed)),
                         fop(spv::OpFAdd, fop(spv::OpFMul, px, fk(cx)), fop(spv::OpFMul, pz, fk(cz))));
+    phase = fop(spv::OpFAdd, phase, fop(spv::OpFMul, ph, fk(phase_scale)));
     return fn1(GLSLstd450Sin, phase);
   };
-  spv::Id s1 = wave(1.3f, 0.21f, 0.17f);
-  spv::Id s2 = wave(2.7f, -0.31f, 0.43f);
-  spv::Id s3 = wave(0.6f, 0.07f, 0.05f);
+  spv::Id s1 = wave(1.3f, 0.21f, 0.17f, 1.0f);
+  spv::Id s2 = wave(2.7f, -0.31f, 0.43f, 2.0f);
+  spv::Id s3 = wave(0.6f, 0.07f, 0.05f, 1.0f);
   spv::Id gust = fop(spv::OpFAdd, fop(spv::OpFMul, s1, fk(0.5f)),
                      fop(spv::OpFAdd, fop(spv::OpFMul, s2, fk(0.3f)), fop(spv::OpFMul, s3, fk(0.4f))));
+  // A bend: the square of the height, full at a palm's crown (8.5 m).
   spv::Id high = builder_->createTriBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
-                                                fop(spv::OpFMul, fop(spv::OpFSub, py, fk(0.3f)), fk(0.45f)),
+                                                fop(spv::OpFMul, fop(spv::OpFSub, py, fk(0.5f)), fk(0.125f)),
                                                 fk(0.0f), fk(1.0f));
-  spv::Id weight = fop(spv::OpFMul, amp, high);
+  spv::Id weight = fop(spv::OpFMul, amp, fop(spv::OpFMul, high, high));
   spv::Id ox = fop(spv::OpFMul, weight, gust);
   spv::Id oy = fop(spv::OpFMul, weight, fop(spv::OpFMul, s2, fk(0.25f)));
   spv::Id oz = fop(spv::OpFMul, weight, fop(spv::OpFMul, gust, fk(0.6f)));

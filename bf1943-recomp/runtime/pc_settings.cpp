@@ -200,6 +200,9 @@ void Build() {
                      2));
   v.push_back(Choice(kEffects, "rt", L"RAY-TRACED SHADOWS",
                      L"Sun shadows from every object, on screen or not.", kOffOn, {"0", "1"}, 1));
+  v.push_back(Choice(kEffects, "rt_foliage", L"RAY-TRACED FOLIAGE",
+                     L"Palms, bushes and masked leaves cast ray-traced shadows too. Costs frame rate (next start).",
+                     kOffOn, {"0", "1"}, 0, true));
   v.push_back(Choice(kEffects, "shadows", L"SCREEN SHADOWS", L"Contact shadows from the depth.",
                      {L"OFF", L"LOW", L"FULL"}, {"0", "0.5", "1"}, 2));
   v.push_back(Choice(kEffects, "gi", L"BOUNCE LIGHT", L"Light bouncing off nearby surfaces.",
@@ -458,7 +461,10 @@ void ApplyLive() {
   std::string fx;
   for (const Setting& s : g_settings) {
     // (PLANT WIND is the renderer's, not a scene effect: below.)
-    if (s.category != kEffects || !std::strcmp(s.key, "quality") || !std::strcmp(s.key, "wind")) continue;
+    if (s.category != kEffects || !std::strcmp(s.key, "quality") || !std::strcmp(s.key, "wind") ||
+        !std::strcmp(s.key, "rt_foliage")) {
+      continue;
+    }
     fx += std::string(fx.empty() ? "" : ",") + s.key + "=" + s.values[s.index];
   }
   // The preset's rays and steps (no rows of their own).
@@ -471,6 +477,7 @@ void ApplyLive() {
   }
   xgpu::ApplySceneFx(fx.c_str());
   // --wind on the command line wins (test runs).
+  xgpu::SetRtFoliage(Value("rt_foliage") == "1");
   xgpu::SetWind(g_wind_cli >= 0.0f ? g_wind_cli : float(std::atof(Value("wind").c_str())));
   // Particles: the game's renderer settings, ours.
   {
@@ -713,7 +720,7 @@ const PresetValue kPresets[] = {
     {"water_refract", "0", "1", "1", "1"},        {"water_shallow", "0", "1", "1", "1"},
     {"detail", "0", "1", "1", "1.5"},             {"particle_quality", "0", "1", "1", "1"},
     {"soft_particles", "0", "1", "1", "1"},       {"explosion_smoke", "0", "0", "0", "1"},
-    {"wind", "0", "0.4", "0.4", "0.4"},
+    {"wind", "0", "0.4", "0.4", "0.4"},           {"rt_foliage", "0", "0", "0", "1"},
 };
 void ApplyPreset(const std::string& q) {
   for (const PresetValue& p : kPresets) {

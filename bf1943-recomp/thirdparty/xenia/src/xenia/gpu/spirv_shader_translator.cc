@@ -130,6 +130,7 @@ void SpirvShaderTranslator::Reset() {
 
   uniform_float_constants_ = spv::NoResult;
   wind_push_ = spv::NoResult;
+  wind_world_ = -2;
 
   // Vertex shader inputs.
   input_vertex_index_ = spv::NoResult;
