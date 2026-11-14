@@ -758,6 +758,16 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id GetUnmodifiedOperandComponents(
       spv::Id operand_storage, const InstructionOperand& original_operand,
       uint32_t components);
+  // bf1943 vertex wind: the game's plant shaders add c213.w * position (the
+  // leaves' sway) with a mad; a constant c213 operand marks it, and the
+  // vertex stage adds a gust from the push constants (time, amplitude).
+  bool IsWindConstant(const InstructionOperand& op) const {
+    return op.storage_source == InstructionStorageSource::kConstantFloat &&
+           op.storage_addressing_mode == InstructionStorageAddressingMode::kAbsolute &&
+           op.storage_index == 213;
+  }
+  spv::Id LoadWindPush(int member);
+  spv::Id WindOffset(spv::Id position);
   spv::Id GetOperandComponents(spv::Id operand_storage,
                                const InstructionOperand& original_operand,
                                uint32_t components, bool invert_negate = false,
@@ -979,6 +989,7 @@ class SpirvShaderTranslator : public ShaderTranslator {
   std::vector<unsigned int> uint_vector_temp_util_;
 
   spv::Id ext_inst_glsl_std_450_;
+  spv::Id wind_push_ = spv::NoResult;
 
   spv::Id type_void_;
 

@@ -230,6 +230,7 @@ int main(int argc, char** argv) {
       std::string l = argv[++i];
       xgpu::SetLook(l == "toon" ? 1 : l == "noir" ? 2 : l == "ww2" ? 3 : l == "vivid" ? 4 : 0);
     }
+    else if (a == "--wind" && i + 1 < argc) xgpu::SetWind(float(atof(argv[++i])));  // gust metres (0 off)
     else if (a == "--grade" && i + 1 < argc) xgpu::SetGrade(float(atof(argv[++i])));  // 0 off, 1 default
     else if (a == "--blood") g_blood = true;
     else if (a == "--vblank-hz" && i + 1 < argc) g_vblank_hz = std::max(1, atoi(argv[++i]));

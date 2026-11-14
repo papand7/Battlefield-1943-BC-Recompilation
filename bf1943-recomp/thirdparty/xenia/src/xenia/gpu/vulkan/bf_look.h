@@ -18,6 +18,9 @@ inline std::atomic<float> brightness{0.0f}, gamma{1.0f};
 // The enhanced look's colour grade (0 off, 1 the default; the stock preset
 // has none): contrast, vibrance, warm highlights, local contrast.
 inline std::atomic<float> grade{0.0f};
+// The plants' extra gust sway, metres at a plant's top (0 off). The game's own
+// wind is in the shaders; this adds a gust that varies across the plant.
+inline std::atomic<float> wind{0.4f};
 
 }  // namespace bflook
 }  // namespace gpu

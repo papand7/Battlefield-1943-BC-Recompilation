@@ -287,10 +287,16 @@ spv::Id SpirvShaderTranslator::ProcessVectorAluOperation(
       if (instr.vector_opcode == ucode::AluVectorOpcode::kMad) {
         // Not replacing true `0 + term` with conditional selection of the term
         // because +0 + -0 should result in +0, not -0.
-        result = builder_->createNoContractionBinOp(
-            spv::OpFAdd, result_type, result,
-            GetOperandComponents(operand_storage[2], instr.vector_operands[2],
-                                 used_result_components));
+        spv::Id addend = GetOperandComponents(operand_storage[2], instr.vector_operands[2],
+                                              used_result_components);
+        result = builder_->createNoContractionBinOp(spv::OpFAdd, result_type, result, addend);
+        // The game's plant wind (vertex shaders only, a full vec4 result): the
+        // gust is added to the sway.
+        if (is_vertex_shader() && builder_->getTypeId(result) == type_float4_ &&
+            (IsWindConstant(instr.vector_operands[0]) || IsWindConstant(instr.vector_operands[1]))) {
+          result = builder_->createNoContractionBinOp(spv::OpFAdd, type_float4_, result,
+                                                      WindOffset(addend));
+        }
       }
       return result;
     }
@@ -1447,5 +1453,58 @@ spv::Id SpirvShaderTranslator::ProcessScalarAluOperation(
   return spv::NoResult;
 }
 
+
+// The push constants of the vertex stage (VulkanCommandProcessor::UpdateBindings):
+// member 0 the time in seconds, 1 the gust amplitude in metres.
+spv::Id SpirvShaderTranslator::LoadWindPush(int member) {
+  if (wind_push_ == spv::NoResult) {
+    std::vector<spv::Id> members = {type_float_, type_float_};
+    spv::Id type_wind = builder_->makeStructType(members, "XeWindPush");
+    builder_->addMemberName(type_wind, 0, "time");
+    builder_->addMemberName(type_wind, 1, "amplitude");
+    builder_->addMemberDecoration(type_wind, 0, spv::DecorationOffset, 0);
+    builder_->addMemberDecoration(type_wind, 1, spv::DecorationOffset, 4);
+    builder_->addDecoration(type_wind, spv::DecorationBlock);
+    wind_push_ = builder_->createVariable(spv::NoPrecision, spv::StorageClassPushConstant, type_wind,
+                                          "xe_wind_push");
+    if (features_.spirv_version >= spv::Spv_1_4) {
+      main_interface_.push_back(wind_push_);
+    }
+  }
+  id_vector_temp_util_.clear();
+  id_vector_temp_util_.push_back(builder_->makeIntConstant(member));
+  spv::Id pointer = builder_->createAccessChain(spv::StorageClassPushConstant, wind_push_, id_vector_temp_util_);
+  return builder_->createLoad(pointer, spv::NoPrecision);
+}
+
+// The gust added to a plant's sway at its position (x, y up, z): two travelling
+// waves and a slow gust front, stronger high up (the trunk stays still).
+spv::Id SpirvShaderTranslator::WindOffset(spv::Id position) {
+  auto fop = [&](spv::Op op, spv::Id a, spv::Id b) { return builder_->createBinOp(op, type_float_, a, b); };
+  auto fn1 = [&](int op, spv::Id x) { return builder_->createUnaryBuiltinCall(type_float_, ext_inst_glsl_std_450_, op, x); };
+  auto fk = [&](float v) { return builder_->makeFloatConstant(v); };
+  auto comp = [&](uint32_t c) { return builder_->createCompositeExtract(position, type_float_, c); };
+  spv::Id time = LoadWindPush(0);
+  spv::Id amp = LoadWindPush(1);
+  spv::Id px = comp(0), py = comp(1), pz = comp(2);
+  auto wave = [&](float speed, float cx, float cz) {
+    spv::Id phase = fop(spv::OpFAdd, fop(spv::OpFMul, time, fk(speed)),
+                        fop(spv::OpFAdd, fop(spv::OpFMul, px, fk(cx)), fop(spv::OpFMul, pz, fk(cz))));
+    return fn1(GLSLstd450Sin, phase);
+  };
+  spv::Id s1 = wave(1.3f, 0.21f, 0.17f);
+  spv::Id s2 = wave(2.7f, -0.31f, 0.43f);
+  spv::Id s3 = wave(0.6f, 0.07f, 0.05f);
+  spv::Id gust = fop(spv::OpFAdd, fop(spv::OpFMul, s1, fk(0.5f)),
+                     fop(spv::OpFAdd, fop(spv::OpFMul, s2, fk(0.3f)), fop(spv::OpFMul, s3, fk(0.4f))));
+  spv::Id high = builder_->createTriBuiltinCall(type_float_, ext_inst_glsl_std_450_, GLSLstd450FClamp,
+                                                fop(spv::OpFMul, fop(spv::OpFSub, py, fk(0.3f)), fk(0.45f)),
+                                                fk(0.0f), fk(1.0f));
+  spv::Id weight = fop(spv::OpFMul, amp, high);
+  spv::Id ox = fop(spv::OpFMul, weight, gust);
+  spv::Id oy = fop(spv::OpFMul, weight, fop(spv::OpFMul, s2, fk(0.25f)));
+  spv::Id oz = fop(spv::OpFMul, weight, fop(spv::OpFMul, gust, fk(0.6f)));
+  return builder_->createCompositeConstruct(type_float4_, {ox, oy, oz, fk(0.0f)});
+}
 }  // namespace gpu
 }  // namespace xe

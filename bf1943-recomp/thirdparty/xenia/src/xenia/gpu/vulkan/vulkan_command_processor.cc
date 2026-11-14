@@ -2405,8 +2405,10 @@ VulkanCommandProcessor::GetPipelineLayout(size_t texture_count_pixel,
   pipeline_layout_create_info.setLayoutCount =
       uint32_t(xe::countof(descriptor_set_layouts));
   pipeline_layout_create_info.pSetLayouts = descriptor_set_layouts;
-  pipeline_layout_create_info.pushConstantRangeCount = 0;
-  pipeline_layout_create_info.pPushConstantRanges = nullptr;
+  // bf1943: the vertex stage's time and wind gust (bf_look.h), pushed per draw.
+  VkPushConstantRange wind_push_range = {VK_SHADER_STAGE_VERTEX_BIT, 0, 2 * sizeof(float)};
+  pipeline_layout_create_info.pushConstantRangeCount = 1;
+  pipeline_layout_create_info.pPushConstantRanges = &wind_push_range;
   VkPipelineLayout pipeline_layout;
   if (dfn.vkCreatePipelineLayout(device, &pipeline_layout_create_info, nullptr,
                                  &pipeline_layout) != VK_SUCCESS) {
@@ -6685,6 +6687,16 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
     }
     descriptor_sets_remaining &=
         ~((UINT32_C(1) << descriptor_set_mask_tzcnt) - 1);
+  }
+  {
+    // bf1943: the wind's clock and gust (the translator's WindOffset).
+    static const auto wind_start = std::chrono::steady_clock::now();
+    float wind_push[2] = {
+        std::chrono::duration<float>(std::chrono::steady_clock::now() - wind_start).count(),
+        bflook::wind.load(std::memory_order_relaxed)};
+    deferred_command_buffer_.CmdVkPushConstants(
+        current_guest_graphics_pipeline_layout_->GetPipelineLayout(),
+        VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(wind_push), wind_push);
   }
   current_graphics_descriptor_sets_bound_up_to_date_ |= descriptor_sets_needed;
 
