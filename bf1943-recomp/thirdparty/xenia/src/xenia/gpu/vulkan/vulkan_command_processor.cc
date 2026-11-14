@@ -6690,10 +6690,8 @@ bool VulkanCommandProcessor::UpdateBindings(const VulkanShader* vertex_shader,
   }
   {
     // bf1943: the wind's clock and gust (the translator's WindOffset).
-    static const auto wind_start = std::chrono::steady_clock::now();
-    float wind_push[2] = {
-        std::chrono::duration<float>(std::chrono::steady_clock::now() - wind_start).count(),
-        bflook::wind.load(std::memory_order_relaxed)};
+    float wind_push[2] = {bflook::WindTime(),
+                          bflook::wind.load(std::memory_order_relaxed)};
     deferred_command_buffer_.CmdVkPushConstants(
         current_guest_graphics_pipeline_layout_->GetPipelineLayout(),
         VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(wind_push), wind_push);

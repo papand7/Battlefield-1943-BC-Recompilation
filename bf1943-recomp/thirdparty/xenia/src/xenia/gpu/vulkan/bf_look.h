@@ -4,7 +4,10 @@
 #ifndef XENIA_GPU_VULKAN_BF_LOOK_H_
 #define XENIA_GPU_VULKAN_BF_LOOK_H_
 
+#include <algorithm>
 #include <atomic>
+#include <chrono>
+#include <cmath>
 
 namespace xe {
 namespace gpu {
@@ -21,6 +24,24 @@ inline std::atomic<float> grade{0.0f};
 // The plants' extra gust sway, metres at a plant's top (0 off). The game's own
 // wind is in the shaders; this adds a gust that varies across the plant.
 inline std::atomic<float> wind{0.4f};
+// The wind's clock (seconds), shared by the vertex push constants and the
+// ray-traced shadows' refit.
+inline float WindTime() {
+  static const auto start = std::chrono::steady_clock::now();
+  return std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
+}
+// The gust at an object-space position: the CPU twin of the translator's
+// WindOffset (spirv_shader_translator_alu.cc); keep both the same.
+inline void WindGust(const float p[3], float time, float amp, float out[3]) {
+  float s1 = std::sin(time * 1.3f + p[0] * 0.21f + p[2] * 0.17f);
+  float s2 = std::sin(time * 2.7f + p[0] * -0.31f + p[2] * 0.43f);
+  float s3 = std::sin(time * 0.6f + p[0] * 0.07f + p[2] * 0.05f);
+  float gust = s1 * 0.5f + (s2 * 0.3f + s3 * 0.4f);
+  float weight = amp * std::clamp((p[1] - 0.3f) * 0.45f, 0.0f, 1.0f);
+  out[0] = weight * gust;
+  out[1] = weight * (s2 * 0.25f);
+  out[2] = weight * (gust * 0.6f);
+}
 
 }  // namespace bflook
 }  // namespace gpu

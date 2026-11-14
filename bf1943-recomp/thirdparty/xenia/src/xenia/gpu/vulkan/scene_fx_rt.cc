@@ -15,6 +15,9 @@
 #include "xenia/gpu/texture_address.h"
 #include "xenia/gpu/texture_info.h"
 #include "xenia/gpu/texture_util.h"
+#include <unordered_set>
+
+#include "xenia/gpu/vulkan/bf_look.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 
 namespace xe {
@@ -125,6 +128,8 @@ struct PositionFetch {
   int32_t part_offset = 0;
   uint8_t part_component = 0;
   bool part_c255 = false;
+  // Plants (the position plus a wind offset): their shadows follow the gust.
+  bool wind = false;
 };
 
 // Where an alpha-tested draw's coverage comes from: the pixel shader's
@@ -189,6 +194,13 @@ struct Mesh {
   uint32_t normal_base = kNoNormals;  // its first triangle normal
   uint32_t alpha_base = kNoAlpha;     // its first alpha-tested triangle
   bool dead = false;
+  // Plants: object-space vertices and indices kept to refit the structure each
+  // frame with the gust (bflook::WindGust).
+  bool wind = false;
+  std::vector<float> base;
+  std::vector<uint32_t> base_indices;
+  uint64_t built_frame = 0;
+  VkDeviceSize update_scratch = 0;
 };
 
 // A unit vector as two 16-bit signed normalized octahedral coordinates.
@@ -555,6 +567,7 @@ const PositionFetch& GetPositionFetch(const Shader& shader) {
     reg = uint32_t(std::strtoul(d.c_str() + source + 3, &end, 10));
     if (std::strncmp(end, ".xyzz", 5)) return reject("other wind offset");
     needs_w = false;
+    pf.wind = true;
   } else if (!direct) {
     if (*end != '\r' && *end != '\n') return reject("swizzled position");
     std::string select = "cndeq r" + std::to_string(reg) + ", c255.xxxy, r";
@@ -1145,6 +1158,15 @@ bool DecodeMesh(const MeshKey& key, const PositionFetch& pf, Memory& memory,
   }
   if (!(mesh.bmin[0] <= mesh.bmax[0])) return false;
   mesh.triangles = uint32_t(tris.size() / 3);
+  if (pf.wind) {
+    mesh.wind = true;
+    mesh.base = out.vertices;
+    mesh.base_indices = out.indices;
+    for (int i = 0; i < 3; ++i) {
+      mesh.bmin[i] -= 1.0f;
+      mesh.bmax[i] += 1.0f;
+    }
+  }
   return true;
 }
 
@@ -1723,7 +1745,8 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
     t.indexData.deviceAddress = t.vertexData.deviceAddress + vertex_bytes;
     VkAccelerationStructureBuildGeometryInfoKHR info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
     info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-    info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
+    info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                 (mesh.wind ? VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR : 0);
     info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
     info.geometryCount = 1;
     info.pGeometries = &g;
@@ -1731,6 +1754,8 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
     vk.sizes(d, VK_ACCELERATION_STRUCTURE_BUILD_TYPE_DEVICE_KHR, &info,
              &mesh.triangles, &sizes);
     VkDeviceSize scratch = Align(sizes.buildScratchSize, 256);
+    mesh.update_scratch = Align(sizes.updateScratchSize, 256);
+    mesh.built_frame = frame;
     VkBuffer storage;
     VkDeviceSize storage_offset;
     if (scratch_at + scratch > kScratchSize) {
@@ -1812,6 +1837,73 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
     total_triangles += mesh.triangles;
   }
   pending.erase(pending.begin(), pending.begin() + done);
+  // Plants drawn this frame: their structures refit to the gust's current
+  // shape, so the shadows sway with the leaves (a budget per frame).
+  float wind_amp = bflook::wind.load(std::memory_order_relaxed);
+  if (wind_amp > 0.0f) {
+    float wind_time = bflook::WindTime();
+    std::unordered_set<uint32_t> refit;
+    uint32_t refit_triangles = 0;
+    for (const Draw& draw : draws) {
+      if (draw.depth_target != depth_target || draw.mesh >= meshes.size()) continue;
+      Mesh& mesh = meshes[draw.mesh];
+      if (!mesh.wind || mesh.dead || mesh.blas == VK_NULL_HANDLE || mesh.built_frame == frame ||
+          mesh.update_scratch == 0 && mesh.triangles == 0) {
+        continue;
+      }
+      if (refit.count(draw.mesh) || refit.size() >= 400 || refit_triangles + mesh.triangles > 300000) continue;
+      VkDeviceSize vertex_bytes = Align(mesh.base.size() * 4, 16);
+      VkDeviceSize index_bytes = Align(mesh.base_indices.size() * 4, 16);
+      VkDeviceSize scratch = std::max<VkDeviceSize>(mesh.update_scratch, 256);
+      if (upload_at + vertex_bytes + index_bytes > kUploadSegment || scratch_at + scratch > kScratchSize) {
+        break;
+      }
+      refit.insert(draw.mesh);
+      refit_triangles += mesh.triangles;
+      uint8_t* to = vk.upload.mapping + slot * kUploadSegment + upload_at;
+      float* out = reinterpret_cast<float*>(to);
+      for (size_t v = 0; v + 2 < mesh.base.size(); v += 3) {
+        float gust[3];
+        bflook::WindGust(&mesh.base[v], wind_time, wind_amp, gust);
+        out[v] = mesh.base[v] + gust[0];
+        out[v + 1] = mesh.base[v + 1] + gust[1];
+        out[v + 2] = mesh.base[v + 2] + gust[2];
+      }
+      std::memcpy(to + vertex_bytes, mesh.base_indices.data(), mesh.base_indices.size() * 4);
+      VkAccelerationStructureGeometryKHR& g = batch->geometries.emplace_back();
+      g = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
+      g.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
+      g.flags = mesh.alpha_base != kNoAlpha ? 0 : VK_GEOMETRY_OPAQUE_BIT_KHR;
+      auto& t = g.geometry.triangles;
+      t.sType = VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_TRIANGLES_DATA_KHR;
+      t.vertexFormat = VK_FORMAT_R32G32B32_SFLOAT;
+      t.vertexData.deviceAddress = vk.upload.address + slot * kUploadSegment + upload_at;
+      t.vertexStride = 12;
+      t.maxVertex = uint32_t(mesh.base.size() / 3 - 1);
+      t.indexType = VK_INDEX_TYPE_UINT32;
+      t.indexData.deviceAddress = t.vertexData.deviceAddress + vertex_bytes;
+      VkAccelerationStructureBuildGeometryInfoKHR info = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
+      info.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
+      info.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR |
+                   VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR;
+      info.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR;
+      info.geometryCount = 1;
+      info.srcAccelerationStructure = mesh.blas;
+      info.dstAccelerationStructure = mesh.blas;
+      info.scratchData.deviceAddress = vk.scratch.address + scratch_at;
+      batch->infos.push_back(info);
+      VkAccelerationStructureBuildRangeInfoKHR& range = batch->ranges.emplace_back();
+      range = {};
+      range.primitiveCount = mesh.triangles;
+      upload_at += vertex_bytes + index_bytes;
+      scratch_at += scratch;
+    }
+    static bool logged_refit = false;
+    if (!refit.empty() && !logged_refit) {
+      logged_refit = true;
+      XELOGI("scenefx rt: wind refit of {} plant meshes ({} triangles) per frame", refit.size(), refit_triangles);
+    }
+  }
   for (size_t i = 0; i < batch->infos.size(); ++i) {
     batch->infos[i].pGeometries = &batch->geometries[i];
   }
