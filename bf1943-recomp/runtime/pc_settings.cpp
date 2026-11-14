@@ -126,7 +126,7 @@ void Build() {
                      L"How the frame is fitted to the window. FSR 3 and DLSS (NVIDIA RTX; AUTO picks): "
                      L"temporal, from the resolution scale up to a larger window (1X to 1440P or 4K).",
                      {L"FSR", L"CAS SHARPEN", L"BILINEAR", L"FSR 3", L"DLSS", L"AUTO (DLSS / FSR 3)"},
-                     {"fsr", "cas", "none", "fsr3", "dlss", "auto"}, 0, true,
+                     {"fsr", "cas", "none", "fsr3", "dlss", "auto"}, 5, true,
                      "upscaling"));
   v.push_back(Choice(kGraphics, "upscale_quality", L"UPSCALE QUALITY",
                      L"With FSR 3, DLSS or AUTO: picks the resolution scale for your window or screen. "

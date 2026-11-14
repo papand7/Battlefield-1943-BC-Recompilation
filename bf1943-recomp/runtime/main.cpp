@@ -159,7 +159,7 @@ int main(int argc, char** argv) {
   int shadowmap = 1600;
   uint32_t texture_mb = 0;
   std::string shader_dump;  // --dump-shaders <dir>
-  int res_scale = 2, present_effect = 2, window_w = 0, window_h = 0;  // --res-scale, --sharpen, --window
+  int res_scale = 2, present_effect = 5, window_w = 0, window_h = 0;  // --res-scale, --sharpen, --window
   bool fullscreen = false;                                            // --display
   std::string upscale_quality = "off";                                // --upscale-quality
   std::string bot_llm;                                                // --bot-llm

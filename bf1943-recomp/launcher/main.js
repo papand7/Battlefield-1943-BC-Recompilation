@@ -14,7 +14,7 @@ const settingsFile = path.join(app.getPath('appData'), 'BF1943Launcher', 'settin
 const defaults = {
   name: process.env.USERNAME || process.env.USER || 'Player',
   resolution: '2',      // --res-scale
-  upscaling: 'fsr',     // --sharpen
+  upscaling: 'auto',    // --sharpen (temporal: DLSS on RTX, else FSR 3)
   frameRate: '120',     // --max-fps (0 = no limit)
   window: '1920x1080',
   display: 'windowed',  // --display (fullscreen: borderless on the monitor)
