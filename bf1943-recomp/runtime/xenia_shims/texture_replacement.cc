@@ -7,6 +7,7 @@
 #include "texture_replacement.h"
 
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 
 #include <algorithm>
 #include <cstdio>
@@ -92,7 +93,7 @@ void PrefetchThread(std::vector<const Replacement*> entries) {
   SetThreadDescription(GetCurrentThread(), L"texture prefetch");
   SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 #else
-  pthread_setname_np(pthread_self(), "tex prefetch");
+  xe::threading::set_name("tex prefetch");
 #endif
   size_t n = 0;
   for (const Replacement* r : entries) {

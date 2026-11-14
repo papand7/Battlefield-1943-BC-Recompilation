@@ -19,7 +19,9 @@
 #else
 #include "posix_net.h"
 #include <signal.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#endif
 #include <sys/resource.h>
 #include <sys/wait.h>
 #endif
@@ -250,7 +252,9 @@ bool StartServer(const std::filesystem::path& dir) {
   pid_t pid = fork();
   if (pid < 0) return false;
   if (pid == 0) {
+#ifdef __linux__
     prctl(PR_SET_PDEATHSIG, SIGKILL);  // (closes with this process)
+#endif
     if (!g_training) setpriority(PRIO_PROCESS, 0, 10);  // (training: as the game's; else behind it)
     int fd = open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) dup2(fd, 1), dup2(fd, 2), close(fd);

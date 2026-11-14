@@ -6,7 +6,10 @@
 #define NOMINMAX
 #include <windows.h>
 #else
+#include <cerrno>
+#include <fcntl.h>
 #include <sys/mman.h>
+#include <unistd.h>
 #endif
 
 #include <bitset>
@@ -28,6 +31,20 @@ namespace {
 constexpr uint64_t kPage = 0x1000;
 std::mutex g_commit_mutex;
 std::bitset<(1ull << 32) / kPage>* g_committed = nullptr;  // one bit per 4 KB page
+#ifndef _WIN32
+// mprotect works in host pages, which can be larger than the guest's 4 KB
+// (16 KB on Apple Silicon and some arm64 Linux, 64 KB on others).
+const uint64_t g_host_page = [] {
+  long s = sysconf(_SC_PAGESIZE);
+  return s > 0 ? uint64_t(s) : kPage;
+}();
+
+bool HostProtectRW(uint64_t offset, uint64_t size) {
+  uint64_t lo = offset & ~(g_host_page - 1);
+  uint64_t hi = (offset + size + g_host_page - 1) & ~(g_host_page - 1);
+  return mprotect(g_base + lo, hi - lo, PROT_READ | PROT_WRITE) == 0;
+}
+#endif
 }
 
 // Physical RAM (512 MB) is one section mapped at 0xA0000000 (64 KB pages) and
@@ -68,17 +85,39 @@ uint8_t* ReservePhysicalViews(uint64_t reserve) {
   return base;
 }
 #else
-// Linux: the whole range reserved (no access), then the 512 MB physical RAM as
-// one memfd mapped shared at both 0xA0000000 and 0xC0000000. Commit = make
-// pages readable and writable (the kernel backs them on first touch).
+// An anonymous shared-memory file: memfd on Linux; macOS has no memfd, so a
+// POSIX shm object unlinked right away (only the descriptor keeps it alive).
+static int OpenAnonymousShm() {
+#ifdef __APPLE__
+  char name[64];
+  for (int i = 0; i < 16; ++i) {
+    snprintf(name, sizeof(name), "/bf-guest-phys-%d-%d", int(getpid()), i);
+    int fd = shm_open(name, O_RDWR | O_CREAT | O_EXCL, 0600);
+    if (fd >= 0) {
+      shm_unlink(name);
+      return fd;
+    }
+    if (errno != EEXIST) break;
+  }
+  return -1;
+#else
+  return memfd_create("guest-physical", 0);
+#endif
+}
+
+// Linux and macOS: the whole range reserved (no access), then the 512 MB
+// physical RAM as one shared-memory file mapped at both 0xA0000000 and
+// 0xC0000000. Commit = make pages readable and writable (the kernel backs them
+// on first touch).
 uint8_t* ReservePhysicalViews(uint64_t reserve) {
   constexpr uint64_t kPhys = 0x20000000;
   void* p = mmap(nullptr, reserve, PROT_NONE, MAP_PRIVATE | MAP_ANONYMOUS | MAP_NORESERVE, -1, 0);
   if (p == MAP_FAILED) return nullptr;
   auto* base = static_cast<uint8_t*>(p);
-  int fd = memfd_create("guest-physical", 0);
+  int fd = OpenAnonymousShm();
   if (fd < 0 || ftruncate(fd, off_t(kPhys)) != 0) {
-    RT_WARN("memory: no memfd, 0xC0000000 view unavailable");
+    RT_WARN("memory: no shared memory (errno %d), 0xC0000000 view unavailable", errno);
+    if (fd >= 0) close(fd);
     return base;
   }
   for (uint64_t view : {0xA0000000ull, 0xC0000000ull})
@@ -139,14 +178,14 @@ void Commit(uint32_t guest, uint32_t size) {
 #ifdef _WIN32
       if (!VirtualAlloc(g_base + run * kPage, (p - run) * kPage, MEM_COMMIT, PAGE_READWRITE))
 #else
-      if (mprotect(g_base + run * kPage, (p - run) * kPage, PROT_READ | PROT_WRITE) != 0)
+      if (!HostProtectRW(run * kPage, (p - run) * kPage))
 #endif
         Fatal("commit failed at %08llX (+%llX), error %lu", run * kPage, (p - run) * kPage,
               (unsigned long)GetLastError());
 #ifndef _WIN32
       // The physical RAM's second view (0xC0000000) shows the same pages.
       if (run * kPage >= 0xA0000000ull && run * kPage < 0xC0000000ull)
-        mprotect(g_base + run * kPage + 0x20000000ull, (p - run) * kPage, PROT_READ | PROT_WRITE);
+        HostProtectRW(run * kPage + 0x20000000ull, (p - run) * kPage);
 #endif
       for (uint64_t q = run; q < p; ++q) g_committed->set(q);
     }

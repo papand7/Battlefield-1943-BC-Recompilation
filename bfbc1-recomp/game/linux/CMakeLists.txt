@@ -101,7 +101,9 @@ if(BFBC1_CLIENT)
   FetchContent_Declare(sdl3 URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.20/SDL3-3.2.20.tar.gz
                        URL_HASH SHA256=467600ae090dd28616fa37369faf4e3143198ff1da37729b552137e47f751a67)
   FetchContent_MakeAvailable(sdl3)
-  find_package(X11 REQUIRED)
+  if(NOT APPLE)  # (macOS: SDL's Cocoa window with a Metal layer, window_sdl.cc)
+    find_package(X11 REQUIRED)
+  endif()
   file(GLOB XENIA_GPU_SOURCES CONFIGURE_DEPENDS
     ${XE}/src/xenia/base/*.cc ${XE}/src/xenia/gpu/*.cc ${XE}/src/xenia/gpu/vulkan/*.cc
     ${XE}/src/xenia/ui/*.cc ${XE}/src/xenia/ui/vulkan/*.cc ${XE}/src/xenia/apu/*.cc
@@ -115,7 +117,10 @@ if(BFBC1_CLIENT)
     ${ROOT}/thirdparty/dlss/include)
   target_compile_definitions(bfbc1_xenia_gpu PUBLIC FMT_HEADER_ONLY XXH_INLINE_ALL VK_NO_PROTOTYPES BF1943_CLIENT)
   target_compile_options(bfbc1_xenia_gpu PRIVATE -march=x86-64-v3 -w)
-  target_link_libraries(bfbc1_xenia_gpu PUBLIC bfbc1_ffmpeg SDL3::SDL3-static X11::X11 X11::X11_xcb X11::xcb)
+  target_link_libraries(bfbc1_xenia_gpu PUBLIC bfbc1_ffmpeg SDL3::SDL3-static)
+  if(NOT APPLE)
+    target_link_libraries(bfbc1_xenia_gpu PUBLIC X11::X11 X11::X11_xcb X11::xcb)
+  endif()
 
   # The PC menus, key icons and FPS counter too (posix_gdiplus.cpp draws their
   # GDI+; stb_truetype; the fonts copied next to the exe).

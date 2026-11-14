@@ -9,6 +9,7 @@
 #include <thread>
 
 #include "xenia/base/system.h"
+#include "xenia/base/threading.h"
 #include "xenia/kernel/xthread.h"
 
 namespace xe {
@@ -16,7 +17,7 @@ namespace kernel {
 void XHostThread::Create() {
   thread_ = std::thread([this] {
     id_ = std::this_thread::get_id();
-    pthread_setname_np(pthread_self(), name_.substr(0, 15).c_str());
+    xe::threading::set_name(name_.substr(0, 15).c_str());
     fn_();
   });
   while (id_ == std::thread::id()) std::this_thread::yield();

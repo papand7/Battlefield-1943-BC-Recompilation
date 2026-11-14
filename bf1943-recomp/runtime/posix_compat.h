@@ -1,4 +1,4 @@
-// Linux (and other POSIX) builds: the few Win32 names the runtime uses all
+// Linux and macOS (and other POSIX) builds: the few Win32 names the runtime uses all
 // over, as thin wrappers, so most files need no #ifdef. Included by kernel.h
 // and guest.h users through platform.h; empty on Windows.
 #pragma once
@@ -13,7 +13,11 @@
 #include <time.h>
 #include <unistd.h>
 #include <x86intrin.h>
+#ifdef __APPLE__
+#include <os/os_sync_wait_on_address.h>
+#else
 #include <linux/futex.h>
+#endif
 #include <setjmp.h>
 #include <strings.h>
 
@@ -68,6 +72,13 @@ inline BOOL SystemTimeToFileTime(const SYSTEMTIME* st, FILETIME* ft) {
   return 1;
 }
 
+#ifdef __APPLE__
+// macOS names only the calling thread: pthread_setname_np(name).
+inline int pthread_setname_np(pthread_t thread, const char* name) {
+  return pthread_equal(thread, pthread_self()) ? ::pthread_setname_np(name) : 0;
+}
+#endif
+
 // Thread names (SetThreadDescription(GetCurrentThread(), L"name")).
 inline HANDLE GetCurrentThread() { return nullptr; }
 inline long SetThreadDescription(HANDLE, const wchar_t* name) {
@@ -80,19 +91,36 @@ inline long SetThreadDescription(HANDLE, const wchar_t* name) {
 }
 inline int _stricmp(const char* a, const char* b) { return strcasecmp(a, b); }
 
-// WaitOnAddress / WakeByAddressSingle (4-byte values) on a futex.
+// WaitOnAddress / WakeByAddressSingle (4-byte values) on a futex (macOS:
+// os_sync_wait_on_address, macOS 14.4+).
 inline BOOL WaitOnAddress(volatile void* address, void* compare, size_t size, DWORD ms) {
   if (size != 4) {
     sched_yield();
     return 1;
   }
+#ifdef __APPLE__
+  auto* a = const_cast<void*>(address);
+  uint64_t v = *static_cast<uint32_t*>(compare);
+  if (ms == 0xFFFFFFFFu)
+    os_sync_wait_on_address(a, v, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE);
+  else
+    os_sync_wait_on_address_with_timeout(a, v, 4, OS_SYNC_WAIT_ON_ADDRESS_NONE, OS_CLOCK_MACH_ABSOLUTE_TIME,
+                                         uint64_t(ms) * 1000000ull);
+  return 1;
+#else
   timespec t{time_t(ms / 1000), long(ms % 1000) * 1000000L};
   syscall(SYS_futex, address, FUTEX_WAIT_PRIVATE, *static_cast<uint32_t*>(compare), ms == 0xFFFFFFFFu ? nullptr : &t,
           nullptr, 0);
   return 1;
+#endif
 }
+#ifdef __APPLE__
+inline void WakeByAddressSingle(void* address) { os_sync_wake_by_address_any(address, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE); }
+inline void WakeByAddressAll(void* address) { os_sync_wake_by_address_all(address, 4, OS_SYNC_WAKE_BY_ADDRESS_NONE); }
+#else
 inline void WakeByAddressSingle(void* address) { syscall(SYS_futex, address, FUTEX_WAKE_PRIVATE, 1, nullptr, nullptr, 0); }
 inline void WakeByAddressAll(void* address) { syscall(SYS_futex, address, FUTEX_WAKE_PRIVATE, 0x7FFFFFFF, nullptr, nullptr, 0); }
+#endif
 
 // A guarded call that may fault (SEH __try on Windows): the SIGSEGV handler
 // jumps back here while it is set (main.cpp).
@@ -105,7 +133,15 @@ inline uint16_t _byteswap_ushort(uint16_t v) { return __builtin_bswap16(v); }
 inline uint32_t _byteswap_ulong(uint32_t v) { return __builtin_bswap32(v); }
 inline uint64_t _byteswap_uint64(uint64_t v) { return __builtin_bswap64(v); }
 
+#ifdef __APPLE__
+inline DWORD GetCurrentThreadId() {
+  uint64_t id = 0;
+  pthread_threadid_np(nullptr, &id);
+  return DWORD(id);
+}
+#else
 inline DWORD GetCurrentThreadId() { return DWORD(syscall(SYS_gettid)); }
+#endif
 inline DWORD GetCurrentProcessId() { return DWORD(getpid()); }
 inline void Sleep(DWORD ms) {
   timespec t{time_t(ms / 1000), long(ms % 1000) * 1000000L};

@@ -11,6 +11,7 @@
 
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
+#include "xenia/base/threading.h"
 #include "xenia/gpu/vulkan/bf_dlss.h"
 #include "xenia/gpu/vulkan/bf_fsr3.h"
 #include "xenia/gpu/vulkan/bf_gore.h"
@@ -215,7 +216,7 @@ void UiThread() {
   SetThreadDescription(GetCurrentThread(), L"ui");
   xe::ui::Win32WindowedAppContext app_context(GetModuleHandleW(nullptr), SW_SHOWNORMAL);
 #else
-  pthread_setname_np(pthread_self(), "ui");
+  xe::threading::set_name("ui");
   xe::ui::SdlWindowedAppContext app_context;
 #endif
   if (!app_context.Initialize()) {

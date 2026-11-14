@@ -14,7 +14,9 @@
 #else
 #include <fcntl.h>
 #include <signal.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#endif
 #include <sys/resource.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -248,7 +250,9 @@ void Request(const char* title, const std::string& map) {
     return;
   }
   if (pid == 0) {
+#ifdef __linux__
     prctl(PR_SET_PDEATHSIG, SIGKILL);  // (ends with this process)
+#endif
     setpriority(PRIO_PROCESS, 0, 10);  // (behind the game)
     int fd = open(log_s.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) dup2(fd, 1), dup2(fd, 2), close(fd);

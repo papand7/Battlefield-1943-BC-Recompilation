@@ -97,7 +97,9 @@ if(BF1943_CLIENT)
   FetchContent_Declare(sdl3 URL https://github.com/libsdl-org/SDL/releases/download/release-3.2.20/SDL3-3.2.20.tar.gz
                        URL_HASH SHA256=467600ae090dd28616fa37369faf4e3143198ff1da37729b552137e47f751a67)
   FetchContent_MakeAvailable(sdl3)
-  find_package(X11 REQUIRED)
+  if(NOT APPLE)  # (macOS: SDL's Cocoa window with a Metal layer, window_sdl.cc)
+    find_package(X11 REQUIRED)
+  endif()
 
   file(GLOB XENIA_GPU_SOURCES CONFIGURE_DEPENDS
     ${XE}/src/xenia/base/*.cc ${XE}/src/xenia/gpu/*.cc ${XE}/src/xenia/gpu/vulkan/*.cc
@@ -113,7 +115,10 @@ if(BF1943_CLIENT)
     ${ROOT}/thirdparty/dlss/include)
   target_compile_definitions(xenia_gpu PUBLIC FMT_HEADER_ONLY XXH_INLINE_ALL VK_NO_PROTOTYPES BF1943_CLIENT)
   target_compile_options(xenia_gpu PRIVATE -march=x86-64-v3 -w)
-  target_link_libraries(xenia_gpu PUBLIC bf1943_ffmpeg SDL3::SDL3-static X11::X11 X11::X11_xcb X11::xcb)
+  target_link_libraries(xenia_gpu PUBLIC bf1943_ffmpeg SDL3::SDL3-static)
+  if(NOT APPLE)
+    target_link_libraries(xenia_gpu PUBLIC X11::X11 X11::X11_xcb X11::xcb)
+  endif()
 
   # The PC menus, key icons and FPS counter too, their GDI / GDI+ drawn by
   # runtime/posix_gdiplus.cpp (stb_truetype; the menus' fonts copied next to the exe).

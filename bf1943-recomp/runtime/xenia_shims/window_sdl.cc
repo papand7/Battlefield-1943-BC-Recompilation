@@ -1,15 +1,23 @@
-// Linux: Xenia's window and UI-thread loop on SDL3 (see window_sdl.h).
+// Linux and macOS: Xenia's window and UI-thread loop on SDL3 (see window_sdl.h).
 #ifndef _WIN32
 
 #include "window_sdl.h"
 
 #include <SDL3/SDL.h>
+#ifdef __APPLE__
+#include <SDL3/SDL_metal.h>
+#else
 #include <X11/Xlib-xcb.h>
 #include <X11/Xlib.h>
+#endif
 
 #include <cstdio>
 
+#ifdef __APPLE__
+#include "xenia/ui/surface_mac.h"
+#else
 #include "xenia/ui/surface_gnulinux.h"
+#endif
 
 namespace xe::ui {
 
@@ -17,6 +25,15 @@ namespace {
 void (*g_event_hook)(const SDL_Event&) = nullptr;  // (constant-initialised: no constructor to run after it is set)
 }
 
+#ifdef __APPLE__
+// ---- the Metal layer's size: the window's, in pixels (Retina: 2x points) ------
+bool MetalLayerSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
+  int w = 0, h = 0;
+  if (!SDL_GetWindowSizeInPixels(static_cast<SDL_Window*>(window_), &w, &h)) return false;
+  width_out = uint32_t(w), height_out = uint32_t(h);
+  return true;
+}
+#else
 // ---- the XCB surface's size (upstream's surface_gnulinux.cc) ----------------
 bool XcbWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) const {
   xcb_get_geometry_cookie_t cookie = xcb_get_geometry(connection_, window_);
@@ -26,6 +43,7 @@ bool XcbWindowSurface::GetSizeImpl(uint32_t& width_out, uint32_t& height_out) co
   free(reply);
   return true;
 }
+#endif
 
 // ---- the UI thread's loop ----------------------------------------------------
 SdlWindowedAppContext::SdlWindowedAppContext() = default;
@@ -34,9 +52,12 @@ SdlWindowedAppContext::~SdlWindowedAppContext() { SDL_Quit(); }
 void SdlWindowedAppContext::SetEventHook(void (*hook)(const SDL_Event&)) { g_event_hook = hook; }
 
 bool SdlWindowedAppContext::Initialize() {
+#ifndef __APPLE__
   // The presenter draws to an X11 window (XCB): SDL's x11 driver, which
-  // Wayland desktops run through XWayland.
+  // Wayland desktops run through XWayland. (macOS: SDL's Cocoa window, with a
+  // Metal layer for MoltenVK.)
   SDL_SetHintWithPriority(SDL_HINT_VIDEO_DRIVER, "x11", SDL_HINT_OVERRIDE);  // (over SDL_VIDEO_DRIVER too)
+#endif
   // (Sound here too: SDL's start-up isn't for two threads at once; the game's
   // sound waits for it, apu_bridge.cc.)
   SDL_InitSubSystem(SDL_INIT_AUDIO);
@@ -95,6 +116,10 @@ SdlWindow::~SdlWindow() {
   if (window_) {
     auto& ctx = static_cast<SdlWindowedAppContext&>(app_context());
     std::erase(ctx.windows_, this);
+#ifdef __APPLE__
+    if (metal_view_) SDL_Metal_DestroyView(static_cast<SDL_MetalView>(metal_view_));
+    metal_view_ = nullptr;
+#endif
     SDL_DestroyWindow(window_);
     window_ = nullptr;
   }
@@ -102,8 +127,11 @@ SdlWindow::~SdlWindow() {
 
 bool SdlWindow::OpenImpl() {
   std::string title(GetTitle());
-  window_ = SDL_CreateWindow(title.c_str(), int(GetDesiredLogicalWidth()), int(GetDesiredLogicalHeight()),
-                             SDL_WINDOW_RESIZABLE | (IsFullscreen() ? SDL_WINDOW_FULLSCREEN : 0));
+  SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | (IsFullscreen() ? SDL_WINDOW_FULLSCREEN : 0);
+#ifdef __APPLE__
+  flags |= SDL_WINDOW_METAL | SDL_WINDOW_HIGH_PIXEL_DENSITY;  // (a CAMetalLayer at the screen's pixels)
+#endif
+  window_ = SDL_CreateWindow(title.c_str(), int(GetDesiredLogicalWidth()), int(GetDesiredLogicalHeight()), flags);
   if (!window_) {
     fprintf(stderr, "[xgpu] SDL window: %s\n", SDL_GetError());
     return false;
@@ -125,6 +153,9 @@ void SdlWindow::Close() {
   if (destruction_receiver.IsWindowDestroyed()) return;
   auto& ctx = static_cast<SdlWindowedAppContext&>(app_context());
   std::erase(ctx.windows_, this);
+#ifdef __APPLE__
+  if (metal_view_) SDL_Metal_DestroyView(static_cast<SDL_MetalView>(metal_view_)), metal_view_ = nullptr;
+#endif
   if (window_) SDL_DestroyWindow(window_), window_ = nullptr;
   OnAfterClose();
 }
@@ -149,6 +180,16 @@ void SdlWindow::FocusImpl() {
 }
 
 std::unique_ptr<Surface> SdlWindow::CreateSurfaceImpl(Surface::TypeFlags allowed_types) {
+#ifdef __APPLE__
+  if (!window_ || !(allowed_types & Surface::kTypeFlag_MetalLayer)) return nullptr;
+  if (!metal_view_) metal_view_ = SDL_Metal_CreateView(window_);
+  void* layer = metal_view_ ? SDL_Metal_GetLayer(static_cast<SDL_MetalView>(metal_view_)) : nullptr;
+  if (!layer) {
+    fprintf(stderr, "[xgpu] no Metal layer for the window: %s\n", SDL_GetError());
+    return nullptr;
+  }
+  return std::make_unique<MetalLayerSurface>(layer, window_);
+#else
   if (!window_ || !(allowed_types & (Surface::TypeFlags(1) << Surface::kTypeIndex_XcbWindow))) return nullptr;
   SDL_PropertiesID props = SDL_GetWindowProperties(window_);
   auto* display = static_cast<Display*>(SDL_GetPointerProperty(props, SDL_PROP_WINDOW_X11_DISPLAY_POINTER, nullptr));
@@ -158,6 +199,7 @@ std::unique_ptr<Surface> SdlWindow::CreateSurfaceImpl(Surface::TypeFlags allowed
     return nullptr;
   }
   return std::make_unique<XcbWindowSurface>(XGetXCBConnection(display), xid);
+#endif
 }
 
 void SdlWindow::RequestPaintImpl() {

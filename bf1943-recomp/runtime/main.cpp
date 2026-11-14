@@ -23,7 +23,9 @@ namespace xe::gpu::scenefx { void Configure(const char* settings); }  // xenia g
 #include <arpa/inet.h>
 #include <csignal>
 #include <fcntl.h>
+#ifdef __linux__
 #include <sys/prctl.h>
+#endif
 #include <vector>
 #endif
 

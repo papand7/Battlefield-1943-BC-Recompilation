@@ -51,6 +51,58 @@
 #define XE_HAS_SIGEV_THREAD_ID 0
 #endif
 
+#if XE_PLATFORM_MAC
+#include <mach/mach.h>
+#include <mach/mach_time.h>
+#include <mach/semaphore.h>
+// macOS has no real-time signals: the two signal types (suspend, user
+// callback) use SIGUSR1 and SIGUSR2, which are adjacent there (30, 31).
+static_assert(SIGUSR2 == SIGUSR1 + 1, "SIGUSR1/SIGUSR2 not adjacent");
+#define SIGRTMIN SIGUSR1
+#define SIGRTMAX (SIGUSR2 + 1)
+// No unnamed POSIX semaphores (sem_init fails with ENOSYS): Mach semaphores,
+// whose signal is safe from a signal handler like sem_post.
+struct XeMacSem {
+  semaphore_t sem = MACH_PORT_NULL;
+};
+#define sem_t XeMacSem
+static int XeMacSemInit(XeMacSem* s, int, unsigned value) {
+  return semaphore_create(mach_task_self(), &s->sem, SYNC_POLICY_FIFO,
+                          int(value)) == KERN_SUCCESS
+             ? 0
+             : -1;
+}
+static int XeMacSemWait(XeMacSem* s) {
+  kern_return_t r = semaphore_wait(s->sem);
+  if (r == KERN_SUCCESS) return 0;
+  errno = r == KERN_ABORTED ? EINTR : EINVAL;
+  return -1;
+}
+static int XeMacSemPost(XeMacSem* s) {
+  return semaphore_signal(s->sem) == KERN_SUCCESS ? 0 : -1;
+}
+static int XeMacSemDestroy(XeMacSem* s) {
+  if (s->sem != MACH_PORT_NULL) semaphore_destroy(mach_task_self(), s->sem);
+  s->sem = MACH_PORT_NULL;
+  return 0;
+}
+#define sem_init XeMacSemInit
+#define sem_wait XeMacSemWait
+#define sem_post XeMacSemPost
+#define sem_destroy XeMacSemDestroy
+#endif
+
+// The kernel's id of the calling thread.
+static uint32_t XeCurrentTid() {
+#if XE_PLATFORM_MAC
+  uint64_t id = 0;
+  pthread_threadid_np(nullptr, &id);
+  return static_cast<uint32_t>(id);
+#else
+  return static_cast<uint32_t>(syscall(SYS_gettid));
+#endif
+}
+
 namespace xe {
 namespace threading {
 
@@ -144,7 +196,7 @@ void EnableAffinityConfiguration() {}
 // uint64_t ticks() { return mach_absolute_time(); }
 
 uint32_t current_thread_system_id() {
-  return static_cast<uint32_t>(syscall(SYS_gettid));
+  return XeCurrentTid();
 }
 
 void MaybeYield() {
@@ -718,7 +770,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   /// Thread::GetCurrentThread() on the main thread
   explicit PosixCondition(pthread_t thread)
       : thread_(thread),
-        tid_(static_cast<pid_t>(syscall(SYS_gettid))),
+        tid_(static_cast<pid_t>(XeCurrentTid())),
         signaled_(false),
         exit_code_(0),
         state_(State::kRunning),
@@ -785,7 +837,13 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     WaitStarted();
     std::unique_lock<std::mutex> lock(state_mutex_);
     if (state_ != State::kUninitialized && state_ != State::kFinished) {
+#if XE_PLATFORM_MAC
+      if (pthread_equal(thread_, pthread_self())) {
+        pthread_setname_np(std::string(name).c_str());
+      }
+#else
       pthread_setname_np(thread_, std::string(name).c_str());
+#endif
 #if XE_PLATFORM_ANDROID
       SetAndroidPreApi26Name(name);
 #endif
@@ -803,10 +861,15 @@ class PosixCondition<Thread> final : public PosixConditionBase {
   }
 #endif
 
-  uint32_t system_id() const { return static_cast<uint32_t>(thread_); }
+  uint32_t system_id() const {
+    return static_cast<uint32_t>(reinterpret_cast<uintptr_t>(thread_));
+  }
 
   uint64_t affinity_mask() const {
     WaitStarted();
+#if XE_PLATFORM_MAC
+    return ~uint64_t(0);
+#else
     cpu_set_t cpu_set;
 #if XE_PLATFORM_ANDROID
     if (sched_getaffinity(pthread_gettid_np(thread_), sizeof(cpu_set_t),
@@ -828,10 +891,14 @@ class PosixCondition<Thread> final : public PosixConditionBase {
       }
     }
     return result;
+#endif
   }
 
   void set_affinity_mask(uint64_t mask) const {
     WaitStarted();
+#if XE_PLATFORM_MAC
+    (void)mask;
+#else
     cpu_set_t cpu_set;
     CPU_ZERO(&cpu_set);
     for (auto i = 0u; i < 64; i++) {
@@ -848,6 +915,7 @@ class PosixCondition<Thread> final : public PosixConditionBase {
     if (pthread_setaffinity_np(thread_, sizeof(cpu_set_t), &cpu_set) != 0) {
       assert_always();
     }
+#endif
 #endif
   }
 
@@ -911,6 +979,8 @@ class PosixCondition<Thread> final : public PosixConditionBase {
 #if XE_PLATFORM_ANDROID
     sigqueue(pthread_gettid_np(thread_),
              GetSystemSignal(SignalType::kThreadUserCallback), value);
+#elif XE_PLATFORM_MAC
+    pthread_kill(thread_, GetSystemSignal(SignalType::kThreadUserCallback));
 #else
     pthread_sigqueue(thread_, GetSystemSignal(SignalType::kThreadUserCallback),
                      value);
@@ -1404,7 +1474,7 @@ void* PosixCondition<Thread>::ThreadStartRoutine(void* parameter) {
   delete start_data;
 
   current_thread_ = thread;
-  thread->handle_.tid_ = static_cast<pid_t>(syscall(SYS_gettid));
+  thread->handle_.tid_ = static_cast<pid_t>(XeCurrentTid());
   {
     std::unique_lock lock(thread->handle_.state_mutex_);
     thread->handle_.state_ =
@@ -1485,7 +1555,11 @@ void Thread::Exit(int exit_code) {
 }
 
 void set_name(const std::string_view name) {
+#if XE_PLATFORM_MAC
+  pthread_setname_np(std::string(name).c_str());
+#else
   pthread_setname_np(pthread_self(), std::string(name).c_str());
+#endif
 #if XE_PLATFORM_ANDROID
   if (!android_pthread_getname_np_ && current_thread_) {
     current_thread_->condition().SetAndroidPreApi26Name(name);
@@ -1504,9 +1578,16 @@ static void signal_handler(int signal, siginfo_t* info, void* context) {
       current_thread_->WaitSuspended();
     } break;
     case SignalType::kThreadUserCallback: {
+#if XE_PLATFORM_MAC
+      if (!current_thread_) {
+        return;
+      }
+      auto p_thread = &current_thread_->condition();
+#else
       assert_not_null(info->si_value.sival_ptr);
       auto p_thread =
           static_cast<PosixCondition<Thread>*>(info->si_value.sival_ptr);
+#endif
       if (alertable_state_) {
         p_thread->CallUserCallback();
       }

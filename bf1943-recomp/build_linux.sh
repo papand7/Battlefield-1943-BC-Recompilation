@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Builds Battlefield 1943 for Linux (bf1943: Vulkan, SDL3) or its dedicated
 # server (bf1943_server) from this tree and your own copy of the game, in one
-# command: what the Windows launcher's setup (launcher/setup.js) does.
+# command: what the Windows launcher's setup (launcher/setup.js) does. On
+# macOS (build_macos.sh runs this) the same, as an x86-64 program that Apple
+# Silicon Macs run through Rosetta (macOS 15 or newer: AVX2), its Vulkan
+# through MoltenVK (the LunarG Vulkan SDK).
 #
 #   ./build_linux.sh --game <game folder | default.xex | STFS package>
 #                    [--out <build dir>] [--server] [--jobs N] [--recompile]
@@ -41,6 +44,8 @@ XEX_SHA1=b5aaa325ff358d66a116000931b7204da3f14534    # default.xex v1.06
 XEX_SHA1_105=1c1f22606fa1eff15bf0409214279118dc805c28 # v1.05
 
 GAME= OUT= SERVER=0 JOBS= RECOMPILE=0 BC=0 BC_TREE=
+OS=$(uname -s)
+PLAT=linux; [ "$OS" = Darwin ] && PLAT=macos
 usage() { sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; }
 die() { printf 'error: %s\n' "$*"; exit 1; }
 need_arg() { [ $# -ge 2 ] && [ -n "$2" ] || die "$1 needs a value"; }
@@ -78,8 +83,8 @@ if [ $BC = 1 ]; then
 fi
 if [ $SERVER = 1 ]; then TARGET=${NAME}_server; else TARGET=$NAME; fi
 if [ -z "$OUT" ]; then
-  if [ $BC = 1 ]; then OUT=$TREE/build/linux-bfbc1; [ $SERVER = 1 ] && OUT=$OUT-server
-  elif [ $SERVER = 1 ]; then OUT=$TREE/build/linux-server; else OUT=$TREE/build/linux-client; fi
+  if [ $BC = 1 ]; then OUT=$TREE/build/$PLAT-bfbc1; [ $SERVER = 1 ] && OUT=$OUT-server
+  elif [ $SERVER = 1 ]; then OUT=$TREE/build/$PLAT-server; else OUT=$TREE/build/$PLAT-client; fi
 fi
 mkdir -p "$OUT/logs" || die "cannot create $OUT"
 OUT=$(cd "$OUT" && pwd -P)
@@ -128,17 +133,44 @@ run_ninja() {
   done
   return "${PIPESTATUS[0]}"
 }
-sha1() { sha1sum "$1" | cut -d' ' -f1; }
+if [ "$OS" = Darwin ]; then
+  sha1() { shasum -a 1 "$1" | cut -d' ' -f1; }
+  sha1sum() { shasum -a 1 "$@"; }
+else
+  sha1() { sha1sum "$1" | cut -d' ' -f1; }
+fi
 ver_ge() {  # ver_ge <have> <want>: dotted versions
-  [ "$(printf '%s\n%s\n' "$2" "$1" | sort -V | head -n1)" = "$2" ]
+  # (awk, not sort -V: macOS's sort may not have it)
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, x, "."); m = split(b, y, "."); if (m > n) n = m
+    for (i = 1; i <= n; i++) { if (x[i] + 0 > y[i] + 0) exit 0; if (x[i] + 0 < y[i] + 0) exit 1 }
+    exit 0 }'
 }
 
 # ---- 1. packages ---------------------------------------------------------------
 begin check "Checking the build tools and libraries"
-[ "$(uname -s)" = Linux ] || die "this script is for Linux (on Windows use the launcher)"
-[ "$(uname -m)" = x86_64 ] || die "x86-64 only: the recompiled game code is built for x86-64-v3 (AVX2); this machine is $(uname -m)"
-if ! grep -qw avx2 /proc/cpuinfo 2>/dev/null; then
-  echo "warning: this CPU has no AVX2: the build works, but the game needs an x86-64-v3 (AVX2) CPU to run"
+CMAKE_PLAT_OPTS=()
+if [ "$OS" = Darwin ]; then
+  # x86-64 code either way: Apple Silicon runs it through Rosetta, which has
+  # AVX2 (x86-64-v3) from macOS 15; os_sync_wait_on_address needs 14.4.
+  macver=$(sw_vers -productVersion 2>/dev/null)
+  if [ "$(sysctl -n hw.optional.arm64 2>/dev/null)" = 1 ]; then
+    ver_ge "$macver" 15 || die "Apple Silicon: macOS 15 or newer is needed (Rosetta runs AVX2 from 15 on); this is $macver"
+    pgrep -q oahd 2>/dev/null || /usr/bin/arch -x86_64 /usr/bin/true 2>/dev/null ||
+      die "Rosetta is not installed: softwareupdate --install-rosetta --agree-to-license"
+  else
+    ver_ge "$macver" 14.4 || die "macOS 14.4 or newer is needed; this is $macver"
+    sysctl -n machdep.cpu.leaf7_features 2>/dev/null | grep -qw AVX2 ||
+      echo "warning: this CPU has no AVX2: the build works, but the game needs an x86-64-v3 (AVX2) CPU to run"
+  fi
+  CMAKE_PLAT_OPTS=(-DCMAKE_OSX_ARCHITECTURES=x86_64 -DCMAKE_OSX_DEPLOYMENT_TARGET=14.4)
+elif [ "$OS" = Linux ]; then
+  [ "$(uname -m)" = x86_64 ] || die "x86-64 only: the recompiled game code is built for x86-64-v3 (AVX2); this machine is $(uname -m)"
+  if ! grep -qw avx2 /proc/cpuinfo 2>/dev/null; then
+    echo "warning: this CPU has no AVX2: the build works, but the game needs an x86-64-v3 (AVX2) CPU to run"
+  fi
+else
+  die "this script is for Linux and macOS (on Windows use the launcher)"
 fi
 
 DISTRO=
@@ -153,6 +185,13 @@ DNF_CLIENT="glslang spirv-tools vulkan-headers vulkan-loader-devel libX11-devel 
 PAC_CLIENT="glslang spirv-tools vulkan-headers vulkan-icd-loader libx11 libxcb libxext libxrandr libxcursor libxi libxss libxfixes libxkbcommon wayland wayland-protocols libdecor alsa-lib libpulse pipewire systemd-libs dbus"
 if [ $SERVER = 1 ]; then APT_CLIENT= DNF_CLIENT= PAC_CLIENT=; fi
 install_hint() {
+  if [ "$OS" = Darwin ]; then
+    echo "Install them with:"
+    echo "  xcode-select --install"
+    echo "  brew install cmake ninja python glslang spirv-tools"
+    [ $SERVER = 1 ] || echo "  and the Vulkan SDK (MoltenVK, universal): https://vulkan.lunarg.com/sdk/home#mac"
+    return
+  fi
   local apt="sudo apt install $APT_BASE $APT_CLIENT"
   local dnf="sudo dnf install $DNF_BASE $DNF_CLIENT"
   local pac="sudo pacman -S --needed $PAC_BASE $PAC_CLIENT"
@@ -166,7 +205,8 @@ install_hint() {
 }
 
 MISSING=()
-for c in clang clang++ cmake ninja python3 sha1sum; do
+BASE_CMDS="clang clang++ cmake ninja python3 sha1sum"; [ "$OS" = Darwin ] && BASE_CMDS="clang clang++ cmake ninja python3 shasum"
+for c in $BASE_CMDS; do
   command -v "$c" > /dev/null 2>&1 || MISSING+=("command $c")
 done
 if [ $SERVER = 0 ]; then
@@ -181,15 +221,27 @@ fi
 if command -v clang > /dev/null 2>&1; then
   v=$(clang -dumpversion 2>/dev/null)
   ver_ge "$v" 15 || MISSING+=("clang 15 or newer (have $v)")
-  # clang uses GCC's C++ library: its headers must be there.
+  # clang uses GCC's C++ library on Linux: its headers must be there. (Apple's
+  # clang reports its own version numbers: 15 is Xcode 15.)
+  arch_flag=; [ "$OS" = Darwin ] && arch_flag="-arch x86_64"
   printf '#include <vector>\nint main() { std::vector<int> v; return int(v.size()); }\n' |
-    clang++ -std=c++20 -x c++ - -o /dev/null > "$LOGS/check_cxx.log" 2>&1 ||
-    MISSING+=("a C++ standard library for clang (libstdc++ headers; see $LOGS/check_cxx.log)")
+    clang++ $arch_flag -std=c++20 -x c++ - -o /dev/null > "$LOGS/check_cxx.log" 2>&1 ||
+    MISSING+=("a C++ standard library for clang (Linux: libstdc++ headers; macOS: Xcode's command line tools; see $LOGS/check_cxx.log)")
 fi
 if command -v python3 > /dev/null 2>&1; then
   python3 -c 'import sys; sys.exit(sys.version_info < (3, 8))' || MISSING+=("Python 3.8 or newer")
 fi
-if [ $SERVER = 0 ] && command -v pkg-config > /dev/null 2>&1; then
+if [ "$OS" = Darwin ] && [ $SERVER = 0 ]; then
+  # The game loads the Vulkan loader (or MoltenVK) at run time: an x86-64 one,
+  # so the LunarG SDK's universal libraries, not Homebrew's arm64 ones.
+  VK_LIB=
+  for d in "${VULKAN_SDK:-}/lib" /usr/local/lib; do
+    for l in libvulkan.1.dylib libMoltenVK.dylib; do
+      [ -f "$d/$l" ] && lipo -archs "$d/$l" 2>/dev/null | grep -qw x86_64 && { VK_LIB=$d; break 2; }
+    done
+  done
+  [ -n "$VK_LIB" ] || MISSING+=("an x86-64 (universal) Vulkan loader or MoltenVK: the LunarG Vulkan SDK (set VULKAN_SDK, or its system-wide install in /usr/local/lib)")
+elif [ $SERVER = 0 ] && command -v pkg-config > /dev/null 2>&1; then
   for p in x11 x11-xcb xcb xext vulkan; do
     pkg-config --exists "$p" || MISSING+=("library $p (pkg-config)")
   done
@@ -316,15 +368,20 @@ BUILD=$OUT/cmake
 CLIENT=ON; [ $SERVER = 1 ] && CLIENT=OFF
 if [ $BC = 1 ]; then GAME_OPTS=(-DBFBC1_CLIENT=$CLIENT "-DROOT=$TREE"); else GAME_OPTS=(-DBF1943_CLIENT=$CLIENT); fi
 run_log "$LOGS/configure.log" cmake -S "$GTREE/game/linux" -B "$BUILD" -G Ninja -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "${GAME_OPTS[@]}" ||
+  -DCMAKE_C_COMPILER=clang -DCMAKE_CXX_COMPILER=clang++ "${CMAKE_PLAT_OPTS[@]}" "${GAME_OPTS[@]}" ||
   fail "$LOGS/configure.log" "CMake configure failed"
 finish
 
 # ---- 8. build ------------------------------------------------------------------------
 if [ -z "$JOBS" ]; then
   # The recompiled sources are big: about 2 GB of memory per compile job.
-  cores=$(nproc 2>/dev/null || echo 4)
-  mem=$(awk '/^MemAvailable:/ { print int($2 / 2097152) }' /proc/meminfo 2>/dev/null)
+  if [ "$OS" = Darwin ]; then
+    cores=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
+    mem=$(( $(sysctl -n hw.memsize 2>/dev/null || echo 8589934592) / 2147483648 - 2 ))  # (all but 4 GB)
+  else
+    cores=$(nproc 2>/dev/null || echo 4)
+    mem=$(awk '/^MemAvailable:/ { print int($2 / 2097152) }' /proc/meminfo 2>/dev/null)
+  fi
   JOBS=$cores
   [ -n "$mem" ] && [ "$mem" -ge 1 ] && [ "$mem" -lt "$JOBS" ] && JOBS=$mem
   [ -n "$mem" ] && [ "$mem" -lt 1 ] && JOBS=1
@@ -350,6 +407,11 @@ if [ $SERVER = 0 ]; then
   rm -rf "$DEST/fonts" && cp -R "$TREE/data/fonts" "$DEST/" || die "cannot copy data/fonts"
   cp -f "$GTREE/data/pbr_shaders.txt" "$DEST/" || die "cannot copy data/pbr_shaders.txt"
 fi
+# macOS: MoltenVK beside the exe (the game loads it when no Vulkan loader is
+# installed), so the folder runs on a Mac without the SDK.
+if [ "$OS" = Darwin ] && [ $SERVER = 0 ] && [ -f "$VK_LIB/libMoltenVK.dylib" ]; then
+  cp -f "$VK_LIB/libMoltenVK.dylib" "$DEST/" || echo "warning: cannot copy libMoltenVK.dylib"
+fi
 # Bad Company: its main menu's PC SETTINGS row, made from the player's game
 # files into the --user folder of the command below (the launcher makes its
 # own; without it the game has the stock menu).
@@ -361,7 +423,7 @@ fi
 # The bots' navigation tool (tools/navgen), next to the exe: tools/make_navs.py
 # makes each map's meshes with it on this PC (the game files' own, never shipped).
 if run_log "$LOGS/navgen_configure.log" cmake -S "$TREE/tools/navgen" -B "$OUT/navgen" -G Ninja \
-     -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ &&
+     -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++ "${CMAKE_PLAT_OPTS[@]}" &&
    run_log "$LOGS/navgen_build.log" cmake --build "$OUT/navgen" &&
    cp -f "$OUT/navgen/navgen" "$DEST/navgen"; then
   echo "navgen (the bots' navigation tool): $DEST/navgen"

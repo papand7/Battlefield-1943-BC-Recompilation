@@ -62,6 +62,9 @@ class SdlWindow final : public Window {
   void Close();
   SDL_Window* window_ = nullptr;
   uint32_t window_id_ = 0;
+#ifdef __APPLE__
+  void* metal_view_ = nullptr;  // (SDL_MetalView: the presenter's CAMetalLayer)
+#endif
 };
 
 }  // namespace xe::ui
