@@ -22,6 +22,7 @@ void SetPicture(float brightness, float gamma);
 void SetGrade(float strength);
 float Grade();
 void SetWind(float metres);
+void SetSharpness(float amount);  // FSR 3 / CAS sharpening, 0 off (0...1)
 void SetRtFoliage(bool on);  // RAY-TRACED FOLIAGE (next start)  // the plants' extra gust sway at the top (0 off)  // the enhanced look's colour grade (0 off)
 // VSync: the swapchain waits for the screen's refresh (from its next creation).
 void SetVsync(bool on);

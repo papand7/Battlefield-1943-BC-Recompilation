@@ -8,6 +8,7 @@
 // them into Vulkan work is the renderer's job (milestone 3).
 // Packet formats follow the public R500/Xenos PM4 layout (as documented by Xenia).
 #include "kernel.h"
+#include "pc_settings.h"
 #include "xenia_bridge.h"
 
 #ifdef _WIN32
@@ -746,6 +747,7 @@ GUEST_IMPORT(VdSwap) {
   ++g_gpu.swaps;
   ++g_title_swaps;
   FrameSwapped();
+  rt::pcset::GovernorFrame();
   // In the background (another window in front): its own cap (PC settings).
   uint32_t max_fps = g_max_fps;
   // (only a window can be behind another: not a dedicated server's or a bot's,

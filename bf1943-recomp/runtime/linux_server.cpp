@@ -25,6 +25,7 @@ void SetGrade(float) {}
 float Grade() { return 0.0f; }
 void SetWind(float) {}
 void SetRtFoliage(bool) {}
+void SetSharpness(float) {}
 void SetHdr(bool, float, float) {}
 void SetHdrStretch(bool) {}
 void SetOverlay(const uint8_t*, uint32_t, uint32_t) {}

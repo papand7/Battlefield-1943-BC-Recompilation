@@ -185,6 +185,9 @@ void Build() {
                      {"0", "1"}, 1, true));
   v.push_back(Choice(kGraphics, "blood", L"BLOOD", L"Blood on hits, bodies torn apart by explosions.",
                      kOffOn, {"0", "1"}, 0, true, "blood"));
+  v.push_back(Choice(kGraphics, "sharpness", L"SHARPNESS",
+                     L"Sharpening after upscaling (FSR 3 / CAS). OFF: none.",
+                     {L"OFF", L"LOW", L"MEDIUM", L"HIGH"}, {"0", "0.3", "0.5", "0.8"}, 1));
   // The sun's shadow map: its size and how far it reaches (--shadowmap,
   // --shadow-distance; the launcher passes them). 1600 is the most the
   // console's EDRAM holds in one pass.
@@ -203,6 +206,10 @@ void Build() {
   v.push_back(Choice(kEffects, "rt_foliage", L"RAY-TRACED FOLIAGE",
                      L"Palms, bushes and masked leaves cast ray-traced shadows too. Costs frame rate (next start).",
                      kOffOn, {"0", "1"}, 0, true));
+  v.push_back(Choice(kEffects, "governor", L"ADAPTIVE QUALITY",
+                     L"Opt-in: when frames run long, lowers the heavy effects (ray-traced shadows, light shafts, "
+                     L"bounce light, ambient occlusion) until the frame rate holds, then raises them again.",
+                     {L"OFF", L"60 FPS", L"30 FPS"}, {"0", "60", "30"}, 0));
   v.push_back(Choice(kEffects, "shadows", L"SCREEN SHADOWS", L"Contact shadows from the depth.",
                      {L"OFF", L"LOW", L"FULL"}, {"0", "0.5", "1"}, 2));
   v.push_back(Choice(kEffects, "gi", L"BOUNCE LIGHT", L"Light bouncing off nearby surfaces.",
@@ -457,12 +464,71 @@ void Save() {
 
 int g_running_look = -1;  // the look this run started with (stock needs a restart)
 
+// ---- adaptive quality (GovernorFrame, once a frame) -------------------------
+
+uint32_t g_governor_fps = 0;  // ADAPTIVE QUALITY's target (0: off)
+namespace {
+int g_gov_level = 0;          // 0 the user's effects; 1-3 the heavy ones cut
+int g_gov_cooldown = 0;       // frames to wait after a change
+double g_gov_avg = 0.0;       // smoothed frame time, ms
+std::chrono::steady_clock::time_point g_gov_last;
+bool g_gov_started = false;
+// What each level cuts (on top of the user's own settings).
+const char* const kGovLevels[] = {
+    "", "rt=0", "rt=0,shafts=0,gi=0", "rt=0,shafts=0,gi=0,ao=0,shadows=0"};
+}  // namespace
+
+void ApplyLive();
+
+}  // namespace
+
+void GovernorFrame() {
+  auto now = std::chrono::steady_clock::now();
+  if (!g_gov_started) {
+    g_gov_started = true;
+    g_gov_last = now;
+    return;
+  }
+  double ms = std::chrono::duration<double, std::milli>(now - g_gov_last).count();
+  g_gov_last = now;
+  if (!g_governor_fps) {
+    if (g_gov_level) {
+      g_gov_level = 0;
+      ApplyLive();
+    }
+    g_gov_avg = 0.0;
+    return;
+  }
+  g_gov_avg = g_gov_avg == 0.0 ? ms : g_gov_avg * 0.95 + ms * 0.05;
+  if (g_gov_cooldown > 0) {
+    --g_gov_cooldown;
+    return;
+  }
+  double budget = 1000.0 / g_governor_fps;
+  int next = g_gov_level;
+  if (g_gov_avg > budget * 1.12 && g_gov_level < 3) {
+    next = g_gov_level + 1;
+  } else if (g_gov_avg < budget * 0.80 && g_gov_level > 0) {
+    next = g_gov_level - 1;
+  }
+  if (next == g_gov_level) return;
+  g_gov_level = next;
+  g_gov_cooldown = 120;  // let the new level show in the average first
+  if (g_gov_level == 0) {
+    ApplyLive();
+  } else {
+    xgpu::ApplySceneFx(kGovLevels[g_gov_level]);
+  }
+}
+
+namespace {
+
 void ApplyLive() {
   std::string fx;
   for (const Setting& s : g_settings) {
     // (PLANT WIND is the renderer's, not a scene effect: below.)
     if (s.category != kEffects || !std::strcmp(s.key, "quality") || !std::strcmp(s.key, "wind") ||
-        !std::strcmp(s.key, "rt_foliage")) {
+        !std::strcmp(s.key, "rt_foliage") || !std::strcmp(s.key, "governor")) {
       continue;
     }
     fx += std::string(fx.empty() ? "" : ",") + s.key + "=" + s.values[s.index];
@@ -476,8 +542,11 @@ void ApplyLive() {
                           : ",gi_rays=2,steps=32,cloud_steps=24,shadow_steps=48";
   }
   xgpu::ApplySceneFx(fx.c_str());
+  if (g_gov_level) xgpu::ApplySceneFx(kGovLevels[g_gov_level]);
   // --wind on the command line wins (test runs).
   xgpu::SetRtFoliage(Value("rt_foliage") == "1");
+  xgpu::SetSharpness(float(std::atof(Value("sharpness").c_str())));
+  g_governor_fps = uint32_t(std::atoi(Value("governor").c_str()));
   xgpu::SetWind(g_wind_cli >= 0.0f ? g_wind_cli : float(std::atof(Value("wind").c_str())));
   // Particles: the game's renderer settings, ours.
   {

@@ -37,4 +37,7 @@ bool Update(HWND__* window, bool title_passed);
 bool ControlsPad();
 uint16_t PuppetButtons();
 
+// ADAPTIVE QUALITY: called once a frame at the swap; cuts the heavy effects
+// when frames run long (PC settings: governor).
+void GovernorFrame();
 }  // namespace rt::pcset

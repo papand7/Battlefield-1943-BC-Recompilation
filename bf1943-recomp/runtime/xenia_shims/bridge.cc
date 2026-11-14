@@ -290,6 +290,7 @@ void SetLook(int look) { xe::gpu::bflook::look = look; }
 float Grade() { return xe::gpu::bflook::grade; }
 void SetWind(float metres) { xe::gpu::bflook::wind = std::clamp(metres, 0.0f, 2.0f); }
 void SetRtFoliage(bool on) { xe::gpu::bflook::rt_foliage = on; }
+void SetSharpness(float amount) { xe::gpu::bffsr::sharpness = std::clamp(amount, 0.0f, 1.0f); }
 void SetGrade(float strength) { xe::gpu::bflook::grade = std::clamp(strength, 0.0f, 2.0f); }
 void SetPicture(float brightness, float gamma) {
   xe::gpu::bflook::brightness = std::clamp(brightness, -0.3f, 0.3f);

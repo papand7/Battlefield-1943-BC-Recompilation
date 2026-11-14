@@ -93,6 +93,7 @@ extern uint32_t g_look_showcase;  // seconds: then one capture per look (look_<n
 extern uint32_t g_capture_burst;  // seconds: then 8 frames back to back (burst_N.png)
 extern bool g_blood;              // --blood: blood on soldiers hit, gibs on big kills
 void DumpGuestThreads();  // --dump-threads <seconds>
+void GovernorFrame();  // pc_settings.cpp: ADAPTIVE QUALITY, once per frame
 extern uint32_t g_max_fps;   // --max-fps: replaces Game.MaxFps (0 = no limit)
 extern bool g_vsync;         // --vsync: keep the game's vblank-paced presents
 extern uint32_t g_vblank_hz;  // --vblank-hz: guest vsync rate (the game presents every 2nd vblank)

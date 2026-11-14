@@ -18,6 +18,7 @@ const offOn = [['Off', '0'], ['On', '1']];
 const fxRows = [
   ['fx_quality', 'Quality preset', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra'],
     ['Custom', 'custom']], 'high'],
+  ['fx_governor', 'Adaptive quality', [['Off', '0'], ['60 FPS', '60'], ['30 FPS', '30']], '0'],
   ['fx_rt', 'Ray-traced shadows', offOn, '1'],
   ['fx_rt_foliage', 'Ray-traced foliage', offOn, '0'],
   ['fx_shadows', 'Screen shadows', [['Off', '0'], ['Low', '0.5'], ['Full', '1']], '1'],
