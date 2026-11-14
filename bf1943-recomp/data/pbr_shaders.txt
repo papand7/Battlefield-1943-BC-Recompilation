@@ -82,7 +82,8 @@ A5E78F710343E777 rm=25 n=r3.xyz@52 v=r10.xyz@29 a=r4.xyz@61 ao=r8.x@20 out=r0.xy
 A602D4CCA835A03E rm=14 n=r13.xyz@36 v=r3.xyz@18 a=r8.xzy@82 lit=r0.z@70 env=r6.xyz@51 ao=r8.x@12 out=r0.xzy@99 rough_scale=0.66 bump=5
 A84561558AA18555 rm=10 n=r9.xyz@37 v=r12.xyz@15 a=r7.yzw@73 lit=r1.x@97 env=r6.yzw@62 ao=r17.x@61 out=r0.xyz@111 pow=c249.x rough_scale=0.66 bump=5
 B0C460610E7E0D2E rm=16 n=r13.xyz@55 v=r3.xzw@29 a=r4.xzy@122 env=r7.xyz@100 ao=r4.w@17 out=r0.xzy@138 rough_scale=0.66 bump=5
-B26E00B13C179CA0 rm=12 n=r6.xyz@63 v=r9.xzw@19 a=r4.xzy@90 lit=r2.z@96 env=r3.xyz@72 ao=r8.z@17 out=r0.xzy@111 rough_scale=0.66 bump=5
+# Left out: the metal railing at Guadalcanal's USMC spawn came out purple (found by bisecting the table).
+# B26E00B13C179CA0 rm=12 n=r6.xyz@63 v=r9.xzw@19 a=r4.xzy@90 lit=r2.z@96 env=r3.xyz@72 ao=r8.z@17 out=r0.xzy@111 rough_scale=0.66 bump=5
 B34B87DB65BCF5C5 n=r4.xyz@s v=r9.xyz@29 a=r3.xzy@46 ao=r5.x@24 out=r0.xzy@59 pow=c249.y rough_scale=0.66 bump=5
 B649FD77AA9F4220 rm=10 n=r3.yzw@47 v=r3.xyz@12 a=r6.yzw@63 lit=r2.x@74 env=r5.xyz@55 out=r0.xyz@99 pow=c250.z rough_scale=0.66 bump=5
 B7EB3BA059ED0886 rm=14 n=r4.xyz@52 v=r14.xyz@20 a=r5.xzy@110 lit=r0.z@109 env=r0.xyz@86 ao=r18.z@12 out=r0.xyz@120 rough_scale=0.66 bump=5
