@@ -13,12 +13,7 @@ The latest version of the launcher can be found in the [Releases](https://github
 - Run it, pick a game at the top and press **INSTALL** (or **Choose game files…** first, if your files are somewhere else). It checks your files, installs the free build tools it needs through winget, and compiles the game's code for your PC, which takes about 5 to 60 minutes and only happens once.
 - Press **Play**. Settings can be adjusted in the launcher, or in game under **Settings**, opened with <kbd>F10</kbd> at any time.
 
-| Default | Ultra |
-|---|---|
-| ![Wake Island, default](docs/images/cmp_wake_default.jpg) | ![Wake Island, ultra](docs/images/cmp_wake_ultra.jpg) |
-| ![Iwo Jima, default](docs/images/cmp_iwo_default.jpg) | ![Iwo Jima, ultra](docs/images/cmp_iwo_ultra.jpg) |
-| ![Guadalcanal, default](docs/images/cmp_guadalcanal_default.jpg) | ![Guadalcanal, ultra](docs/images/cmp_guadalcanal_ultra.jpg) |
-| ![Coral Sea, default](docs/images/cmp_coral_default.jpg) | ![Coral Sea, ultra](docs/images/cmp_coral_ultra.jpg) |
+**Linux:** `BattlefieldLauncher-<version>-x86_64.AppImage` works the same way: `chmod +x` it, put it next to your game files and start it. It builds the games with `bf1943-recomp/build_linux.sh` and lists the packages to install if any are missing. **macOS:** experimental and untested, built from source (see [Building](#macos-experimental-untested)).
 
 ## Features
 ### Display
@@ -53,9 +48,9 @@ The latest version of the launcher can be found in the [Releases](https://github
 ### Multiplayer
 - **LAN Multiplayer** - Host and join on your network. **Host Game** and **Join Game** are being rebuilt for the new menus and don't work at the moment; a dedicated server works.
 - **Join by Address** - **Join Game → Address**, or start the game with `--join <address> --host-map <its map>`.
-- **Dedicated Server** - Runs in a console window with no graphics, on Windows (`start_server.bat`) or Linux (`start_server.sh`, experimental).
+- **Dedicated Server** - Runs with no graphics, from the launcher's **SERVER** page or a console window, on Windows (`start_server.bat`) or Linux (`start_server.sh`).
 - **List on the Internet** - Shows a server in everyone's **Join Game** list through the master server: `PUBLISH=1` in the start script, `--publish`, or **List on the internet** when hosting from the game. The router must pass UDP ports 1003 and 19430 to the server.
-- **Bots** - Computer players on your server, half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They play inside the server itself, with no extra copies of the game running.
+- **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
 - **Learning Bots** - Every server learns from its matches where players go, where they die and where they win fights, per map. Bots use it to hold good spots at a flag and to watch where enemies usually come from, and what servers learned can be merged into the next version (`tools/bot_knowledge.py`).
 
 ### Dedicated Server
@@ -68,14 +63,17 @@ The host's firewall needs to let the game through: UDP ports 1003 and 19430. For
 **Bot advisor (optional)** - `BOT_LLM=1` in the start script: when a bot keeps getting stuck or is losing a fight, a small vision model (Qwen3.5 4B through llama.cpp, on the server's own PC) is shown a map of its surroundings and picks where it should go. The first start installs it into `llm/` (about 3.5 GB, needs Python; `tools/setup_bot_llm.py`), then the server runs with `--bot-llm llm`. It is faster with a graphics card; on a CPU an answer takes several seconds, and the bots carry on as usual meanwhile. Works for both games' servers (`--bot-llm` on Bad Company's too).
 
 ## Battlefield: Bad Company
-The same recompiler is being used for Battlefield: Bad Company (Xbox 360).
+The same recompiler is being used for Battlefield: Bad Company (Xbox 360). Installed from the same launcher, on Windows and Linux.
 
 - **Campaign** - Plays at about 100 fps at 1x render scale, with keyboard, mouse and the HUD working.
+- **HD Texture Pack** - Made by the launcher from your game files, as for Battlefield 1943.
 - **LAN Multiplayer** - **MULTIPLAYER** on the main menu opens a new menu: **Host Game** (Gold Rush on one of the 8 maps: Valley Run, Deconstruction, Oasis, Final Ignition, End of the Line, Ascension, Harvest Day, Over and Out), **Server Browser** (the games on your network, with map and ping) and **Join by Address** (add `:port` if it isn't the usual 1503). Two copies on one PC can play together; across two PCs it hasn't been tested yet.
 - **Ports** - UDP 1500-1503 and 19431, so it can host on the same PC as Battlefield 1943.
+- **Bots** - On a Bad Company server (the launcher's **SERVER** page, or `--bots N`): mixed kits, sprinting, crouching, grenades and vehicles. Like 1943's bots, they learn from their matches where to hold a crate and where enemies come from.
+- **Dedicated Server** - From the launcher's **SERVER** page or `server_gui.bat` / `server_gui.sh`, on Windows and Linux.
 - **Only Gold Rush** - The disc has no Conquest; that came later in an update.
 - **Idle Players** - A player who stays on the spawn screen for about two minutes without deploying is sent back to the menu (the game's own rule).
-- **Not Done Yet** - Bots, playing online, ray-traced shadows (they stall the opening cutscene), blood and the HD texture pack. Saving the campaign hasn't been checked yet.
+- **Not Done Yet** - Playing online, ray-traced shadows (they stall the opening cutscene) and blood. Bots still get stuck in some places. Saving the campaign hasn't been checked yet.
 
 <img width="1920" alt="Bad Company, the first mission" src="docs/images/bfbc1_gameplay.png" />
 
@@ -83,7 +81,9 @@ The same recompiler is being used for Battlefield: Bad Company (Xbox 360).
 ### Minimum
 - **OS**
   - Windows 10 or 11, 64-bit
-- **GPU** with support for Vulkan
+  - Linux, x86-64 with AVX2
+  - macOS 15 (Apple Silicon, through Rosetta) or 14.4 (Intel): experimental, untested
+- **GPU** with support for Vulkan (Linux: a Vulkan 1.3 driver; macOS: MoltenVK)
 - **For the ray-traced effects:** a GPU with ray tracing, such as NVIDIA RTX or AMD Radeon RX 6000 and newer
 
 > [!NOTE]
