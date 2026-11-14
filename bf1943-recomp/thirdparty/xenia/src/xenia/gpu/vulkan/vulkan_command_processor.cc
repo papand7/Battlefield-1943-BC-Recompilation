@@ -1958,7 +1958,8 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
               1.0f / float(frontbuffer_width_scaled),
               1.0f / float(frontbuffer_height_scaled),
               bflook::brightness.load(std::memory_order_relaxed),
-              bflook::gamma.load(std::memory_order_relaxed), 0.0f, 0.0f};
+              bflook::gamma.load(std::memory_order_relaxed),
+              bflook::grade.load(std::memory_order_relaxed), 0.0f};
           deferred_command_buffer_.CmdVkPushConstants(
               swap_apply_gamma_pipeline_layout_, VK_SHADER_STAGE_FRAGMENT_BIT,
               0, sizeof(look), look);

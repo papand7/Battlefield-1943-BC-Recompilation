@@ -181,7 +181,7 @@ int main(int argc, char** argv) {
     } else {
       // Particles at full resolution with the game's "Nice" shading (the
       // 360 drew them at half resolution, simply shaded).
-      preset_args = {"--pbr", "--scene-fx", "--emitter", "QuadHalfResEnable=0,QuadSimpleRenderingEnable=0"};
+      preset_args = {"--pbr", "--scene-fx", "--grade", "1", "--emitter", "QuadHalfResEnable=0,QuadSimpleRenderingEnable=0"};
       if (preset == "vivid" || preset == "toon" || preset == "noir" || preset == "ww2") {
         preset_args.push_back("--look");
         preset_args.push_back(preset);
@@ -230,6 +230,7 @@ int main(int argc, char** argv) {
       std::string l = argv[++i];
       xgpu::SetLook(l == "toon" ? 1 : l == "noir" ? 2 : l == "ww2" ? 3 : l == "vivid" ? 4 : 0);
     }
+    else if (a == "--grade" && i + 1 < argc) xgpu::SetGrade(float(atof(argv[++i])));  // 0 off, 1 default
     else if (a == "--blood") g_blood = true;
     else if (a == "--vblank-hz" && i + 1 < argc) g_vblank_hz = std::max(1, atoi(argv[++i]));
     else if (a == "--max-fps" && i + 1 < argc) g_max_fps = uint32_t(std::max(0, atoi(argv[++i])));

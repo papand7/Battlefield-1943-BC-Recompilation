@@ -8,7 +8,39 @@
   // +16: the scene went through the filmic curve (HDR10 below undoes it).
   bool look_filmic = look_mode > 15.5f;
   if (look_filmic) look_mode -= 16.0f;
-  if (look_mode > 0.5f && look_mode < 1.5f) {
+  float grade = push_const_xe(bf_adjust).z;
+  if (look_mode < 0.5f && grade > 0.0f) {
+    // Enhanced: a cinematic grade over the game's flat, hazy tone map.
+    // Local contrast first (the frame minus a blur 2 pixels each way, so
+    // planks, rivets and leaves stand out), then an S curve around the
+    // midtones, vibrance (dull colours raised the most, skin kept), warm
+    // highlights and slightly cool shadows.
+    int2_xe size_max = int2_xe(push_const_xe(bf_size).xy) - 1;
+    int2_xe p = int2_xe(pixel_index);
+    float3_xe blur = float3_xe(0.0f, 0.0f, 0.0f);
+    for (int k = -2; k <= 2; k += 4) {
+      blur += texel_fetch_2d_xe(xe_apply_gamma_source, clamp(p + int2_xe(k, 0), int2_xe(0, 0), size_max), 0).rgb +
+              texel_fetch_2d_xe(xe_apply_gamma_source, clamp(p + int2_xe(0, k), int2_xe(0, 0), size_max), 0).rgb;
+    }
+    blur *= 0.25f;
+    float3_xe c = saturate_xe(look_color + (look_color - blur) * (0.45f * grade));
+    float luma = BfLuma(c);
+    // S curve: deeper shadows, brighter highlights, the midtones held.
+    float3_xe curve = c * c * (3.0f - 2.0f * c);
+    c = c + (curve - c) * (0.35f * grade);
+    c = saturate_xe((c - 0.02f * grade) / (1.0f - 0.02f * grade));
+    // Vibrance.
+    luma = BfLuma(c);
+    float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
+    float boost = 1.0f + grade * (0.18f + 0.3f * (1.0f - saturate_xe(sat * 2.5f)));
+    float3_xe grey = float3_xe(luma, luma, luma);
+    c = saturate_xe(grey + (c - grey) * boost);
+    // Warm sun in the highlights, a touch of blue in the shadows.
+    float hi = smoothstep(0.45f, 1.0f, luma), lo = 1.0f - smoothstep(0.0f, 0.35f, luma);
+    c *= float3_xe(1.0f, 1.0f, 1.0f) + grade * (float3_xe(0.05f, 0.02f, -0.04f) * hi +
+                                                   float3_xe(-0.02f, 0.0f, 0.03f) * lo);
+    look_color = saturate_xe(c);
+  } else if (look_mode > 0.5f && look_mode < 1.5f) {
     // Toon: flat colour bands with the hue kept, and dark outlines where the
     // brightness changes sharply.
     float luma = BfLuma(look_color);

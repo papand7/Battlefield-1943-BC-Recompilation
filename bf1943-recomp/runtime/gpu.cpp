@@ -595,10 +595,13 @@ void StartGpu() {
         std::thread([] {
           std::filesystem::create_directories("frames");
           std::this_thread::sleep_for(std::chrono::seconds(g_look_showcase));
+          // (-1: enhanced without its colour grade, to compare.)
           static const std::pair<int, const char*> kLooks[] = {
-              {0, "enhanced"}, {4, "vivid"}, {1, "toon"}, {2, "noir"}, {3, "ww2"}};
+              {-1, "enhanced_nograde"}, {0, "enhanced"}, {4, "vivid"}, {1, "toon"}, {2, "noir"}, {3, "ww2"}};
+          float grade = xgpu::Grade();
           for (auto [look, name] : kLooks) {
-            xgpu::SetLook(look);
+            xgpu::SetGrade(look < 0 ? 0.0f : grade);
+            xgpu::SetLook(look < 0 ? 0 : look);
             std::this_thread::sleep_for(std::chrono::milliseconds(1500));
             char path[64];
             snprintf(path, sizeof(path), "frames/look_%s.png", name);

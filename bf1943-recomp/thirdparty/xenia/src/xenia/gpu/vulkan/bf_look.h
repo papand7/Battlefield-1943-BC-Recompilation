@@ -15,6 +15,9 @@ inline std::atomic<int> look{0};
 // The picture's BRIGHTNESS (-0.3...0.3, 0 the game's) and GAMMA (0.7...1.3,
 // 1 the game's; above 1 brighter midtones), on the final frame.
 inline std::atomic<float> brightness{0.0f}, gamma{1.0f};
+// The enhanced look's colour grade (0 off, 1 the default; the stock preset
+// has none): contrast, vibrance, warm highlights, local contrast.
+inline std::atomic<float> grade{0.0f};
 
 }  // namespace bflook
 }  // namespace gpu

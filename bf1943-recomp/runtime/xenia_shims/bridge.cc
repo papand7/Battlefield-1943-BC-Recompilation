@@ -287,6 +287,8 @@ xe::ui::GraphicsProvider* g_graphics_provider() { return g_graphics->provider();
 }  // namespace
 
 void SetLook(int look) { xe::gpu::bflook::look = look; }
+float Grade() { return xe::gpu::bflook::grade; }
+void SetGrade(float strength) { xe::gpu::bflook::grade = std::clamp(strength, 0.0f, 2.0f); }
 void SetPicture(float brightness, float gamma) {
   xe::gpu::bflook::brightness = std::clamp(brightness, -0.3f, 0.3f);
   xe::gpu::bflook::gamma = std::clamp(gamma, 0.7f, 1.3f);
