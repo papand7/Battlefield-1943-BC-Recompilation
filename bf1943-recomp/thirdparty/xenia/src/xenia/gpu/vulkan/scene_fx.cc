@@ -231,6 +231,8 @@ Settings ParseSettings(const char* text_in) {
     else if (key == "water_shallow") s.water_shallow = std::max(v, 0.0f);
     else if (key == "foam_width") s.foam_width = std::max(v, 0.1f);
     else if (key == "detail") s.detail = std::max(v, 0.0f);
+    else if (key == "sun") s.sun = std::max(v, 0.0f);
+    else if (key == "sky_depth") s.sky_depth = std::clamp(v, 0.0f, 2.0f);
     else if (key == "detail_distance") s.detail_distance = std::max(v, 1.0f);
     else if (key == "pebble_size") s.pebble_size = std::max(v, 0.01f);
     else if (key == "crack_size") s.crack_size = std::max(v, 0.05f);
@@ -298,6 +300,7 @@ struct Params {
   float flash[4];           // muzzle flash light: world position, strength (0 none)
   float flash2[4];          // its colour (the game's c7), radius (m)
   float detail[4];          // surface detail: strength, furthest (m), pebble, crack cell (m)
+  float sky2[4];            // sky: sun glow and disc, deeper blue overhead
 };
 static_assert(sizeof(Params) <= 4096);
 
@@ -1065,6 +1068,8 @@ void VulkanRenderTargetCache::ApplySceneFx(
   p.detail[1] = s.detail_distance;
   p.detail[2] = s.pebble_size;
   p.detail[3] = s.crack_size;
+  p.sky2[0] = s.sun;
+  p.sky2[1] = s.sky_depth;
   if (!save_pass && flash.seen && s.flash > 0.0f) {
     std::memcpy(p.flash, flash.pos, sizeof(flash.pos));
     p.flash[3] = s.flash;

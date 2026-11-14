@@ -112,6 +112,11 @@ struct Settings {
   // bare ground (the traced terrain, not grass), grime on everything, more in
   // corners. Fades out where it would be a few pixels.
   float detail = 1.0f;           // strength, 0 off
+  // The sky: the sun's disc and its forward-scattered glow (warm, Mie), and
+  // the blue deepening overhead (less air there: Rayleigh), over the game's
+  // painted sky.
+  float sun = 1.0f;              // 0 off
+  float sky_depth = 1.0f;        // 0 the game's sky
   float detail_distance = 40.0f; // metres
   float pebble_size = 0.09f;     // metres
   float crack_size = 0.7f;       // metres between cracks

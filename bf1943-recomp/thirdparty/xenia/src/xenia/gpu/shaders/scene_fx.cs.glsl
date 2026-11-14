@@ -165,6 +165,7 @@ layout(set = 0, binding = 3, std140) uniform Params {
   vec4 flash2;          // rgb its colour (the game's, like ambient), w radius (m)
   vec4 detail;          // surface detail: x strength (0 off), y furthest (m),
                         // z pebble size (m), w crack cell size (m)
+  vec4 sky2;            // sky: x sun disc and glow, y deeper blue overhead
 };
 
 shared vec4 found[64];
@@ -2395,6 +2396,22 @@ void main() {
     return;
   }
   float jitter = InterleavedGradientNoise(vec2(pixel), march.w);
+  if (sky && (sky2.x > 0.0 || sky2.y > 0.0)) {
+    // The sky as more air would show it: a deeper blue overhead (the light
+    // crosses less air there), and the sun's disc with its warm glow (Mie
+    // forward scattering, Henyey-Greenstein), scaled by the measured horizon
+    // sky so it matches the game's exposure. Before the clouds: they hide it.
+    vec3 ref = HazeColor(dir);
+    float up = smoothstep(0.02, 0.8, dir.y);
+    color.rgb *= mix(vec3(1.0), vec3(0.78, 0.88, 1.04), up * sky2.y);
+    float mu = dot(dir, normalize(sun_dir.xyz));
+    const float g = 0.8;
+    float hg = (1.0 - g * g) / pow(1.0 + g * g - 2.0 * g * mu, 1.5);  // 1 at 90 degrees-ish, 45 at the sun
+    float glow = 0.04 * hg + 0.6 * pow(max(mu, 0.0), 24.0);
+    float disc = smoothstep(0.99990, 0.99996, mu);
+    float ref_l = dot(ref, vec3(0.2126, 0.7152, 0.0722));
+    color.rgb += sky2.x * vec3(1.0, 0.86, 0.62) * ref_l * (glow + 12.0 * disc);
+  }
   if (cloud.x > 0.0) {
     // In front of a surface only if the surface is beyond the layer's start.
     float t0, t1;

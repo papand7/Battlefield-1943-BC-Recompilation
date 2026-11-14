@@ -23,16 +23,24 @@
               texel_fetch_2d_xe(xe_apply_gamma_source, clamp(p + int2_xe(0, k), int2_xe(0, 0), size_max), 0).rgb;
     }
     blur *= 0.25f;
-    float3_xe c = saturate_xe(look_color + (look_color - blur) * (0.45f * grade));
+    float3_xe c = saturate_xe(look_color + (look_color - blur) * (0.3f * grade));
     float luma = BfLuma(c);
-    // S curve: deeper shadows, brighter highlights, the midtones held.
+    // S curve: deeper shadows, the midtones held; the highlights rolled off
+    // rather than pushed up (sunlit planks and paint went to white).
     float3_xe curve = c * c * (3.0f - 2.0f * c);
-    c = c + (curve - c) * (0.35f * grade);
+    c = c + (curve - c) * (0.3f * grade);
+    float3_xe over = max(c - 0.72f, float3_xe(0.0f, 0.0f, 0.0f));
+    c -= over * (0.45f * grade);
     c = saturate_xe((c - 0.02f * grade) / (1.0f - 0.02f * grade));
-    // Vibrance.
+    // A slightly warmer white balance (the game's sunlight reads cold and
+    // the weathered deck teal).
+    c *= float3_xe(1.0f, 1.0f, 1.0f) + grade * float3_xe(0.03f, 0.005f, -0.035f);
+    // Vibrance, but not on teal and cyan (the deck's weathered paint and the
+    // sky's haze went neon), and less on what is already strong.
     luma = BfLuma(c);
     float sat = max(max(c.r, c.g), c.b) - min(min(c.r, c.g), c.b);
-    float boost = 1.0f + grade * (0.18f + 0.3f * (1.0f - saturate_xe(sat * 2.5f)));
+    float cyan = saturate_xe((min(c.g, c.b) - c.r) * 6.0f) * (1.0f - saturate_xe(abs(c.g - c.b) * 8.0f));
+    float boost = 1.0f + grade * (0.12f + 0.25f * (1.0f - saturate_xe(sat * 2.5f))) * (1.0f - 0.8f * cyan);
     float3_xe grey = float3_xe(luma, luma, luma);
     c = saturate_xe(grey + (c - grey) * boost);
     // Warm sun in the highlights, a touch of blue in the shadows.
