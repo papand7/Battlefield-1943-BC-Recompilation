@@ -181,8 +181,8 @@ void Build() {
                      L"The texture pack: upscaled textures with PBR materials.", kOffOn, {"0", "1"}, 1,
                      true, "textures"));
   v.push_back(Choice(kGraphics, "parallax", L"PARALLAX",
-                     L"Depth in flat textures (planks, stone) from their height maps.", kOffOn,
-                     {"0", "1"}, 1, true));
+                     L"Depth in flat textures (planks, stone) from their height maps. Off by default: the ground swam as the camera moved.", kOffOn,
+                     {"0", "1"}, 0, true));
   v.push_back(Choice(kGraphics, "blood", L"BLOOD", L"Blood on hits, bodies torn apart by explosions.",
                      kOffOn, {"0", "1"}, 0, true, "blood"));
   v.push_back(Choice(kGraphics, "sharpness", L"SHARPNESS",
