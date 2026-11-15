@@ -165,7 +165,8 @@ layout(set = 0, binding = 3, std140) uniform Params {
   vec4 flash2;          // rgb its colour (the game's, like ambient), w radius (m)
   vec4 detail;          // surface detail: x strength (0 off), y furthest (m),
                         // z pebble size (m), w crack cell size (m)
-  vec4 sky2;            // sky: x sun disc and glow, y deeper blue overhead
+  vec4 sky2;            // sky: x sun disc and glow, y deeper blue overhead,
+                        // z dust motes in the sunlit air (0 off)
 };
 
 shared vec4 found[64];
@@ -1673,6 +1674,53 @@ void MotionVectors() {
   imageStore(motion_image, local, vec4(mv, 0.0, 0.0));
 }
 
+vec3 Hash33(vec3 p) {
+  p = fract(p * vec3(0.1031, 0.1030, 0.0973));
+  p += dot(p, p.yxz + 33.33);
+  return fract((p.xxy + p.yxx) * p.zyx);
+}
+
+// Dust motes: fine specks drifting in the sunlit air near the eye. Six
+// slices of air along the ray, each a cell grid (0.8 m) with a mote at a
+// hashed place in some cells, drifting with a slow breeze; the ray lights one
+// it passes within a pixel or two of. Only where the sun reaches it (a traced
+// ray, only for a mote found), brighter looking towards the sun (Henyey-
+// Greenstein forward scattering). `limit`: the surface's distance (or 25 m).
+vec3 DustMotes(vec3 dir, float limit, float jitter, float ref_l) {
+  if (sky2.z <= 0.0) return vec3(0.0);
+  vec3 to_sun = normalize(sun_dir.xyz);
+  const float g = 0.6;
+  float mu = dot(dir, to_sun);
+  float hg = (1.0 - g * g) / (12.566371 * pow(1.0 + g * g - 2.0 * g * mu, 1.5));
+  float time = cloud.w;
+  vec3 acc = vec3(0.0);
+  // A steady breeze (no per-slice trigonometry: this runs for every pixel).
+  vec3 drift = vec3(0.35, 0.10, 0.22) * time;
+  for (int i = 0; i < 6; ++i) {
+    float d = 1.0 + (float(i) + jitter) * 4.0;
+    vec3 p = camera.xyz + dir * d;
+    vec3 cell = floor((p + drift) / 0.8);
+    vec3 h = Hash33(cell);
+    if (h.x > 0.55) continue;
+    vec3 m = (cell + 0.2 + 0.6 * h) * 0.8 - drift;
+    vec3 rel = m - camera.xyz;
+    float t = dot(rel, dir);
+    if (abs(t - d) > 2.0 || t >= limit) continue;
+    float r = 0.0025 * t + 0.004;
+    float a = 1.0 - smoothstep(0.0, r, length(rel - dir * t));
+    if (a <= 0.0) continue;
+    float fade = smoothstep(1.0, 2.5, t) * (1.0 - smoothstep(14.0, 24.0, t));
+    if (fade <= 0.0) continue;
+#ifdef SCENE_FX_RT
+    if (rt.x > 0.0 && RayHits(m, to_sun, 120.0)) continue;
+#endif
+    // A little twinkle: each mote turns in and out of the light.
+    float twinkle = 0.55 + 0.45 * sin(time * (1.5 + 3.0 * h.y) + 6.2831853 * h.z);
+    acc += vec3(1.0, 0.90, 0.72) * (0.25 + 6.0 * hg) * a * fade * twinkle;
+  }
+  return acc * ref_l * sky2.z * 3.0;
+}
+
 void main() {
   if (pass_mode == 9u) {
     MotionVectors();
@@ -2429,6 +2477,10 @@ void main() {
   if (!HazeAt(local, dist, sky, scattered, optical)) HazeMarch(dir, len, sky, jitter, scattered, optical);
   float transmittance = exp(-optical);
   color.rgb = color.rgb * transmittance + haze * scattered;
+  if (sky2.z > 0.0 && debug == 0u) {
+    float motes_reach = sky ? 25.0 : min(dist, 25.0);
+    color.rgb += DustMotes(dir, motes_reach, jitter, dot(haze, vec3(0.2126, 0.7152, 0.0722)));
+  }
   color.rgb = max(color.rgb + overlay * transmittance, vec3(0.0));
   imageStore(scene, ivec2(pixel), color);
 }
