@@ -39,6 +39,7 @@ struct Settings {
   float density = 0.0009f;      // extinction per metre at the base height
   float falloff = 1.0f / 80.0f; // 1 / scale height in metres
   float base_height = 0.0f;     // densest fog, metres over the measured sea
+  float leaves = 0.0f;          // drifting leaves (0 off, 1 normal)
   float motes = 0.0f;           // dust motes in the sunlit air (0 off, 1 normal)
   float shafts = 0.6f;          // how much darker shadowed air is (0...1)
   float sky = 0.1f;            // fog density in front of the sky

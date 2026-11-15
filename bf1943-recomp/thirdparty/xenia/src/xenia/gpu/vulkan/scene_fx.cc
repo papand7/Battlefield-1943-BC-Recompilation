@@ -234,6 +234,7 @@ Settings ParseSettings(const char* text_in) {
     else if (key == "sun") s.sun = std::max(v, 0.0f);
     else if (key == "sky_depth") s.sky_depth = std::clamp(v, 0.0f, 2.0f);
     else if (key == "motes") s.motes = std::clamp(v, 0.0f, 3.0f);
+    else if (key == "leaves") s.leaves = std::clamp(v, 0.0f, 3.0f);
     else if (key == "detail_distance") s.detail_distance = std::max(v, 1.0f);
     else if (key == "pebble_size") s.pebble_size = std::max(v, 0.01f);
     else if (key == "crack_size") s.crack_size = std::max(v, 0.05f);
@@ -1072,6 +1073,7 @@ void VulkanRenderTargetCache::ApplySceneFx(
   p.sky2[0] = s.sun;
   p.sky2[1] = s.sky_depth;
   p.sky2[2] = s.motes;
+  p.sky2[3] = s.leaves;
   if (!save_pass && flash.seen && s.flash > 0.0f) {
     std::memcpy(p.flash, flash.pos, sizeof(flash.pos));
     p.flash[3] = s.flash;

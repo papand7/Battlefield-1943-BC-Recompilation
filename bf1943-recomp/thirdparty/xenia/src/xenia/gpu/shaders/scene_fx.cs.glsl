@@ -166,7 +166,8 @@ layout(set = 0, binding = 3, std140) uniform Params {
   vec4 detail;          // surface detail: x strength (0 off), y furthest (m),
                         // z pebble size (m), w crack cell size (m)
   vec4 sky2;            // sky: x sun disc and glow, y deeper blue overhead,
-                        // z dust motes in the sunlit air (0 off)
+                        // z dust motes in the sunlit air (0 off), w drifting
+                        // leaves (0 off)
 };
 
 shared vec4 found[64];
@@ -1721,6 +1722,55 @@ vec3 DustMotes(vec3 dir, float limit, float jitter, float ref_l) {
   return acc * ref_l * sky2.z * 3.0;
 }
 
+// Drifting leaves: a few leaves blown along on the wind, tumbling as they
+// fall. Like the motes (six slices, a hashed leaf in some 3 m cells), but
+// larger (a few pixels), carried faster and down, turning edge-on and flat so
+// they flash; lit by the sun like paper, green or dry brown.
+vec3 DriftLeaves(vec3 dir, float limit, float jitter, float ref_l) {
+  if (sky2.w <= 0.0) return vec3(0.0);
+  vec3 to_sun = normalize(sun_dir.xyz);
+  float time = cloud.w;
+  vec3 drift = vec3(1.6, -0.45, 0.9) * time;
+  vec3 acc = vec3(0.0);
+  for (int i = 0; i < 6; ++i) {
+    float d = 2.0 + (float(i) + jitter) * 5.0;
+    vec3 p = camera.xyz + dir * d;
+    vec3 cell = floor((p + drift) / 3.0);
+    vec3 h = Hash33(cell + 17.0);
+    if (h.x > 0.35) continue;
+    vec3 m = (cell + 0.2 + 0.6 * h) * 3.0 - drift;
+    // A flutter around the fall.
+    float tw = time * (1.2 + 1.5 * h.y) + 6.2831853 * h.z;
+    m += 0.35 * vec3(sin(tw), 0.4 * sin(tw * 1.7), cos(tw * 0.8));
+    vec3 rel = m - camera.xyz;
+    float t = dot(rel, dir);
+    if (abs(t - d) > 2.5 || t >= limit || t < 2.0) continue;
+    // The leaf's disc, turned: its normal tumbles; the width on screen follows
+    // how face-on it is.
+    vec3 n = normalize(vec3(sin(tw * 0.9 + h.x * 9.0), cos(tw * 1.3 + h.y * 7.0), sin(tw * 0.6 + h.z * 5.0)));
+    float face = abs(dot(n, dir));
+    float r = 0.045 + 0.004 * t;  // a few pixels
+    vec3 off = rel - dir * t;
+    vec3 axis = normalize(cross(n, dir) + vec3(1e-4));
+    float along = dot(off, axis);
+    float across = length(off - axis * along);
+    float e = length(vec2(along / r, across / (r * (0.25 + 0.75 * face))));
+    float a = 1.0 - smoothstep(0.6, 1.0, e);
+    if (a <= 0.0) continue;
+    float fade = smoothstep(2.0, 4.0, t) * (1.0 - smoothstep(16.0, 28.0, t));
+    if (fade <= 0.0) continue;
+    float vis = 1.0;
+#ifdef SCENE_FX_RT
+    if (rt.x > 0.0 && RayHits(m, to_sun, 120.0)) vis = 0.35;
+#endif
+    // Diffuse (both faces) plus light through it towards the sun.
+    float lit = 0.35 + 0.65 * abs(dot(n, to_sun)) + 0.5 * max(dot(dir, to_sun), 0.0);
+    vec3 tint = mix(vec3(0.30, 0.42, 0.10), vec3(0.50, 0.33, 0.12), step(0.5, h.y));
+    acc += tint * lit * vis * a * fade;
+  }
+  return acc * ref_l * sky2.w * 2.2;
+}
+
 void main() {
   if (pass_mode == 9u) {
     MotionVectors();
@@ -2480,6 +2530,10 @@ void main() {
   if (sky2.z > 0.0 && debug == 0u) {
     float motes_reach = sky ? 25.0 : min(dist, 25.0);
     color.rgb += DustMotes(dir, motes_reach, jitter, dot(haze, vec3(0.2126, 0.7152, 0.0722)));
+  }
+  if (sky2.w > 0.0 && debug == 0u) {
+    float leaves_reach = sky ? 28.0 : min(dist, 28.0);
+    color.rgb += DriftLeaves(dir, leaves_reach, jitter, dot(haze, vec3(0.2126, 0.7152, 0.0722)));
   }
   color.rgb = max(color.rgb + overlay * transmittance, vec3(0.0));
   imageStore(scene, ivec2(pixel), color);

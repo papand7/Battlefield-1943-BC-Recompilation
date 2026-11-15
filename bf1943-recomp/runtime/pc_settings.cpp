@@ -210,6 +210,9 @@ void Build() {
                      L"Opt-in: when frames run long, lowers the heavy effects (ray-traced shadows, light shafts, "
                      L"bounce light, ambient occlusion) until the frame rate holds, then raises them again.",
                      {L"OFF", L"60 FPS", L"30 FPS"}, {"0", "60", "30"}, 0));
+  v.push_back(Choice(kEffects, "leaves", L"DRIFTING LEAVES",
+                     L"A few leaves carried along on the wind, tumbling as they fall.",
+                     {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.5", "1", "1.6"}, 2));
   v.push_back(Choice(kEffects, "motes", L"DUST MOTES",
                      L"Fine specks drifting in the sunlit air, brighter looking towards the sun.",
                      {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.5", "1", "1.6"}, 2));
@@ -793,7 +796,8 @@ const PresetValue kPresets[] = {
     {"water_refract", "0", "1", "1", "1"},        {"water_shallow", "0", "1", "1", "1"},
     {"detail", "0", "1", "1", "1.5"},             {"particle_quality", "0", "1", "1", "1"},
     {"soft_particles", "0", "1", "1", "1"},       {"explosion_smoke", "0", "0", "0", "1"},
-    {"wind", "0", "0.4", "0.4", "0.4"},           {"motes", "0", "0.5", "1", "1"},           {"rt_foliage", "0", "0", "0", "1"},
+    {"wind", "0", "0.4", "0.4", "0.4"},           {"motes", "0", "0.5", "1", "1"},
+    {"leaves", "0", "0.5", "1", "1"},           {"rt_foliage", "0", "0", "0", "1"},
 };
 void ApplyPreset(const std::string& q) {
   for (const PresetValue& p : kPresets) {
