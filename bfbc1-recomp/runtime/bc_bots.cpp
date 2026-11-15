@@ -1613,8 +1613,14 @@ struct Bot {
   uint32_t gadget_target = 0;
   bool gadget_counted = false;
   float gadget_health = 0, gadget_pos[3] = {0, 0, 0};
+  // The Assault kit's auto injector on itself: one in progress (inject_at, 0
+  // none; its health then inject_health), the next not before inject_next.
+  int64_t inject_at = 0, inject_next = 0;
+  float inject_health = 0;
+  bool inject_logged = false;
   uint32_t use_entity = 0;  // an interaction to use (arm, defuse), from the input copy hook
   uint32_t hit = 0;         // a soldier its shot hit, for the input copy hook to damage
+  float hurt_self = 0;      // testing: damage to its own soldier, for the input copy hook
   uint32_t enter_vehicle = 0;  // a server vehicle to get into (seat 0), from the input copy hook
   uint32_t in_vehicle = 0;     // the server vehicle it is in (this tick)
   uint32_t vehicle = 0;        // the one it got into (until it is out)
@@ -3712,6 +3718,68 @@ static void BotBrain(Bot& b, uint32_t in) {
     }
     if (now - t0 < 300) St32(in + 0x84, Ld32(in + 0x84) | (1u << kCands[step]));
   }
+  // BF_BOT_WEAPON_REFS=1 (testing): once, 30 s after bot 0 shows: the weapon
+  // data (82074ACC) of the auto injector and the medkit (by their 1P anim
+  // tree's name), and every object in the heaps pointing at it, with the
+  // bots' soldiers for comparison: who has one.
+  static const bool weapon_refs = getenv("BF_BOT_WEAPON_REFS") != nullptr;
+  if (weapon_refs && b.index == 0) {
+    static int64_t first = 0;
+    static bool done = false;
+    if (!first) first = now;
+    if (!done && now - first > 30000) {
+      done = true;
+      for (const Bot& o : g_bots) RT_INFO("weapon refs: bot %d (%s) soldier %08X", o.index, o.kit_class ? o.kit_class : "?", o.soldier);
+      for (uint32_t w : Scan(0x82074ACC)) {
+        uint32_t aim = Ld32(w + 224), tree = Ptr(aim) ? Ld32(aim + 240) : 0, nm = Ptr(tree) ? Ld32(tree + 0xC) : 0;
+        if (!Ptr(nm)) continue;
+        std::string name(G<char>(nm), strnlen(G<char>(nm), 80));
+        bool focus = name.find("AutoInjector") != std::string::npos || name.find("MedKit") != std::string::npos;
+        // Who points at it, and (for the SoldierWeaponAssets among them) who
+        // points at those: a soldier's weapon would.
+        auto refs_to = [&](uint32_t target, std::vector<uint32_t>* assets) {
+          uint32_t want = _byteswap_ulong(target);
+          std::string refs;
+          for (uint64_t page = 0x40000000; page < 0xC0000000; page += 0x1000) {
+            if (page >= 0x80000000 && page < 0xA0000000) continue;
+            if (!IsCommitted(uint32_t(page))) continue;
+            const uint32_t* q = reinterpret_cast<const uint32_t*>(g_base + page);
+            for (int i = 0; i < 1024 && refs.size() < 1500; ++i) {
+              if (q[i] != want) continue;
+              uint32_t at = uint32_t(page) + i * 4;
+              for (uint32_t ob = at; ob + 0x800 > at && ob >= 0x40000000; ob -= 4)
+                if (Ld32(ob) >= 0x82000000 && Ld32(ob) < 0x82180000 && !TypeName(ob).empty()) {
+                  char buf[96];
+                  snprintf(buf, sizeof(buf), " [%08X+%X %s]", ob, at - ob, TypeName(ob).c_str());
+                  refs += buf;
+                  if (assets && TypeName(ob) == "SoldierWeaponAsset") assets->push_back(ob);
+                  break;
+                }
+            }
+          }
+          return refs;
+        };
+        std::vector<uint32_t> assets;
+        // Its PersistentWeapon (+100: the unlock?) words.
+        if (uint32_t pw = Ld32(w + 100); Ptr(pw)) {
+          std::string words;
+          for (uint32_t k = 0; k < 0x40; k += 4) {
+            char buf[24];
+            snprintf(buf, sizeof(buf), " %08X", Ld32(pw + k));
+            words += buf;
+            uint32_t s = Ld32(pw + k);
+            if (Ptr(s) && G<char>(s)[0] >= 32 && G<char>(s)[0] < 127) words += "'" + std::string(G<char>(s), strnlen(G<char>(s), 40)) + "'";
+          }
+          RT_INFO("weapon refs: %s: PersistentWeapon %08X (%s):%s", name.c_str(), pw, TypeName(pw).c_str(), words.c_str());
+        } else {
+          RT_INFO("weapon refs: %s: no PersistentWeapon", name.c_str());
+        }
+        if (!focus) continue;
+        RT_INFO("weapon refs: %s data %08X pointed at by:%s", name.c_str(), w, refs_to(w, &assets).c_str());
+        for (uint32_t a : assets) RT_INFO("weapon refs:   asset %08X pointed at by:%s", a, refs_to(a, nullptr).c_str());
+      }
+    }
+  }
   // BF_BOT_INVENTORY=1 (testing): once per bot soldier, the classes it points
   // at (first 0x800 bytes) and, for those with Weapon in their name, theirs.
   static const bool inventory = getenv("BF_BOT_INVENTORY") != nullptr;
@@ -3931,6 +3999,41 @@ static void BotBrain(Bot& b, uint32_t in) {
           d += buf;
         }
       RT_INFO("bot grenade test: bit %d: objects%s; soldier pointers changed:%s", bit, counts.c_str(), d.substr(0, 600).c_str());
+    }
+  }
+  // BF_BOT_INJECT_SCAN=1 (testing; with BF_BOT_CLASS=Assault): bot 0 stands;
+  // every 7 s it is hurt down to 40 (the damage path, no attacker) when over 60,
+  // then one candidate button of +84/+80 is tapped at 0.5 s, fire held 1.8-2.6 s,
+  // the button again at 4 s; at 6.8 s its health against just after the hurt
+  // (bit -1: nothing pressed, the control).
+  static const bool inject_scan = getenv("BF_BOT_INJECT_SCAN") != nullptr;
+  if (inject_scan && b.index == 0 && !b.in_vehicle) {
+    forward = 0, strafe = 0;
+    static int64_t t0 = 0;
+    static int phase = -1;
+    static float after_hurt = 0;
+    static const int kCands[] = {-1, 18, 19, 20, 17, 29, 30, 31, 32, 33, 34, 35, 36, 10, 22, 24, 25, 26, 27, 28, 11, 12, 14, -1};
+    constexpr int kNumCands = sizeof(kCands) / sizeof(kCands[0]);
+    if (!t0 || now - t0 > 7000) {
+      t0 = now, phase = (phase + 1) % kNumCands, after_hurt = -1;
+      float h = LdF(so + 0x3C);
+      if (h > 60) b.hurt_self = h - 40;
+      RT_INFO("bot inject scan: bit %d (health %.0f)", kCands[phase], h);
+    }
+    int64_t t = now - t0;
+    int bit = kCands[phase];
+    if (t >= 400 && after_hurt < 0) after_hurt = LdF(so + 0x3C);
+    auto press = [&](int k) {
+      if (k < 0) return;
+      if (k < 32) St32(in + 0x84, Ld32(in + 0x84) | (1u << k));
+      else St32(in + 0x80, Ld32(in + 0x80) | (1u << (k - 32)));
+    };
+    if ((t >= 500 && t < 800) || (t >= 4000 && t < 4300)) press(bit);
+    if (t >= 1800 && t < 2600) set(0x28, 1.0f), St32(in + 0x3C, 0x3C000000u | (Ld32(in + 0x3C) & 0xFFFFu));
+    static int reported = -1;
+    if (t >= 6800 && reported != phase) {
+      reported = phase;
+      RT_INFO("bot inject scan: bit %d: health %.0f -> %.0f", bit, after_hurt, LdF(so + 0x3C));
     }
   }
   set(0x8, forward);
@@ -4245,6 +4348,11 @@ PPC_FUNC(sub_821BF2A8) {
       if (uint32_t target = b.hit) {
         b.hit = 0;
         DamageSoldier(ctx, base, target, 9.0f, b.spawner);
+      }
+      if (b.hurt_self > 0) {
+        float amount = b.hurt_self;
+        b.hurt_self = 0;
+        DamageSoldier(ctx, base, b.soldier, amount, 0, false);
       }
       if (b.grenade_live && int64_t(GetTickCount64()) - b.grenade_at > 2500) {
         b.grenade_live = false;
@@ -4603,6 +4711,29 @@ PPC_FUNC(sub_823D1DD0) {
       }
       RT_INFO("bc kits:   pointed at by:%s", refs.c_str());
     }
+    // The weapon choices (SoldierWeaponData, 82074ACC): each one's words that
+    // point at named objects (class and asset name), two levels deep.
+    for (uint32_t w : Scan(0x82074ACC)) {
+      std::string out;
+      std::function<void(uint32_t, int, const std::string&)> walk = [&](uint32_t o, int depth, const std::string& path) {
+        for (uint32_t off = 4; off < 0x100 && out.size() < 1500; off += 4) {
+          uint32_t v = Ld32(o + off);
+          if (!Ptr(v) || !IsCommitted(v + 0x10)) continue;
+          std::string tn = TypeName(v), nm;
+          uint32_t np = Ld32(v + 0xC);
+          if (Ptr(np)) {
+            const char* c = G<char>(np);
+            int n = 0;
+            while (n < 70 && c[n] >= 32 && c[n] < 127) ++n;
+            if (n >= 4 && c[n] == 0) nm = std::string(c, n);
+          }
+          if (!tn.empty() || !nm.empty()) out += " " + path + "+" + std::to_string(off) + ":" + tn + "'" + nm + "'";
+          if (depth < 1 && !tn.empty()) walk(v, depth + 1, path + "+" + std::to_string(off));
+        }
+      };
+      walk(w, 0, "");
+      RT_INFO("bc weapons: %08X:%s", w, out.substr(0, 1500).c_str());
+    }
   }
   for (Bot& b : g_bots) {
     if (!b.spawner) continue;
@@ -4621,6 +4752,15 @@ PPC_FUNC(sub_823D1DD0) {
     St32(b.spawner + 0x30, b.team);
     uint32_t bot_kit = BotKit(b, kit), bot_weapon = bot_kit == kit ? kit2 : 0;
     if (!bot_kit) continue;  // (no kit found yet)
+    // BF_BOT_WEAPON_PICK=<name> (testing): the weapon choice (+1D8) is the
+    // SoldierWeaponData whose first-person anim tree's name has <name> in it.
+    if (const char* pick = getenv("BF_BOT_WEAPON_PICK"); pick && b.kit_class && !strcmp(b.kit_class, "Assault")) {
+      for (uint32_t w : Scan(0x82074ACC)) {
+        uint32_t aim = Ld32(w + 224), tree = Ptr(aim) ? Ld32(aim + 240) : 0, nm = Ptr(tree) ? Ld32(tree + 0xC) : 0;
+        if (Ptr(nm) && strstr(G<char>(nm), pick)) bot_weapon = w;
+      }
+      RT_INFO("bot %d: weapon choice %08X (%s)", b.index, bot_weapon, pick);
+    }
     St32(b.spawner + 0x1D4, bot_kit), St32(b.spawner + 0x1D8, bot_weapon);
 
     PPCContext c = ctx;

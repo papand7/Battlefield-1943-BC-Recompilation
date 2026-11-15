@@ -69,6 +69,32 @@ Bags don't expire quickly (8 alive after 8 throws), and a second throw at the sa
 25 s later sometimes made no new bag: the medkit seems to be limited (a cooldown or a
 few uses), not studied further.
 
+## The Assault's auto injector: not available to the bots (blocked)
+
+Tried with `BF_BOT_INJECT_SCAN=1` (bot 0 alone, so no enemy; every 7 s it is hurt down to
+40 through the server's damage call 822D1AA0 with no attacker, then one candidate button of
++84/+80 is tapped at 0.5 s, fire held 1.8-2.6 s, the button again at 4 s, and its health
+compared at 6.8 s; bit -1 presses nothing):
+
+* Health does not come back by itself (the control phases stayed at 40 for minutes).
+* **Support** (control): the bit 18 phase healed 40 -> 55 (its medkit), no other phase did.
+  So the method sees a heal.
+* **Assault**: no phase healed (bits 18, 19, 20, 17, 29-36, 10, 22, 24-28, 11, 12, 14), also
+  not with the injector's SoldierWeaponData forced as the spawn's weapon choice (+1D8,
+  `BF_BOT_WEAPON_PICK=AutoInjector`).
+
+The loadout text says why: "AUTO INJECTOR **(UNLOCK)**", the kit's unlock slot, still locked
+(like the Support's MORTAR STRIKE, the Recon's LASER DESIGNATOR...). Unlocks came from the
+player's online stats; nobody here has them, and the bots get the kit's defaults. The weapon
+data of the unlockables has a `PersistentWeapon` at +100 (a stats record: a short name such as
+'m16', 'pwtl'); no unlock flag was found in it. Giving the bots the injector needs the game's
+unlock check found first (where a soldier's weapons are built from its kit). Until then no
+Assault behaviour was added (bit 18 on an Assault would take out its grenade launcher).
+
+Test options kept: `BF_BOT_INJECT_SCAN`, `BF_BOT_WEAPON_PICK=<anim tree name part>` (Assault
+bots' +1D8), `BF_BOT_WEAPON_REFS` (the weapon datas' PersistentWeapon words and who points at
+the injector's and medkit's data), and with `BF_BC_KITS` every SoldierWeaponData's assets.
+
 ## BF1943
 
 Its kits (Infantry, Rifleman, Scout) carry no medkit, ammo box or revive item; only a
