@@ -72,7 +72,7 @@ struct ShaderConfig {
   // World position for parallax (r3 as the shader starts unless wp= says).
   Tap wp = {kTapAtStart, 3, 3, {0, 1, 2, 0}};
   uint32_t c_cam = 7;
-  float pom = 0.06f;
+  float pom = 0.03f;
   uint32_t rm_fetch = UINT32_MAX;
   Scalar env_scale{1.0f};
   Scalar pow{0.0f};

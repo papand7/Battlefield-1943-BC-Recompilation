@@ -181,7 +181,10 @@ int main(int argc, char** argv) {
     } else {
       // Particles at full resolution with the game's "Nice" shading (the
       // 360 drew them at half resolution, simply shaded).
-      preset_args = {"--pbr", "--scene-fx", "--grade", "1", "--emitter", "QuadHalfResEnable=0,QuadSimpleRenderingEnable=0"};
+      // Objects down to 0.2 % of the screen are drawn (the game's: 1 %: buildings
+      // and trees popped in on approach) and vegetation has 8x the detail range.
+      preset_args = {"--pbr", "--scene-fx", "--grade", "1", "--emitter", "QuadHalfResEnable=0,QuadSimpleRenderingEnable=0",
+                     "--lod", "8", "--worldrender", "MinScreenArea=0.002"};
       if (preset == "vivid" || preset == "toon" || preset == "noir" || preset == "ww2") {
         preset_args.push_back("--look");
         preset_args.push_back(preset);
