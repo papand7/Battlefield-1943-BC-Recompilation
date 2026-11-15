@@ -1602,6 +1602,13 @@ struct Bot {
   float ex = 0, ey = 0, ez = 0, edist = 0;
   int64_t looked_at = 0, engaged_at = 0, reload_until = 0;
   bool fired = false;
+  // Gadget (the Support kit's medkit): a throw in progress (gadget_at: its start,
+  // 0 none) at gadget_target (a soldier, who had gadget_health), then the next
+  // one not before gadget_next.
+  int64_t gadget_at = 0, gadget_next = 0, gadget_checked = 0;
+  uint32_t gadget_target = 0;
+  bool gadget_counted = false;
+  float gadget_health = 0, gadget_pos[3] = {0, 0, 0};
   uint32_t use_entity = 0;  // an interaction to use (arm, defuse), from the input copy hook
   uint32_t hit = 0;         // a soldier its shot hit, for the input copy hook to damage
   uint32_t enter_vehicle = 0;  // a server vehicle to get into (seat 0), from the input copy hook
@@ -3585,6 +3592,80 @@ static void BotBrain(Bot& b, uint32_t in) {
       }
     }
   }
+  // The Support kit's gadget is a medkit (ServerMedicBagEntity: "THROW MEDKIT"; the
+  // Assault's auto injector heals itself, and Bad Company has no ammo gadget
+  // (ammo crates stand on the map) and no revive: docs/bot_gadgets.md). A
+  // Support bot on foot, with no enemy about, throws one at a hurt teammate
+  // (health under 70) within 9 m, or at its own feet when it is under 50:
+  // button 18 of +84 takes the gadget out (BF_BOT_GRENADE_TEST: the bag
+  // appeared in the phase of 18), then the fire button throws it 1.3 s later,
+  // 0.5 s long; button 18 again takes the gun back. At most one every 25 s.
+  bool gadget_on = false;
+  float gadget_yaw = 0, gadget_pitch = 0;
+  static const bool no_gadgets = getenv("BF_BOT_NO_GADGETS") != nullptr;
+  if (!no_gadgets && b.kit_class && !strcmp(b.kit_class, "Support") && !b.in_vehicle) {
+    if (!b.gadget_at && !b.enemy && now >= b.gadget_next && now - b.gadget_checked > 700 && LdF(so + 0x3C) > 0) {
+      b.gadget_checked = now;
+      uint32_t pick = 0;
+      // (BF_BOT_GADGET_HEALTH=101, testing: any teammate in reach counts.)
+      static const float limit = getenv("BF_BOT_GADGET_HEALTH") ? float(atof(getenv("BF_BOT_GADGET_HEALTH"))) : 70.0f;
+      float worst = limit;
+      for (uint32_t o : soldiers) {
+        if (!IsCommitted(o + 0x20C) || Ld32(o) != 0x820118D0 || Ld32(o + 0x48) != b.team) continue;
+        float h = LdF(o + 0x3C), d = std::hypot(LdF(o + 0x200) - x, LdF(o + 0x208) - z);
+        if (h <= 0 || h >= worst || std::fabs(LdF(o + 0x204) - y) > 4.0f) continue;
+        if (o == so ? h < limit - 20.0f : d < 9.0f) pick = o, worst = h;
+      }
+      if (pick) {
+        b.gadget_at = now, b.gadget_target = pick, b.gadget_health = worst;
+        for (int i = 0; i < 3; ++i) b.gadget_pos[i] = LdF(pick + 0x200 + 4 * i);
+        RT_INFO("bot %d: medkit for %s %08X (health %.0f, %.1f m)", b.index, pick == so ? "itself" : "a teammate", pick,
+                worst, std::hypot(b.gadget_pos[0] - x, b.gadget_pos[2] - z));
+      }
+    }
+    if (b.gadget_at) {
+      int64_t t = now - b.gadget_at;
+      gadget_on = t < 3000;
+      if (gadget_on) {
+        forward = 0, strafe = 0;
+        uint32_t tgt = b.gadget_target;
+        if (tgt != so && IsCommitted(tgt + 0x20C) && Ld32(tgt) == 0x820118D0)
+          for (int i = 0; i < 3; ++i) b.gadget_pos[i] = LdF(tgt + 0x200 + 4 * i);
+        float dx = b.gadget_pos[0] - x, dz = b.gadget_pos[2] - z, d = std::hypot(dx, dz);
+        gadget_yaw = d > 0.8f ? std::atan2(dx, dz) : b.face;
+        gadget_pitch = tgt == so ? 0.9f : std::clamp(0.2f + 0.03f * d, 0.2f, 0.6f);
+        if (t < 300 || (t >= 2500 && t < 2800)) St32(in + 0x84, Ld32(in + 0x84) | (1u << 18));  // gadget out, then gun
+        if (t >= 1300 && t < 1800) set(0x28, 1.0f), St32(in + 0x3C, 0x3C000000u | (Ld32(in + 0x3C) & 0xFFFFu));
+        // The yaw and pitch of the throw (as for a shot at an enemy).
+        set(0x90, gadget_yaw);
+        set(0x94, gadget_pitch);
+      } else if (t > 3000 && !b.gadget_counted) {
+        // How many bags there are now (the class's vtable is found from an instance in the heaps).
+        b.gadget_counted = true;
+        static uint32_t bag_vt = 0;
+        if (!bag_vt) {
+          std::set<uint32_t> seen;
+          for (uint64_t page = 0x40000000; page < 0xC0000000 && !bag_vt; page += 0x1000) {
+            if (page >= 0x80000000 && page < 0xA0000000) continue;
+            if (!IsCommitted(uint32_t(page))) continue;
+            for (uint32_t i = 0; i < 0x1000; i += 4) {
+              uint32_t v = Ld32(uint32_t(page) + i);
+              if (v < 0x82000000 || v >= 0x82100000 || (v & 3) || !seen.insert(v).second) continue;
+              if (VtName(v) == "ServerMedicBagEntity") bag_vt = v;
+            }
+          }
+        }
+        RT_INFO("bot %d: medkit: %zu bag(s) in the world (ServerMedicBagEntity %08X)", b.index,
+                bag_vt ? Scan(bag_vt).size() : size_t(0), bag_vt);
+      } else if (t > 3000 + 4000) {
+        // 4 s after it: did the health rise?
+        uint32_t tgt = b.gadget_target;
+        float now_h = IsCommitted(tgt + 0x20C) && Ld32(tgt) == 0x820118D0 ? LdF(tgt + 0x3C) : -1.0f;
+        RT_INFO("bot %d: medkit thrown at %08X: its health %.0f -> %.0f", b.index, tgt, b.gadget_health, now_h);
+        b.gadget_at = 0, b.gadget_next = now + 25000, b.gadget_counted = false;
+      }
+    }
+  }
   // BF_BOT_POSE_TEST=1 (testing): bot 0 stands; each crouch candidate (bits
   // 15, 16, 14, 17 of +84) pressed once, then again 4 s later, 4 s each: the
   // floats of 0.5-2 m in the soldier and what it points at that moved by over
@@ -3658,6 +3739,87 @@ static void BotBrain(Bot& b, uint32_t in) {
       RT_INFO("bot %d inventory (%s):%s", b.index, b.kit_class ? b.kit_class : "?", out.substr(0, 2500).c_str());
     }
   }
+  // BF_BOT_STRING_SCAN=word,word (testing): 40 s after bot 0 first shows, every
+  // distinct string in the heaps that contains one of the words (case blind).
+  static const char* string_scan = getenv("BF_BOT_STRING_SCAN");
+  if (string_scan && b.index == 0) {
+    static int64_t first = 0;
+    static bool done = false;
+    if (!first) first = now;
+    if (!done && now - first > 40000) {
+      done = true;
+      std::vector<std::string> words;
+      for (size_t p = 0, c; p <= strlen(string_scan); p = c + 1) {
+        std::string all = string_scan;
+        c = all.find(',', p);
+        if (c == std::string::npos) c = all.size();
+        words.push_back(all.substr(p, c - p));
+      }
+      std::set<std::string> found;
+      for (uint64_t page = 0x40000000; page < 0xC0000000; page += 0x1000) {
+        if (!IsCommitted(uint32_t(page))) continue;
+        const char* t = G<char>(uint32_t(page));
+        for (uint32_t i = 0; i + 4 < 0x1000; ++i) {
+          char c0 = t[i] | 0x20;
+          for (const std::string& w : words) {
+            if (w.empty() || c0 != w[0] || i + w.size() >= 0x1000) continue;
+            bool m = true;
+            for (size_t z = 1; z < w.size() && m; ++z) m = (t[i + z] | 0x20) == w[z];
+            if (!m) continue;
+            uint32_t s = i;
+            while (s > 0 && i - s < 60 && t[s - 1] >= 32 && t[s - 1] < 127) --s;
+            uint32_t e = i;
+            while (e < 0x1000 && e - s < 110 && t[e] >= 32 && t[e] < 127) ++e;
+            found.insert(std::string(t + s, e - s));
+          }
+        }
+      }
+      RT_INFO("string scan: %zu strings", found.size());
+      int n = 0;
+      for (auto& f : found)
+        if (++n < 400) RT_INFO("string scan: %s", f.c_str());
+    }
+  }
+  // BF_BOT_WEAPON_DUMP=1 (testing): once per bot soldier, 20 s after it first
+  // shows, every object in the 0x6000 bytes from it whose type has Weapon or
+  // Gadget or Ammo or Medic in its name (and a asset-path string it holds).
+  static const bool weapon_dump = getenv("BF_BOT_WEAPON_DUMP") != nullptr;
+  if (weapon_dump) {
+    static std::map<uint32_t, int64_t> first;
+    if (!first.count(so)) first[so] = now;
+    static std::set<uint32_t> done;
+    if (now - first[so] > 20000 && done.insert(so).second) {
+      RT_INFO("weapon dump: bot %d (%s) soldier %08X", b.index, b.kit_class ? b.kit_class : "?", so);
+      for (uint32_t k = 0; k < 0x6000; k += 4) {
+        uint32_t q = Ld32(so + k);
+        std::string n = TypeName(q);
+        if (n.empty()) continue;
+        if (n.find("Weapon") == std::string::npos && n.find("Gadget") == std::string::npos &&
+            n.find("Ammo") == std::string::npos && n.find("Medic") == std::string::npos &&
+            n.find("Heal") == std::string::npos && n.find("Defib") == std::string::npos &&
+            n.find("Revive") == std::string::npos && n.find("Kit") == std::string::npos &&
+            n.find("Inventory") == std::string::npos)
+          continue;
+        std::string inner;
+        for (uint32_t j = 0; j < 0x400; j += 4) {
+          uint32_t r = Ld32(q + j);
+          if (!Ptr(r)) continue;
+          std::string m = TypeName(r);
+          for (uint32_t z = 0; z < 0x20 && !m.empty(); z += 4) {
+            uint32_t nm = Ld32(r + 0xC);
+            if (Ptr(nm) || (nm >= 0x40000000 && nm < 0xC0000000 && IsCommitted(nm))) {
+              const char* c = G<char>(nm);
+              int len = 0;
+              while (len < 70 && c[len] >= 32 && c[len] < 127) ++len;
+              if (len > 6 && memchr(c, '/', len)) inner += " +" + std::to_string(j) + ":" + m + "='" + std::string(c, len) + "'";
+            }
+            break;
+          }
+        }
+        RT_INFO("weapon dump: bot %d +%X %s [%08X]%s", b.index, k, n.c_str(), q, inner.substr(0, 700).c_str());
+      }
+    }
+  }
   // BF_BOT_BULLET_TEST=1 (testing): while bot 0 fights, every 2 s: its body's
   // facing (forward row +320/+328), its aim's (-(+134)), the wanted one, and
   // the classes with Bullet or Projectile in their name that exist (once), with
@@ -3714,6 +3876,8 @@ static void BotBrain(Bot& b, uint32_t in) {
     static int phase = -1;
     static std::vector<uint32_t> was;
     static std::vector<uint32_t> vts;  // the projectile/explosion/grenade classes' vtables
+    static int rebuilt_for = -2;
+    if (now - t0 >= 3400 && rebuilt_for != phase) rebuilt_for = phase, vts.clear();  // (new instances' classes)
     if (vts.empty()) {
       std::set<uint32_t> seen;
       for (uint64_t page = 0x40000000; page < 0xC0000000; page += 0x1000) {
@@ -3724,16 +3888,20 @@ static void BotBrain(Bot& b, uint32_t in) {
           if (v < 0x82000000 || v >= 0x82100000 || (v & 3) || !seen.insert(v).second) continue;
           std::string n = VtName(v);
           if (n.find("Projectile") != std::string::npos || n.find("Grenade") != std::string::npos ||
-              n.find("Explosion") != std::string::npos)
-            vts.push_back(v), RT_INFO("bot grenade test: class %08X %s", v, n.c_str());
+              n.find("Explosion") != std::string::npos || n.find("MedicBag") != std::string::npos ||
+              n.find("Medkit") != std::string::npos)
+            vts.push_back(v);
         }
       }
+      if (vts.empty()) vts.push_back(0);
     }
     // The digital actions are bits of the 64-bit word at +80 (8227A6E0): id < 32
     // in +84, 32 and up in +80. Weapon slots and gadgets around 29-36.
-    static const int kCands[] = {29, 30, 31, 32, 33, 34, 35, 36, 10, 18, 19, 20};
+    static const int kCands[] = {29, 30, 31, 32, 33, 34, 35, 36, 10, 18, 19, 20, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 11, 12, 14,
+                                 15, 17, 22, 24, 25, 26, 27, 28, 37, 38, 39, 40, 41, 42, 43};
+    constexpr int kNumCands = sizeof(kCands) / sizeof(kCands[0]);
     if (!t0 || now - t0 > 5000) {
-      t0 = now, phase = (phase + 1) % 12;
+      t0 = now, phase = (phase + 1) % kNumCands;
       was.clear();
       for (uint32_t k = 0; k < 0x800; k += 4) was.push_back(Ld32(so + k));
       RT_INFO("bot grenade test: trying bit %d", kCands[phase]);
@@ -3749,7 +3917,9 @@ static void BotBrain(Bot& b, uint32_t in) {
     if (t >= 3500 && reported != phase) {
       reported = phase;
       std::string counts, d;
-      for (uint32_t v : vts) counts += " " + VtName(v) + "=" + std::to_string(Scan(v).size());
+      for (uint32_t v : vts)
+        if (v && (VtName(v).find("Server") == 0 || VtName(v).find("MedicBag") != std::string::npos))
+          counts += " " + VtName(v) + "=" + std::to_string(Scan(v).size());
       for (uint32_t k = 0; k < 0x800; k += 4)
         if (Ld32(so + k) != was[k / 4] && (Ptr(Ld32(so + k)) || Ptr(was[k / 4]))) {
           char buf[48];
@@ -3902,13 +4072,15 @@ static void BotBrain(Bot& b, uint32_t in) {
   // Facing the enemy or the next point (the aim's convention is half a turn
   // from atan2(dx, dz)).
   // (Holding a crate, standing: where enemies usually come from, Threat.)
-  float want = b.enemy ? std::atan2(b.ex - x, b.ez - z)
+  float want = gadget_on ? gadget_yaw
+               : b.enemy ? std::atan2(b.ex - x, b.ez - z)
                : arrived && guard && b.threat && now >= b.detour_until ? b.threat_yaw
                                                                        : std::atan2(px - x, pz - z);
   b.want_heading = want + 3.14159265f, b.steer = b.aim_obj != 0;
   b.face = want, b.facing = !b.in_vehicle;
   // Looking up or down: at the enemy's chest from the eye, else level.
-  b.want_pitch = b.enemy ? std::atan2(b.ey + 1.2f - (y + 1.6f), std::max(b.edist, 0.5f)) : 0.0f;
+  b.want_pitch = gadget_on ? gadget_pitch
+                 : b.enemy ? std::atan2(b.ey + 1.2f - (y + 1.6f), std::max(b.edist, 0.5f)) : 0.0f;
   static const bool terrain_check = getenv("BF_TERRAIN_CHECK") != nullptr;
   if (terrain_check && now - b.logged > 3000) RT_INFO("bot %d terrain check: y %.2f, ground %.2f", b.index, y, TerrainHeight(x, z));
   if (now - b.logged > 3000) {
@@ -4165,6 +4337,42 @@ static void FindKits() {
     g_kits.push_back({k, rest.substr(0, slash), rest.substr(slash + 1)});
   }
   for (auto& k : g_kits) RT_INFO("bot kits: %08X %s %s", k.kit, k.side.c_str(), k.cls.c_str());
+  // BF_BOT_KIT_DUMP=1 (testing): per kit, the asset names (a path in the +C
+  // string) reachable through up to 5 pointer hops, with the hop path.
+  if (getenv("BF_BOT_KIT_DUMP")) {
+    for (auto& k : g_kits) {
+      if (k.side != "US") continue;
+      std::map<uint32_t, std::string> seen;  // object -> route
+      std::vector<std::pair<uint32_t, int>> q = {{k.kit, 0}};
+      seen[k.kit] = "";
+      for (size_t i = 0; i < q.size() && i < 20000; ++i) {
+        uint32_t o = q[i].first;
+        int depth = q[i].second;
+        std::string tn = TypeName(o), n;
+        uint32_t nm = IsCommitted(o + 0x10) ? Ld32(o + 0xC) : 0;
+        if (nm >= 0x40000000 && nm < 0xC0000000 && IsCommitted(nm)) {
+          n.assign(G<char>(nm), strnlen(G<char>(nm), 80));
+          for (char c : n)
+            if (c < 32 || c >= 127) n.clear();
+        }
+        static const char* kSkip[] = {"Sound", "Mesh", "Animation", "Anim", "Wave", "Effect", "Soot", "Skeleton", "Skinned", "Influence", "Texture", "Weather", "Physics", "Static", "Blueprint", "Granny", "Rigid"};
+        bool skip = tn.empty();
+        for (const char* w : kSkip) skip |= tn.find(w) != std::string::npos;
+        if (!skip) RT_INFO("kit dump %s: %s [%s] %s", k.cls.c_str(), seen[o].c_str(), tn.c_str(), n.c_str());
+        if (depth >= 3) continue;
+        for (uint32_t j = 4; j < 0x200 && IsCommitted(o + j + 4); j += 4) {
+          uint32_t v = Ld32(o + j);
+          if (!Ptr(v) || seen.count(v)) continue;
+          if (Ld32(v) < 0x82000000 || Ld32(v) >= 0x83000000) continue;  // (objects: a vtable)
+          char buf[24];
+          snprintf(buf, sizeof(buf), "/%X", j);
+          seen[v] = seen[o] + buf;
+          q.push_back({v, depth + 1});
+        }
+      }
+      RT_INFO("kit dump %s %s: %zu objects", k.side.c_str(), k.cls.c_str(), q.size());
+    }
+  }
 }
 static std::string KitSide(uint32_t kit) {
   for (auto& k : g_kits)
@@ -4195,6 +4403,11 @@ static uint32_t BotKit(Bot& b, uint32_t host_kit) {
   }
   static const char* kClasses[] = {"Assault", "Support", "Demolition", "Recon", "Specialist"};
   if (!b.kit_class) b.kit_class = kClasses[b.index % 5];
+  // BF_BOT_CLASS=Support (testing): every bot takes this class.
+  if (const char* forced = getenv("BF_BOT_CLASS")) {
+    for (const char* c : kClasses)
+      if (!strcmp(c, forced)) b.kit_class = c;
+  }
   for (auto& k : g_kits)
     if (k.side == side && k.cls == b.kit_class) {
       static std::map<int, uint32_t> said;
