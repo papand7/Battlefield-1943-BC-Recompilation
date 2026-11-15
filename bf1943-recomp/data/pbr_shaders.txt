@@ -4,7 +4,8 @@
 # matrix c0-c2, vignette, grain): r1.xyz after 11 is the exposed HDR colour.
 8DD620FF8D8BB8FA tonemap=r1.xyz@11 tm_exposure=0.6 tm_saturation=1.2
 # First-person weapons (Thompson). Specular power 119.
-49750AD0B93EF9C5 pom=0 rm=10 n=r3.yzw@47 v=r9.xyz@35 a=r6.yzw@63 lit=r2.x@74 env=r5.xyz@55 so=r5.w@56 out=r0.xyz@99 env_scale=8 rough=0.36
+# Left out: the first-person weapons keep the game's own lighting (the PBR look made the Thompson flat and white without the pack's weapon maps).
+# 49750AD0B93EF9C5 pom=0 rm=10 n=r3.yzw@47 v=r9.xyz@35 a=r6.yzw@63 lit=r2.x@74 env=r5.xyz@55 so=r5.w@56 out=r0.xyz@99 env_scale=8 rough=0.36
 # Carrier deck (wood). Specular power 37.6.
 48CB57AA0A76347C rm=9 n=r5.xyz@32 v=r10.yzw@19 a=r6.xyz@52 lit=r0.w@71 env=r8.xyz@46 ao=r2.x@44 out=r0.xyz@86 env_scale=1 rough=0.47 rough_scale=0.9 bump=12
 60630F0318B38A81 rm=9 n=r5.xyz@32 v=r10.yzw@19 a=r6.xyz@52 lit=r0.w@71 env=r8.xyz@46 ao=r2.x@44 out=r0.xyz@86 env_scale=1 rough=0.47 rough_scale=0.9 bump=12
