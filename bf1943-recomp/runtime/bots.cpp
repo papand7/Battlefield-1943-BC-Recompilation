@@ -197,6 +197,8 @@ size_t MoveVectorsNear(Vec pos, Vec to, const char* who) {
   return hits.size();
 }
 
+float deck_dbg() { return 150.0f; }  // (BF_PLANE_ATTLOG: only bots up in the air)
+
 // ---- the brain: built in, or bot_brain.dll reloaded when it changes ----------
 
 void BrainLog(const char* text) { RT_INFO("%s", text); }
@@ -663,6 +665,50 @@ void StartBotDirector() {
       }
       bool flags_changed = d.Refresh(rescan);
       for (botapi::BotIO& b : d.bots) b.soldier = BotPlayerSoldier(b.slot);
+      // A plane's orientation: the physics body (vehicle +F0) keeps the 3x3 rows at +1F0, its position at +220.
+      for (botapi::BotIO& b : d.bots) {
+        b.att_ok = false;
+        // (the plane whose body is at the soldier: the one found when it got in can be a neighbour on the deck)
+        const Soldier* me = b.soldier ? d.Find(b.soldier) : nullptr;
+        uint32_t body = 0;
+        float best = 15.0f;
+        if (me && me->vehicle != 0)
+          for (const Vehicle& v : d.vehicles) {
+            uint32_t bd = Readable(v.obj) ? Ld32(v.obj + 0xF0) : 0;
+            if (!bd || !Readable(bd) || !IsCommitted(bd + 0x230)) continue;
+            float dd = botapi::Dist3D(Vec{LdF(bd + 0x220), LdF(bd + 0x224), LdF(bd + 0x228)}, me->pos);
+            if (dd < best) best = dd, body = bd;
+          }
+        if (getenv("BF_PLANE_ATTLOG") && me && me->pos.y > deck_dbg()) {
+          static double nx[16] = {};
+          if (b.slot < 16 && d.now >= nx[b.slot]) {
+            nx[b.slot] = d.now + 3.0;
+            uint32_t pv = BotPlayerVehicle(b.slot), pb = pv && Readable(pv) ? Ld32(pv + 0xF0) : 0;
+            std::string cands;
+            for (const Vehicle& v : d.vehicles) {
+              uint32_t bd = Readable(v.obj) ? Ld32(v.obj + 0xF0) : 0;
+              if (!bd || !Readable(bd) || !IsCommitted(bd + 0x230)) continue;
+              float dd = botapi::Dist3D(Vec{LdF(bd + 0x220), LdF(bd + 0x224), LdF(bd + 0x228)}, me->pos);
+              if (dd < 400.0f) {
+                char t[160];
+                snprintf(t, sizeof(t), " [%08X %s body %08X d %.1f fwd %.2f %.2f %.2f]", v.obj, v.kind, bd, dd, LdF(bd + 0x200), LdF(bd + 0x204), LdF(bd + 0x208));
+                cands += t;
+              }
+            }
+            RT_INFO("attlog: bot%d soldier %.0f %.0f %.0f chosen body %08X; bpv %08X body %08X fwd %.2f %.2f %.2f;%s", b.slot + 1, me->pos.x, me->pos.y,
+                    me->pos.z, body, pv, pb, pb ? LdF(pb + 0x200) : 0.f, pb ? LdF(pb + 0x204) : 0.f, pb ? LdF(pb + 0x208) : 0.f, cands.c_str());
+          }
+        }
+        if (!body) continue;
+        float m[9];
+        bool ok = true;
+        for (int r = 0; r < 3; ++r) {
+          for (int c = 0; c < 3; ++c) m[r * 3 + c] = LdF(body + 0x1F0 + 0x10 * r + 4 * c);
+          float len = std::sqrt(m[r * 3] * m[r * 3] + m[r * 3 + 1] * m[r * 3 + 1] + m[r * 3 + 2] * m[r * 3 + 2]);
+          ok &= std::isfinite(len) && std::fabs(len - 1.0f) < 0.05f;
+        }
+        if (ok) b.att_ok = true, memcpy(b.att, m, sizeof(m));
+      }
       // Self-play tuning (bot_tuning.h): each bot's settings; a flag taken
       // counts for its team's bots within 25 m of it.
       tuning::UseMap(map, g_training);
@@ -778,6 +824,37 @@ void StartBotDirector() {
           if (FILE* f = fopen(p, "w")) fprintf(f, "%s\n", result_text), fclose(f);
       }
       trace.Write(d, flags_changed, new_result);
+      // DEBUG BF_PLANE_DUMP=<file>: where a flying bot's plane keeps its orientation: the words of
+      // the vehicle object and the objects it points to (as raw words), with the soldier's place.
+      static double next_plane_dump = 0;
+      if (const char* dump = getenv("BF_PLANE_DUMP"); dump && d.now >= next_plane_dump) {
+        for (const botapi::BotIO& b : d.bots) {
+          const Soldier* s = b.soldier ? d.Find(b.soldier) : nullptr;
+          uint32_t veh = BotPlayerVehicle(b.slot);
+          if (!s || s->pos.y < 200 || !Readable(veh)) continue;
+          next_plane_dump = d.now + 2.0;
+          if (FILE* f = fopen(dump, "a")) {
+            fprintf(f, "T %.2f bot %d soldier %.2f %.2f %.2f vehicle %08X\n", d.now, b.slot, s->pos.x, s->pos.y, s->pos.z, veh);
+            uint32_t base = veh;
+            auto dumpobj = [&](const char* name, uint32_t o, uint32_t n) {
+              if (!Readable(o)) return;
+              fprintf(f, "O %s %08X\n", name, o);
+              for (uint32_t off = 0; off < n; off += 4) fprintf(f, "%X %08X\n", off, Ld32(o + off));
+            };
+            dumpobj("vehicle", base, 0x400);
+            for (uint32_t po : {0x14u, 0xECu, 0xF0u, 0x10u, 0x18u, 0x1Cu, 0x20u, 0xE8u, 0xF4u, 0xF8u}) {
+              uint32_t o = Ld32(base + po);
+              if (o >= 0x40000000 && o < 0xC0000000) {
+                char nm[16];
+                snprintf(nm, sizeof(nm), "+%X", po);
+                dumpobj(nm, o, 0x300);
+              }
+            }
+            fclose(f);
+          }
+          break;
+        }
+      }
       // DEBUG BF_SEAT_DUMP: the soldier's seat fields each second, to see them change on E.
       static double next_dump = 0;
       if (getenv("BF_SEAT_DUMP") && d.now >= next_dump) {

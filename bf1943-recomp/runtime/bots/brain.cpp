@@ -20,6 +20,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
+#include <map>
 #include <new>
 #include <random>
 #include <string>
@@ -209,6 +210,95 @@ struct Shore {
 };
 Shore g_shore;
 
+// ---- pilots: planes (Coral Sea's Air Superiority; docs/bot_planes.md) ---------
+//
+// A plane's own orientation is not read: the soldier seated in it is at its
+// position, and everything is worked out from the track of positions (the
+// raw ones are noisy, so velocities come from 0.7 s apart). Pad: LT throttle,
+// right stick Y pitch (down climbs), right stick X roll (turn), RT the guns.
+
+// Where something was over the last seconds.
+struct Track {
+  static constexpr int N = 96;
+  double t[N] = {};
+  Vec p[N];
+  int head = 0, n = 0;
+  void Add(double now, Vec pos) {
+    if (n) {
+      int l = (head + N - 1) % N;
+      if (now - t[l] < 0.08) return;
+      if (now - t[l] > 1.5) n = 0;  // (a new life, or a gap)
+    }
+    t[head] = now, p[head] = pos;
+    head = (head + 1) % N;
+    n = std::min(n + 1, N);
+  }
+  // The position `ago` seconds before the latest sample (false: not enough history).
+  bool At(double ago, Vec& out) const {
+    if (!n) return false;
+    double want = t[(head + N - 1) % N] - ago;
+    for (int i = 0; i + 1 < n; ++i) {
+      int a = (head + N - 1 - i) % N, b = (a + N - 1) % N;
+      if (t[b] <= want) {
+        float f = float((want - t[b]) / std::max(1e-6, t[a] - t[b]));
+        out = {p[b].x + (p[a].x - p[b].x) * f, p[b].y + (p[a].y - p[b].y) * f, p[b].z + (p[a].z - p[b].z) * f};
+        return true;
+      }
+    }
+    return false;
+  }
+};
+std::map<uint32_t, Track> g_tracks;  // by soldier object
+
+// How something flies: velocity, heading (now), its rate of turn, climb rate.
+struct Kin {
+  bool ok = false;
+  Vec v;
+  float hdg = 0, rate = 0, speed = 0;
+};
+Kin Kinematics(const Track& tr) {
+  Kin k;
+  Vec p0, p1, p2;
+  if (!tr.At(0, p0) || !tr.At(0.7, p1) || !tr.At(1.4, p2)) return k;
+  Vec v1{(p0.x - p1.x) / 0.7f, (p0.y - p1.y) / 0.7f, (p0.z - p1.z) / 0.7f};
+  Vec v2{(p1.x - p2.x) / 0.7f, (p1.y - p2.y) / 0.7f, (p1.z - p2.z) / 0.7f};
+  float h1 = std::atan2(v1.x, v1.z), h2 = std::atan2(v2.x, v2.z);
+  k.rate = Wrap(h1 - h2) / 0.7f;
+  k.hdg = h1 + k.rate * 0.35f;
+  k.v = v1;
+  k.speed = std::sqrt(v1.x * v1.x + v1.y * v1.y + v1.z * v1.z);
+  k.ok = true;
+  return k;
+}
+
+// Each tick: everyone's track (the planes' pilots are soldiers at their place).
+void UpdateTracks(const World& w) {
+  static double swept = 0;
+  for (int i = 0; i < w.soldier_count; ++i) g_tracks[w.soldiers[i].obj].Add(w.now, w.soldiers[i].pos);
+  if (w.now - swept > 10) {  // (the dead)
+    swept = w.now;
+    for (auto it = g_tracks.begin(); it != g_tracks.end();) {
+      bool alive = false;
+      for (int i = 0; i < w.soldier_count; ++i) alive |= w.soldiers[i].obj == it->first;
+      it = alive ? std::next(it) : g_tracks.erase(it);
+    }
+  }
+}
+
+struct Pilot {
+  double since = -1;  // the flight (BoatState drive_since)
+  Vec wp;             // the patrol's waypoint
+  double wp_until = 0;
+  uint32_t target = 0;
+  double target_until = 0, next_log = 0, retreat_until = 0, last_t = 0;
+  float alpha = 0.1f, roll = 0, climb = 0, last_bank = 0, last_pitch = 0, last_psi = 0, p = 0, q = 0, pr = 0;
+};
+Pilot g_pilot[kMaxBots];
+
+// The play area is round about the middle (planes were killed from about
+// 1450 m out): turned back from 1150 m.
+constexpr float kArea = 1150.0f;
+
 // ---- the brain ---------------------------------------------------------------
 
 struct Brain {
@@ -396,67 +486,167 @@ struct Brain {
     b.boat_since = w.now;
   }
 
-  // A plane: full throttle (LT) off the deck, then hold about 160 m over the
-  // sea with the pitch (right stick Y: down climbs, as the game's flight
-  // controls; BF_PLANE_PITCH_SIGN=1 the other way), turn by banking (right
-  // stick X: the roll; the rudder hardly turns it) toward a rate of turn
-  // (measured from its heading) for the way to the flag, and circle the flag
-  // once there. Never gets out in the air.
-  bool Fly(BotIO& io, Bot& b, const Soldier& me, Vec goal, Pad& cmd) {
-    static const float sign = getenv("BF_PLANE_PITCH_SIGN") ? float(atof(getenv("BF_PLANE_PITCH_SIGN"))) : -1.0f;
-    static const bool turn_lx = getenv("BF_PLANE_TURN") && !strcmp(getenv("BF_PLANE_TURN"), "lx");
-    static const float turn_sign = getenv("BF_PLANE_TURN_SIGN") ? float(atof(getenv("BF_PLANE_TURN_SIGN"))) : 1.0f;
-    double dt = w.now - b.fly_last_t;
-    if (dt > 0.25) {
-      if (b.fly_last_t > 0 && dt < 2.0) {
-        b.fly_vy = 0.7f * b.fly_vy + 0.3f * float((me.pos.y - b.fly_last_y) / dt);
-        b.fly_rate = 0.6f * b.fly_rate + 0.4f * float(Wrap(b.boat_heading - b.fly_last_h) / dt);
-      }
-      b.fly_last_y = me.pos.y;
-      b.fly_last_h = b.boat_heading;
-      b.fly_last_t = w.now;
-    }
+  // A plane (see the pilots' section above): full throttle (LT) off the deck,
+  // up to a cruising height, then patrol over the middle of the map, hunt the
+  // nearest enemy plane in the air (aiming ahead of it) and shoot, keep clear
+  // of the sea, the land and the edge of the play area. Steered from the
+  // plane's own orientation (BotIO::att): a heading error makes a bank to
+  // roll to (right stick X: a rate), the height a pitch to hold (right stick Y).
+  bool Fly(BotIO& io, Bot& b, const Soldier& me, Vec /*goal*/, Pad& cmd) {
+    static const float pitch_sign = getenv("BF_PLANE_PITCH_SIGN") ? float(atof(getenv("BF_PLANE_PITCH_SIGN"))) : -1.0f;
+    static const float roll_sign = getenv("BF_PLANE_ROLL_SIGN") ? float(atof(getenv("BF_PLANE_ROLL_SIGN"))) : 1.0f;
+    static const float bank_max = getenv("BF_PLANE_BANK_MAX") ? float(atof(getenv("BF_PLANE_BANK_MAX"))) : 1.2f;
+    static const float k_bank = getenv("BF_PLANE_KBANK") ? float(atof(getenv("BF_PLANE_KBANK"))) : 2.0f;
+    static const float k_roll_d = getenv("BF_PLANE_KROLLD") ? float(atof(getenv("BF_PLANE_KROLLD"))) : 0.0f;
+    static const float k_pitch = getenv("BF_PLANE_KPITCH") ? float(atof(getenv("BF_PLANE_KPITCH"))) : 2.0f;
+    static const float k_pitch_d = getenv("BF_PLANE_KPITCHD") ? float(atof(getenv("BF_PLANE_KPITCHD"))) : 0.0f;
+    Pilot& pl = g_pilot[io.slot % kMaxBots];
+    if (pl.since != b.drive_since) pl = Pilot{}, pl.since = b.drive_since;
+    double t = w.now - b.drive_since;
+    float deck = b.boat_start.y;
+    Kin k = Kinematics(g_tracks[me.obj]);
     cmd.triggers = 255u;  // LT: throttle
     if (getenv("BF_PLANE_BOOST")) cmd.buttons |= kLeftThumb, cmd.ly = 1.0f;  // EXPERIMENT
-    double t = w.now - b.drive_since;
-    if (t < 5.0) return true;  // rolling along the deck
-    const float cruise = 380.0f;  // the sea is at about 214
-    float want_vy = std::clamp((cruise - me.pos.y) * 0.25f, -8.0f, 12.0f);
-    float gain = getenv("BF_PLANE_VY_GAIN") ? float(atof(getenv("BF_PLANE_VY_GAIN"))) : 0.05f;
-    cmd.ry = sign * std::clamp((want_vy - b.fly_vy) * gain, -0.5f, 0.6f);
-    if (me.pos.y < 240.0f && t > 8.0) cmd.ry = sign * 0.6f;  // too low: climb
-    float d = Dist2D(me.pos, goal);
-    float want = std::atan2(goal.x - me.pos.x, goal.z - me.pos.z);
-    if (d < 150.0f) want += 1.3f;  // there: circle it
-    float e = Wrap(want - b.boat_heading);
-    // (The roll is a rate: a bank stays when let go, and right stick + turns
-    // the heading up, BF_PLANE_ROLL_PROBE.)
-    static const float max_rate = getenv("BF_PLANE_RATE") ? float(atof(getenv("BF_PLANE_RATE"))) : 0.15f;
-    float want_rate = std::clamp(e * 0.4f, -max_rate, max_rate);
-    if (me.pos.y < 320.0f || b.fly_vy < -8.0f) want_rate = 0;  // low or falling: wings level first
-    float turn = t < 9.0 ? 0.0f : std::clamp((want_rate - b.fly_rate) * 1.0f, -0.3f, 0.3f) * turn_sign;
-    // BF_PLANE_ROLL_PROBE=<amount> (testing): from 20 s, that roll 3 s, level
-    // 6 s, the other way 3 s, level; heading and height logged.
-    if (const char* pr = getenv("BF_PLANE_ROLL_PROBE"); pr && t > 20.0) {
-      float amt = float(atof(pr)), k = float(std::fmod(t - 20.0, 24.0));
-      turn = k < 3 ? amt : k < 9 ? 0.0f : k < 12 ? -amt : 0.0f;
-      static double nx = 0;
-      if (w.now >= nx)
-        nx = w.now + 0.5, Log("fly probe: t %.1f roll %.2f heading %.0f rate %.2f height %.0f vy %.1f", t, turn,
-                              b.boat_heading * 57.3f, b.fly_rate, me.pos.y, b.fly_vy);
+    if (!k.ok) return true;  // (rolling along the deck, no track yet)
+    // The orientation: rows right, up, forward; from the track of positions when the body is not readable
+    // (some flights: the physics body of the plane is not where it is expected).
+    Vec R{io.att[0], io.att[1], io.att[2]}, U{io.att[3], io.att[4], io.att[5]}, F{io.att[6], io.att[7], io.att[8]};
+    if (!io.att_ok) {
+      float sp = std::max(k.speed, 1.0f);
+      F = {k.v.x / sp, k.v.y / sp, k.v.z / sp};
+      R = {F.z, 0.0f, -F.x};
+      U = {0.0f, 1.0f, 0.0f};
     }
-    if (turn_lx) cmd.lx = turn;
-    else cmd.rx = turn;
-    snprintf(b.probe_name, sizeof(b.probe_name), "fly %.0f", me.pos.y);
-    if (getenv("BF_PLANE_TRACE")) {
-      static double next = 0;
-      if (w.now >= next) {
-        next = w.now + 2.0;
-        const Vehicle* v = b.boat ? FindVehicle(b.boat) : nullptr;
-        Log("fly: bot%d at %.0f,%.0f,%.0f, its plane %s at %.0f,%.0f,%.0f; pad lx %.2f ly %.2f rx %.2f ry %.2f lt %u",
-            io.slot + 1, me.pos.x, me.pos.y, me.pos.z, v ? v->kind : "?", v ? v->pos.x : 0, v ? v->pos.y : 0,
-            v ? v->pos.z : 0, cmd.lx, cmd.ly, cmd.rx, cmd.ry, cmd.triggers & 0xFF);
+    float bank = std::atan2(-R.y, U.y), pitch = std::asin(std::clamp(F.y, -1.0f, 1.0f)), psi = std::atan2(F.x, F.z);
+    double dt = w.now - pl.last_t;
+    if (dt > 0.05) {
+      if (pl.last_t > 0 && dt < 0.5) {
+        pl.p = 0.6f * pl.p + 0.4f * float(Wrap(bank - pl.last_bank) / dt);
+        pl.q = 0.6f * pl.q + 0.4f * float((pitch - pl.last_pitch) / dt);
+        pl.pr = 0.6f * pl.pr + 0.4f * float(Wrap(psi - pl.last_psi) / dt);
       }
+      pl.last_t = w.now, pl.last_bank = bank, pl.last_pitch = pitch, pl.last_psi = psi;
+    }
+    if (const char* raw = getenv("BF_PLANE_RAW"); raw && io.slot == (getenv("BF_PLANE_RAW_SLOT") ? atoi(getenv("BF_PLANE_RAW_SLOT")) : 0)) {
+      if (FILE* f = fopen(raw, "a"))
+        fprintf(f, "%.3f,%.1f,%.1f,%.1f,%.4f,%.4f,%.4f,%.3f,%.3f,%.3f\n", w.now, me.pos.x, me.pos.y, me.pos.z, bank, pitch, psi, pl.roll, pl.climb, k.speed), fclose(f);
+    }
+    float speed = k.speed;
+    if (getenv("BF_PLANE_NOCTRL") && t > 12.0) {  // (testing: throttle only, the attitude logged; BF_PLANE_ACT_SCAN)
+      if (const char* pr = getenv("BF_PLANE_PROBE_RX")) {  // a square wave of rx (and ry from BF_PLANE_PROBE_RY), period 16 s
+        double ph = std::fmod(w.now, 16.0);
+        float amt = float(atof(pr)), amy = getenv("BF_PLANE_PROBE_RY") ? float(atof(getenv("BF_PLANE_PROBE_RY"))) : 0.0f;
+        cmd.rx = ph < 4 ? amt : ph < 8 ? 0.0f : ph < 12 ? -amt : 0.0f;
+        cmd.ry = ph < 4 ? amy : ph < 8 ? 0.0f : ph < 12 ? -amy : 0.0f;
+      }
+      if (w.now >= pl.next_log) {
+        pl.next_log = w.now + 0.5;
+        Log("noctrl: bot%d rx %.1f ry %.1f at %.0f,%.0f,%.0f psi %.0f bank %.0f pitch %.0f p %.2f q %.2f spd %.0f", io.slot + 1, cmd.rx, cmd.ry,
+            me.pos.x, me.pos.y, me.pos.z, psi * 57.3f, bank * 57.3f, pitch * 57.3f, pl.p, pl.q, speed);
+      }
+      return true;
+    }
+    Vec centre{0, 0, 0};
+    for (int i = 0; i < w.point_count; ++i)
+      centre.x += w.points[i].pos.x / w.point_count, centre.z += w.points[i].pos.z / w.point_count;
+    const char* mode = "patrol";
+    Vec aim = me.pos;
+    float aim_alt = deck + 300.0f;
+    float want = psi;
+    // The enemy plane to hunt: the nearest in the air (the one hunted already counts 150 m nearer).
+    const Soldier* tgt = nullptr;
+    float best = 1e9f;
+    for (int i = 0; i < w.soldier_count; ++i) {
+      const Soldier& s = w.soldiers[i];
+      if (s.team == me.team || !s.vehicle || s.pos.y < deck + 40.0f || s.health <= 0) continue;
+      float d = Dist3D(s.pos, me.pos);
+      if (d > 1800.0f) continue;
+      float score = d - (s.obj == pl.target ? 150.0f : 0.0f);
+      if (score < best) best = score, tgt = &s;
+    }
+    float tgt_d = 0, tgt_ang = 9;
+    float radial = std::hypot(me.pos.x - centre.x, me.pos.z - centre.z);
+    if (radial > kArea) {  // the edge: back to the middle first
+      mode = "return";
+      want = std::atan2(centre.x - me.pos.x, centre.z - me.pos.z);
+    } else if (tgt) {
+      mode = "hunt";
+      pl.target = tgt->obj;
+      tgt_d = Dist3D(tgt->pos, me.pos);
+      Kin tk = Kinematics(g_tracks[tgt->obj]);
+      float tof = std::min(tgt_d / 300.0f, 2.5f);
+      aim = tk.ok ? Vec{tgt->pos.x + tk.v.x * tof, tgt->pos.y + tk.v.y * tof, tgt->pos.z + tk.v.z * tof} : tgt->pos;
+      want = std::atan2(aim.x - me.pos.x, aim.z - me.pos.z);
+      aim_alt = aim.y;
+      // On target: the nose points at where it will be (the guns are fixed to it).
+      Vec los{aim.x - me.pos.x, aim.y - me.pos.y, aim.z - me.pos.z};
+      float ll = std::max(std::sqrt(los.x * los.x + los.y * los.y + los.z * los.z), 1.0f);
+      tgt_ang = std::acos(std::clamp((los.x * F.x + los.y * F.y + los.z * F.z) / ll, -1.0f, 1.0f));
+      if (tgt_d < 700.0f && tgt_ang < 0.04f + 1.5f / std::max(tgt_d, 60.0f)) cmd.triggers |= 255u << 8;  // RT: fire
+    } else {
+      // Patrol: waypoints round the middle of the map.
+      if (w.now > pl.wp_until || Dist2D(pl.wp, me.pos) < 200.0f) {
+        float a = Rand(0, 6.2832f), r = Rand(150.0f, 600.0f);
+        pl.wp = {centre.x + r * std::sin(a), deck + Rand(220.0f, 420.0f), centre.z + r * std::cos(a)};
+        pl.wp_until = w.now + 30.0;
+      }
+      want = std::atan2(pl.wp.x - me.pos.x, pl.wp.z - me.pos.z);
+      aim_alt = pl.wp.y;
+    }
+    // The ground ahead (World::ground, -1e9 where unknown): over its highest point in the next 6 s.
+    float floor_alt = deck + 110.0f;
+    if (w.ground)
+      for (float s = 1.0f; s <= 6.0f; s += 1.0f) {
+        float g = w.ground(me.pos.x + k.v.x * s, me.pos.z + k.v.z * s);
+        if (g > -1e8f) floor_alt = std::max(floor_alt, g + 100.0f);
+      }
+    aim_alt = std::clamp(std::max(aim_alt, floor_alt + 40.0f), floor_alt, deck + 560.0f);
+    bool taking_off = me.pos.y < deck + 40.0f;
+    // The bank wanted: toward the heading wanted (wings level close to the ground), and the pitch for the height.
+    float e = Wrap(want - psi);
+    float bmax = me.pos.y > aim_alt + 100.0f ? bank_max + 0.15f : bank_max;  // (high: a steeper bank turns without climbing)
+    float bank_d = std::clamp(2.0f * e, -bmax, bmax);
+    bool low = me.pos.y < floor_alt - 20.0f;
+    if (taking_off || low) bank_d = 0.0f;
+    // The pitch holds the flight path (the climb angle of the velocity) at the one the height wanted
+    // needs, so a banked turn pulls as hard as it takes to keep the height.
+    float gamma = std::asin(std::clamp(k.v.y / std::max(speed, 1.0f), -1.0f, 1.0f));
+    float gamma_d = std::clamp((aim_alt - me.pos.y) * 0.004f, -0.25f, 0.35f);
+    if (low || me.pos.y < floor_alt) gamma_d = 0.4f;
+    if (taking_off) gamma_d = speed > 24.0f || t > 9.0 ? 0.3f : 0.0f;
+    if (pitch > 0.6f) gamma_d = std::min(gamma_d, gamma - 0.1f);  // (too steep: stalling)
+    // Too slow to climb: the engine only holds the speed on a gentle slope (a plane at 20 m/s mushes and
+    // does not answer the sticks).
+    gamma_d = std::min(gamma_d, std::clamp((speed - 26.0f) * 0.02f, -0.15f, 0.35f));
+    // The stick is a pitch rate (about 0.3 rad/s per unit): the pitch angle is steered, to the climb angle wanted plus the angle of attack.
+    pl.alpha += (std::clamp(pitch - gamma, -0.15f, 0.35f) - pl.alpha) * 0.05f;
+    float pitch_d = std::clamp(gamma_d + pl.alpha, -0.7f, 0.7f);
+    pl.climb = std::clamp(k_pitch * (pitch_d - pitch) - k_pitch_d * pl.q, -0.8f, 0.8f);
+    static const bool bank_turn = getenv("BF_PLANE_TURN") && !strcmp(getenv("BF_PLANE_TURN"), "bank");
+    if (!bank_turn) {
+      // The rudder turns it (yaw about 9 deg/s at full, a small bank follows by itself): no roll to run away.
+      static const float k_rud = getenv("BF_PLANE_KRUD") ? float(atof(getenv("BF_PLANE_KRUD"))) : 2.0f;
+      static const float k_rud_d = getenv("BF_PLANE_KRUDD") ? float(atof(getenv("BF_PLANE_KRUDD"))) : 1.5f;
+      pl.roll = taking_off ? 0.0f : std::clamp(k_rud * e - k_rud_d * pl.pr, -1.0f, 1.0f);
+      bank_d = 0.0f;
+    } else {
+      pl.roll = std::clamp(k_bank * Wrap(bank_d - bank) - k_roll_d * pl.p, -1.0f, 1.0f);
+      // A turn: banked, the plane turns by pulling up (the nose goes round with the pull), not by the bank alone.
+      static const float turn_pull = getenv("BF_PLANE_PULL") ? float(atof(getenv("BF_PLANE_PULL"))) : 0.5f;
+      if (!low && !taking_off) {
+        float pull = std::clamp(std::fabs(e) * 1.5f, 0.0f, turn_pull) * std::clamp((std::fabs(bank) - 0.5f) / 0.5f, 0.0f, 1.0f);
+        pl.climb = std::max(pl.climb, pull);
+      }
+    }
+    if (U.y < 0.0f) pl.climb = std::min(pl.climb, 0.0f);  // (inverted: no pulling)
+    cmd.rx = roll_sign * pl.roll;
+    cmd.ry = pitch_sign * pl.climb;
+    snprintf(b.probe_name, sizeof(b.probe_name), "%s %.0f", mode, me.pos.y);
+    if (getenv("BF_PLANE_TRACE") && w.now >= pl.next_log) {
+      pl.next_log = w.now + (getenv("BF_PLANE_LOGDT") ? atof(getenv("BF_PLANE_LOGDT")) : 1.0);
+      Log("fly: bot%d %s at %.0f,%.0f,%.0f psi %.0f want %.0f bank %.0f/%.0f pitch %.0f/%.0f p %.2f q %.2f spd %.0f | rx %.2f ry %.2f fire %u | tgt %.0f m ang %.2f",
+          io.slot + 1, mode, me.pos.x, me.pos.y, me.pos.z, psi * 57.3f, want * 57.3f, bank * 57.3f, bank_d * 57.3f, pitch * 57.3f,
+          gamma_d * 57.3f, pl.p, pl.q, speed, cmd.rx, cmd.ry, (cmd.triggers >> 8) & 0xFFu, tgt_d, tgt_ang);
     }
     return true;
   }
@@ -483,7 +673,7 @@ struct Brain {
           boat = away > 200.0f && !b.boat_done ? NearestVehicle(me.pos, 60.0f, io, b, true, false) : nullptr;
           b.ride_land = false;
           // One bot in four is a pilot: a plane close by (a carrier's).
-          if (!boat && io.slot % 4 == 3) {
+          if (!boat && (io.slot % 4 == 3 || (w.nav_path && strstr(w.nav_path, "Coral")))) {
             float best = 50.0f;
             for (int i = 0; i < w.vehicle_count; ++i) {
               const Vehicle& v = w.vehicles[i];
@@ -1106,5 +1296,6 @@ BOT_BRAIN_API void BotBrainThink(World* w) {
   if (now_scenario != last_scenario) sc = ParseScenario(w->scenario), last_scenario = now_scenario;
   g_shore.Load(w->nav_path);
   Brain brain{*w, rng, sc};
+  UpdateTracks(*w);
   for (int i = 0; i < w->bot_count; ++i) brain.Think(w->bots[i]);
 }
