@@ -503,12 +503,12 @@ void SpirvShaderTranslator::EmitPbrParallax(
            div(b.createUnaryOp(spv::OpFNegate, f1, dot(grad_v, v)), n_v)});
   // A texture's relief scales with how big it is in the world: 1.5 % of a
   // repeat (fine detail on a gun, deeper planks on a deck), at most pom
-  // metres; full near, none from 45 m (it would only shimmer).
+  // metres; full near, none from 30 m (further out it only swam as the camera moved).
   spv::Id texels_per_m = ext2(GLSLstd450FMax, f1, ext1(GLSLstd450Length, f1, grad_u),
                               ext1(GLSLstd450Length, f1, grad_v));
   spv::Id depth = ext2(GLSLstd450FMin, f1, k(pbr_->pom * pbr::PomScale()),
-                       div(k(0.015f), ext2(GLSLstd450FMax, f1, texels_per_m, k(1e-3f))));
-  depth = mul(f1, depth, sat(sub(f1, k(1.5f), div(dist, k(30.0f)))));
+                       div(k(0.0075f), ext2(GLSLstd450FMax, f1, texels_per_m, k(1e-3f))));
+  depth = mul(f1, depth, sat(sub(f1, k(1.5f), div(dist, k(20.0f)))));
   depth = sel(f1, frame_ok, depth, k(0.0f));
 
   // The height (alpha of the normal map without swizzle; 1, flat, for maps
