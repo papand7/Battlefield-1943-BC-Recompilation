@@ -95,7 +95,7 @@ struct Settings {
   float cloud_thickness = 1100.0f;
   int cloud_steps = 24;
   float cloud_density = 0.012f;  // extinction per metre in a full cloud
-  float cloud_wind = 10.0f;      // metres a second
+  float cloud_wind = 4.0f;       // metres a second
   float cloud_shadows = 0.85f;   // 0 off, 1 the sun's whole share under a thick cloud
   // Ambient occlusion (GTAO) from the depth, at half resolution: corners,
   // contact under objects, vegetation. Mostly the ambient share of the light,

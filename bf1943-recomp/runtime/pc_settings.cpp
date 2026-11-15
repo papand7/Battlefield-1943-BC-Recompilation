@@ -226,7 +226,7 @@ void Build() {
   v.push_back(Choice(kEffects, "clouds", L"CLOUDS", L"Volumetric clouds.",
                      {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.3", "0.45", "0.65"}, 2));
   v.push_back(Choice(kEffects, "cloud_shadows", L"CLOUD SHADOWS",
-                     L"Clouds shadow the ground.", kOffOn, {"0", "0.85"}, 1));
+                     L"Clouds shadow the ground.", kOffOn, {"0", "0.55"}, 1));
   v.push_back(Choice(kEffects, "density", L"FOG", L"Height fog over the sea.",
                      {L"LIGHT", L"NORMAL", L"THICK"}, {"0.0009", "0.0018", "0.0036"}, 1));
   v.push_back(Choice(kEffects, "shafts", L"LIGHT SHAFTS", L"Shadowed air in the fog.",
@@ -790,7 +790,7 @@ struct PresetValue { const char* key; const char* low; const char* medium; const
 const PresetValue kPresets[] = {
     {"rt", "0", "0", "1", "1"},                   {"shadows", "0", "1", "1", "1"},
     {"gi", "0", "0", "1", "1"},                   {"ao", "0", "0.5", "1", "1"},
-    {"clouds", "0.3", "0.45", "0.45", "0.45"},    {"cloud_shadows", "0", "0.85", "0.85", "0.85"},
+    {"clouds", "0.3", "0.45", "0.45", "0.45"},    {"cloud_shadows", "0", "0.55", "0.55", "0.55"},
     {"shafts", "0", "0.6", "0.6", "0.6"},         {"reflect", "0", "1", "1", "1"},
     {"gloss", "0", "0", "1", "1"},                {"water_foam", "0", "0", "1", "1"},
     {"water_refract", "0", "1", "1", "1"},        {"water_shallow", "0", "1", "1", "1"},

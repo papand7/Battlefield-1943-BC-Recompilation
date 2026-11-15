@@ -2528,6 +2528,16 @@ void main() {
         float a_front = 1.0 - pow(max(1.0 - c.a, 1e-4), front);
         c = vec4(c.rgb * (a_front / c.a), a_front);
       }
+      if (sky) {
+        // Objects the saved depth misses count as sky here (palm crowns, the
+        // tops of bunkers, wires): the game's sky is blue or white, so a
+        // green or very dark pixel is one of them, and the clouds stay behind
+        // it (they were drawn over trees, washing the crowns out).
+        float luma_here = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+        float object_like = max(smoothstep(0.02, 0.10, color.g - color.b),
+                                1.0 - smoothstep(0.06, 0.18, luma_here));
+        c *= 1.0 - object_like;
+      }
       color.rgb = color.rgb * (1.0 - c.a) + c.rgb;
     }
   }

@@ -27,7 +27,7 @@ const fxRows = [
   ['fx_gi', 'Bounce light', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
   ['fx_ao', 'Ambient occlusion', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
   ['fx_clouds', 'Clouds', [['Off', '0'], ['Few', '0.3'], ['Normal', '0.45'], ['Many', '0.65']], '0.45'],
-  ['fx_cloud_shadows', 'Cloud shadows', [['Off', '0'], ['On', '0.85']], '0.85'],
+  ['fx_cloud_shadows', 'Cloud shadows', [['Off', '0'], ['On', '0.55']], '0.55'],
   ['fx_density', 'Fog', [['Light', '0.0009'], ['Normal', '0.0018'], ['Thick', '0.0036']], '0.0018'],
   ['fx_shafts', 'Light shafts', [['Off', '0'], ['Normal', '0.6'], ['Strong', '0.9']], '0.6'],
   ['fx_reflect', 'Sea reflections', offOn, '1'],
@@ -45,7 +45,7 @@ const fxRows = [
 // The quality presets' effect values (pc_settings.cpp kPresets: low, medium, high, ultra).
 const fxPresets = {
   rt: ['0', '0', '1', '1'], shadows: ['0', '1', '1', '1'], gi: ['0', '0', '1', '1'], ao: ['0', '0.5', '1', '1'],
-  clouds: ['0.3', '0.45', '0.45', '0.45'], cloud_shadows: ['0', '0.85', '0.85', '0.85'], shafts: ['0', '0.6', '0.6', '0.6'],
+  clouds: ['0.3', '0.45', '0.45', '0.45'], cloud_shadows: ['0', '0.55', '0.55', '0.55'], shafts: ['0', '0.6', '0.6', '0.6'],
   reflect: ['0', '1', '1', '1'], gloss: ['0', '0', '1', '1'], water_foam: ['0', '0', '1', '1'],
   water_refract: ['0', '1', '1', '1'], water_shallow: ['0', '1', '1', '1'], detail: ['0', '1', '1', '1.5'],
   particle_quality: ['0', '1', '1', '1'], soft_particles: ['0', '1', '1', '1'], explosion_smoke: ['0', '0', '0', '1'],
