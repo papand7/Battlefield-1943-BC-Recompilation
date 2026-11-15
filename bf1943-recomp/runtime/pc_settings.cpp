@@ -517,6 +517,7 @@ void GovernorFrame() {
   if (next == g_gov_level) return;
   g_gov_level = next;
   g_gov_cooldown = 120;  // let the new level show in the average first
+  RT_INFO("governor: level %d (average frame %.1f ms, budget %.1f ms)", g_gov_level, g_gov_avg, budget);
   if (g_gov_level == 0) {
     ApplyLive();
   } else {
