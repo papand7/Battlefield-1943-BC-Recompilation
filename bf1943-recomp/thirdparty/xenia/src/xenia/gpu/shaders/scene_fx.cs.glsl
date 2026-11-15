@@ -807,7 +807,11 @@ float CloudNoise2(vec2 p) {
              f.y);
 }
 
-float CloudSeaLevel() { return SeaLevel(); }
+// The clouds' sea level: never more than 800 m under the eye. A waterline
+// measured far too low at some places (a ray under the map) dropped the whole
+// layer to the ground there: clouds in front of trees and buildings, and the
+// sky changing as the measurement came and went.
+float CloudSeaLevel() { return max(SeaLevel(), camera.y - 800.0); }
 
 // 0...1 at p; detail adds the 3D wear (left out for the light and shadows,
 // which also take only the two broadest octaves of the fields).
