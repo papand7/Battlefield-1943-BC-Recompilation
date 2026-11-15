@@ -12,6 +12,7 @@
 #include <unistd.h>
 #endif
 
+#include <atomic>
 #include <bitset>
 #include <chrono>
 #include <map>
@@ -31,6 +32,9 @@ namespace {
 constexpr uint64_t kPage = 0x1000;
 std::mutex g_commit_mutex;
 std::bitset<(1ull << 32) / kPage>* g_committed = nullptr;  // one bit per 4 KB page
+// Set once MemoryInit has made g_base and g_committed: threads that static
+// initializers start (the bots' helpers) can run before main gets that far.
+std::atomic<bool> g_memory_ready{false};
 #ifndef _WIN32
 // mprotect works in host pages, which can be larger than the guest's 4 KB
 // (16 KB on Apple Silicon and some arm64 Linux, 64 KB on others).
@@ -147,8 +151,11 @@ bool MemoryInit() {
   Commit(0x7FC80000, 0x20000);
   // Audio (XMA) register block, plain memory until audio exists.
   Commit(0x7FEA0000, 0x10000);
+  g_memory_ready.store(true, std::memory_order_release);
   return true;
 }
+
+bool GuestMemoryReady() { return g_memory_ready.load(std::memory_order_acquire); }
 
 // DEBUG --snap-mem: committed pages of the heaps and the image, as
 // (u32 address, 4 KB) records, to find game state by comparing snapshots.
@@ -194,6 +201,7 @@ void Commit(uint32_t guest, uint32_t size) {
 }
 
 bool IsCommitted(uint32_t guest) {
+  if (!g_memory_ready.load(std::memory_order_acquire)) return false;
   if (guest >= 0xC0000000 && guest < 0xE0000000) guest -= 0x20000000;
   return g_committed->test(guest / kPage);
 }

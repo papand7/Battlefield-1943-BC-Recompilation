@@ -3,8 +3,9 @@
 Findings from running Valley Run (mp_harbour_day1) as a dedicated server with
 bots (`--dedicated --maps mp_harbour_day1 --bots N`), the test options
 `BF_BOT_STRING_SCAN`, `BF_BOT_WEAPON_DUMP`, `BF_BOT_KIT_DUMP`,
-`BF_BOT_GRENADE_TEST`, and `BF_BOT_CLASS`. (`BF_BOT_NAV_RECORD=0` avoids a
-start-up crash of the trail recorder thread, which can run before guest memory exists.)
+`BF_BOT_GRENADE_TEST`, and `BF_BOT_CLASS`. (The trail recorder thread's start-up
+crash, before guest memory existed, is fixed: it waits for `GuestMemoryReady()`, and
+`IsCommitted` is false until then.)
 
 ## Which kit carries what
 

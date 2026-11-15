@@ -49,6 +49,7 @@ float g_shadow_distance = 0;
 std::string g_worldrender;
 std::string g_overgrowth;
 float g_lod = 1.0f;
+float g_wind_cli = -1.0f;   // --wind (-1: the PLANT WIND setting), as bf1943's game_patches.cpp
 bool g_auto_start = false;  // set by main.cpp for dedicated/bot copies (bf1943)
 
 std::atomic<bool> g_host_request{false};  // HostFromMainLoop starts hosting g_host_map

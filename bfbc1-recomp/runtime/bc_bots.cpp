@@ -822,7 +822,10 @@ const bool g_input_probe_started = [] {
 // (not a bot) leaves a trail point every metre in nav/<map>.txt ("x y z" per
 // line; "-" starts a new trail: a respawn or a jump of over 5 m). Bots route
 // along these trails. On while hosting (--host); BF_BOT_NAV_RECORD=0 turns it off.
+// The thread starts from a static initializer, before main has made guest
+// memory: it waits for GuestMemoryReady (IsCommitted is false until then too).
 void RecordTrails() {
+  if (!GuestMemoryReady()) return;
   static std::map<uint32_t, std::array<float, 3>> last;  // per soldier
   if (!g_lan_host || g_host_map.empty()) return;
   std::filesystem::create_directories("nav");
@@ -854,6 +857,7 @@ const bool g_trails_started = [] {
   const char* env = getenv("BF_BOT_NAV_RECORD");
   if (env && !strcmp(env, "0")) return false;
   std::thread([] {
+    while (!GuestMemoryReady()) std::this_thread::sleep_for(std::chrono::milliseconds(100));
     for (;;) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       RecordTrails();

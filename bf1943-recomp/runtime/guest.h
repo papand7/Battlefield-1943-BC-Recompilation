@@ -25,7 +25,8 @@ bool MemoryInit();
 void Commit(uint32_t guest, uint32_t size);
 void SnapshotMemory(const char* path);  // DEBUG
 void StartWriteWatch(uint32_t addr, uint32_t size, double at);  // DEBUG
-bool IsCommitted(uint32_t guest);  // is the 4 KB page backed?
+bool IsCommitted(uint32_t guest);  // is the 4 KB page backed? (false before MemoryInit)
+bool GuestMemoryReady();           // has MemoryInit run? (for threads started by static initializers)
 
 template <class T = uint8_t>
 inline T* G(uint32_t guest) { return reinterpret_cast<T*>(g_base + guest); }
