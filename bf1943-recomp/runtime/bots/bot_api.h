@@ -10,7 +10,7 @@
 
 namespace botapi {
 
-constexpr int kVersion = 8;      // bump when a struct here changes
+constexpr int kVersion = 9;     // bump when a struct here changes
 constexpr int kMaxBots = 16;
 constexpr int kMemSize = 1024;   // per-bot brain state
 constexpr float kPi = 3.14159265f;
@@ -68,6 +68,10 @@ struct BotIO {
   bool teleport;        // out: put the soldier at `to` (scenarios)
   Vec to;
   const float* tune;    // in: its behaviour settings (kTuneCount; null: the defaults)
+  // in: the orientation of the plane it sits in (the physics body's 3x3 rows, as the game keeps
+  // them: bot_players.cpp, docs/bot_planes.md); false when not in a plane or not readable.
+  bool att_ok;
+  float att[9];
   uint32_t mem_tag;     // the brain's state: reset when the tag isn't its own
   alignas(8) unsigned char mem[kMemSize];
 };

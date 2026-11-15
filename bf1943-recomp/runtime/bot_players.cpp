@@ -313,6 +313,10 @@ uint32_t rt::BotPlayerSoldier(int i) {
   uint32_t so = g_players[size_t(i)].soldier;
   return so && IsCommitted(so + 0x400) && Ld32(so) == kSoldier ? so : 0;
 }
+uint32_t rt::BotPlayerVehicle(int i) {
+  if (i < 0 || i >= int(g_players.size())) return 0;
+  return g_players[size_t(i)].vehicle;
+}
 void rt::SetBotPlayerVehicle(int i, uint32_t vehicle) {
   if (i < 0 || i >= int(g_players.size())) return;
   BotPlayer& b = g_players[size_t(i)];
@@ -843,6 +847,15 @@ GAME_PATCH(82414430) {
         if (in_vehicle) {
           m &= ~(uint64_t(1) << 40);
           for (int k = 0; k < 10; ++k) St32(b.move_msg + 0x10 + 8 + 4 * k, b.analog[k]);  // throttle, steering, pitch, roll, fire...
+          static int64_t said_move[16] = {};
+          if (getenv("BF_PLANE_ATTLOG") && b.index < 16 && now - said_move[b.index] > 3000) {
+            said_move[b.index] = now;
+            float a[10];
+            memcpy(a, b.analog, sizeof(a));
+            RT_INFO("movelog: bot %d vehicle %08X id %u analog thr %.2f strafe %.2f brake %.2f hb %.2f yaw %.2f pitch %.2f roll %.2f fire %.2f; pad rx %.2f ry %.2f lt %u; bits %016llX",
+                    b.index, b.vehicle, b.vehicle_id, a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], b.rx, b.ry, b.triggers & 0xFF,
+                    (unsigned long long)b.bits);
+          }
         }
         St32(b.move_msg + 0x10 + 0x78, uint32_t(m >> 32)), St32(b.move_msg + 0x10 + 0x7C, uint32_t(m));
         if (const char* t80 = getenv("BF_BOT_T80")) {  // EXPERIMENT: the step's time?
@@ -1419,9 +1432,24 @@ GAME_PATCH(8236F238) {
             put(rec + 8, std::max(lt, b.ly) * thr_scale);  // throttle (LT, as the PC keys)
             put(rec + 0xC, b.lx);                 // steer
             if (b.buttons & 0x0100) put(rec + 0x10, 1.0f);  // LB: brake / reverse
-            put(rec + 0x18, -b.rx);               // yaw
-            put(rec + 0x20, -b.rx);               // roll (a plane turns by it)
+            // (BF_PLANE_YAW_MODE, testing: 0 yaw and roll both from rx, 1 roll only, 2 yaw only, 3 roll from
+            // rx and yaw from lx, the left stick X)
+            static const int yaw_mode = getenv("BF_PLANE_YAW_MODE") ? atoi(getenv("BF_PLANE_YAW_MODE")) : 2;
+            if (yaw_mode == 3) put(rec + 0xC, 0.0f);
+            if (yaw_mode == 0 || yaw_mode == 2) put(rec + 0x18, -b.rx);  // yaw
+            if (yaw_mode == 3) put(rec + 0x18, -b.lx);
+            if (yaw_mode != 2) put(rec + 0x20, -b.rx);                   // roll (a plane turns by it)
             put(rec + 0x1C, b.ry);                // pitch
+            // (BF_PLANE_ACT_SCAN, testing: every 6 s the next action 1..9 at 1.0 for 3 s, logged)
+            static const bool act_scan = getenv("BF_PLANE_ACT_SCAN") != nullptr;
+            if (act_scan) {
+              int64_t t6 = int64_t(GetTickCount64()) / 1000;
+              int k = 1 + int(t6 / 6 % 9);
+              bool on = t6 % 6 < 3;
+              static int64_t last_t6 = -1;
+              if (t6 != last_t6 && t6 % 3 == 0) last_t6 = t6, RT_INFO("actscan: action %d %s", k, on ? "ON" : "off");
+              if (k != 7) put(rec + 8 + 4 * uint32_t(k), on ? 1.0f : 0.0f);
+            }
             if (b.buttons & 0x1000) bit(14);      // A: the next seat
             if ((b.buttons & 0x0040) && getenv("BF_BOT_SEATED_SPRINT")) bit(22);  // EXPERIMENT: a plane's boost?
           } else {
