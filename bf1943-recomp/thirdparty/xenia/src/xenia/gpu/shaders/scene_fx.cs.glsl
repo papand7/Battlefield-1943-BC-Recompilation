@@ -2519,6 +2519,15 @@ void main() {
     CloudSpan(camera.xyz, dir, t0, t1);
     if (t1 > t0 && (sky || dist > t0)) {
       vec4 c = CloudsAt(local);
+      if (!sky && dist < t1 && c.a > 1e-4) {
+        // The cloud was marched to its far side: a surface inside or in front
+        // of the layer only has the cloud before it (optical depth grows with
+        // the distance), not all of it over the surface (trees at the horizon
+        // had the whole cloud in front of them).
+        float front = clamp((dist - t0) / max(t1 - t0, 1.0), 0.0, 1.0);
+        float a_front = 1.0 - pow(max(1.0 - c.a, 1e-4), front);
+        c = vec4(c.rgb * (a_front / c.a), a_front);
+      }
       color.rgb = color.rgb * (1.0 - c.a) + c.rgb;
     }
   }
