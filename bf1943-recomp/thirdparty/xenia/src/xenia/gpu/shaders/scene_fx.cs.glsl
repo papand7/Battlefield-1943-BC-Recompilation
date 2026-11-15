@@ -2060,7 +2060,10 @@ void main() {
     float lum_sky = dot(HazeColor(normalize(vec3(dir.x, 0.05, dir.z))), vec3(0.2126, 0.7152, 0.0722));
     bool through_water = (cn.b > cn.r * 1.15 || (cn.g > cn.r * 1.15 && cn.b > cn.r)) &&
                          lum_here > 0.12 * lum_sky;
-    bool below = has_depth && !on_sea && world.y < sea_level - 0.05 && dist > t_surf && through_water;
+    // Only where the depth really is under the water: a colour test alone
+    // took bullet impacts, splashes and muzzle flashes over the sea for the
+    // sea bed (green or turquoise while shooting).
+    bool below = has_depth && !on_sea && world.y < sea_level - 0.3 && dist > t_surf && through_water;
     bool surface = !has_depth || on_sea;
     if ((below || surface) && (t_surf < 400.0 || water_debug)) {
       vec3 p = camera.xyz + dir * t_surf;
