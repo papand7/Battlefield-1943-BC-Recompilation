@@ -525,20 +525,29 @@ void BurstThread() {
   g_burst_stop = false;
   g_burst_running = false;
 }
-void BurstKey() {
+// Polled every 5 ms on its own thread: a tap shorter than a frame (at 30 fps
+// a frame is 33 ms) was missed when the key was read once a frame.
+void BurstKeyThread() {
 #ifdef _WIN32
-  static bool was_down = false;
-  bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
-  if (down && !was_down) {
-    if (g_burst_running) {
-      g_burst_stop = true;
-    } else {
-      g_burst_running = true;
-      std::thread(BurstThread).detach();
+  bool was_down = false;
+  for (;;) {
+    bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    if (down && !was_down) {
+      if (g_burst_running) {
+        g_burst_stop = true;
+      } else {
+        g_burst_running = true;
+        std::thread(BurstThread).detach();
+      }
     }
+    was_down = down;
+    std::this_thread::sleep_for(std::chrono::milliseconds(5));
   }
-  was_down = down;
 #endif
+}
+void BurstKey() {
+  static std::once_flag started;
+  std::call_once(started, [] { std::thread(BurstKeyThread).detach(); });
 }
 }  // namespace
 
