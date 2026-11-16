@@ -491,31 +491,42 @@ void ApplyLive();
 
 }  // namespace
 
-// F2 (in game): a burst of screenshots, 3 seconds at 10 a second, into
-// frames/burst_<time>_<n>.png. Started on the key's press, once a frame.
+// F2 (in game) starts a burst of screenshots, 10 a second, into
+// frames/burst_<time>_<n>.png; F2 again stops it (60 s at most).
 namespace {
 std::atomic<bool> g_burst_running{false};
+std::atomic<bool> g_burst_stop{false};
 void BurstThread() {
   std::filesystem::create_directories("frames");
   auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
                    std::chrono::system_clock::now().time_since_epoch()).count();
   xgpu::g_burst_recording = true;
-  for (int n = 0; n < 30; ++n) {
+  auto t0 = std::chrono::steady_clock::now();
+  int n = 0;
+  while (!g_burst_stop && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(60)) {
     char path[96];
-    snprintf(path, sizeof(path), "frames/burst_%lld_%02d.png", (long long)stamp, n);
+    snprintf(path, sizeof(path), "frames/burst_%lld_%04d.png", (long long)stamp, n++);
     xgpu::FrameStats st;
     xgpu::CaptureFrame(path, &st);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
   xgpu::g_burst_recording = false;
-  RT_INFO("F2 burst: 30 screenshots in frames/burst_%lld_*.png", (long long)stamp);
+  RT_INFO("F2 burst: %d screenshots in frames/burst_%lld_*.png", n, (long long)stamp);
+  g_burst_stop = false;
   g_burst_running = false;
 }
 void BurstKey() {
 #ifdef _WIN32
   static bool was_down = false;
   bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
-  if (down && !was_down && !g_burst_running.exchange(true)) std::thread(BurstThread).detach();
+  if (down && !was_down) {
+    if (g_burst_running) {
+      g_burst_stop = true;
+    } else {
+      g_burst_running = true;
+      std::thread(BurstThread).detach();
+    }
+  }
   was_down = down;
 #endif
 }
