@@ -21,6 +21,7 @@
 #include "xenia/ui/immediate_drawer.h"
 #include "xenia/ui/ui_drawer.h"
 #include "xenia/gpu/vulkan/scene_fx.h"
+#include "xenia/ui/vulkan/bf_fsr3fg.h"
 #include "xenia/ui/vulkan/bf_hdr.h"
 
 #include <cstdio>
@@ -255,16 +256,23 @@ void UiThread() {
   std::atomic<bool> stop_title{false};
   std::thread title_thread([&] {
     const std::string base = g_window_title;
-    uint64_t last = g_title_swaps;
-    auto t0 = std::chrono::steady_clock::now();
+    uint64_t last = g_title_swaps, last_shown = 0;
+    auto t0 = std::chrono::steady_clock::now(), t0_shown = t0;
     while (!stop_title) {
       std::this_thread::sleep_for(std::chrono::milliseconds(500));
       auto t1 = std::chrono::steady_clock::now();
       uint64_t now = g_title_swaps;
       double fps = double(now - last) / std::chrono::duration<double>(t1 - t0).count();
       last = now, t0 = t1;
-      char buf[32];
-      snprintf(buf, sizeof buf, "  |  %.0f fps", fps);
+      char buf[64];
+      if (xe::ui::vulkan::bffg::active) {  // the frames shown, generated ones too
+        uint64_t shown = xe::ui::vulkan::bffg::presented;
+        double shown_fps = double(shown - last_shown) / std::chrono::duration<double>(t1 - t0_shown).count();
+        last_shown = shown, t0_shown = t1;
+        snprintf(buf, sizeof buf, "  |  %.0f fps (%.0f shown)", fps, shown_fps);
+      } else {
+        snprintf(buf, sizeof buf, "  |  %.0f fps", fps);
+      }
       app_context.CallInUIThread([&window, title = base + buf] { window->SetTitle(title); });
     }
   });
@@ -409,6 +417,9 @@ void GoreDeath(const float feet[3], float damage, bool gib, const float push[3])
   xe::gpu::bflook::AddDeath(feet, damage, gib, push);
 }
 
+bool g_frame_gen = false;
+void SetFrameGeneration(bool on) { g_frame_gen = on; }
+
 void SetDisplayOptions(int resolution_scale, int effect, int window_width, int window_height, int shadowmap) {
   cvars::draw_resolution_scale_x = cvars::draw_resolution_scale_y = std::clamp(resolution_scale, 1, 3);
   // The sun shadowmap (pitch = its size aligned to 80-pixel EDRAM tiles) stays
@@ -432,6 +443,17 @@ void SetDisplayOptions(int resolution_scale, int effect, int window_width, int w
     xe::gpu::bffsr::dlss = effect != 3;
     if (effect != 3) xe::gpu::bfdlss::Prepare();
     xe::gpu::pbr::SetFsrCapture(true);
+  }
+  // Frame generation (bf_fsr3fg.h) interpolates from the upscaler's depth and motion vectors.
+  {
+    const char* e = std::getenv("BF_FRAME_GEN");
+    if (e && *e) g_frame_gen = e[0] == '1';
+    if (g_frame_gen && effect >= 3 && effect <= 5) {
+      xe::ui::vulkan::bffg::requested = true;
+      fprintf(stderr, "[xgpu] FSR 3.1 frame generation requested\n");
+    } else if (g_frame_gen) {
+      fprintf(stderr, "[xgpu] frame generation needs FSR 3, DLSS or AUTO upscaling: off\n");
+    }
   }
   if (window_width > 0 && window_height > 0) g_window_width = window_width, g_window_height = window_height;
 }

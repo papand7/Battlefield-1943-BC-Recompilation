@@ -19,6 +19,7 @@ const defaults = {
   window: '1920x1080',
   display: 'windowed',  // --display (fullscreen: borderless on the monitor)
   upscaleQuality: 'off',  // --upscale-quality (with FSR 3 / DLSS / auto)
+  frameGen: 'off',      // --frame-gen (AMD FSR 3.1 frame generation, with FSR 3 / DLSS / auto)
   shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
   textures: true,
   preset: 'enhanced',   // --preset stock|enhanced|vivid|toon|noir|ww2
@@ -443,6 +444,7 @@ ipcMain.handle('play', async (_, s) => {
     '--preset', s.preset, '--max-fps', s.frameRate, '--window', s.window,
     '--display', s.display || 'windowed', '--upscale-quality', s.upscaleQuality || 'off'];
   if (s.textures) args.push('--textures', texturePack);
+  if (s.frameGen === 'on') args.push('--frame-gen');
   if (s.blood) args.push('--blood');
   if (s.hdr) args.push('--hdr');
   // The sun's shadows: the map's size (1600 at most: the EDRAM) and reach.

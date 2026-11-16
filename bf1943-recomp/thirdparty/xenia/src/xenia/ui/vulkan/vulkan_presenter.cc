@@ -16,6 +16,7 @@
 #include "xenia/base/logging.h"
 #include "xenia/base/math.h"
 #include "xenia/base/platform.h"
+#include "xenia/ui/vulkan/bf_fsr3fg.h"
 #include "xenia/ui/vulkan/bf_hdr.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
 
@@ -547,7 +548,7 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
         paint_context_.swapchain_is_fifo, surface_unusable);
     // Destroy the old swapchain that may be retired now.
     if (old_swapchain != VK_NULL_HANDLE) {
-      dfn.vkDestroySwapchainKHR(device, old_swapchain, nullptr);
+      bffg::DestroySwapchain(vulkan_device_, old_swapchain);
     }
     if (paint_context_.swapchain == VK_NULL_HANDLE) {
       // Couldn't create the swapchain for the existing surface - start over.
@@ -739,8 +740,8 @@ VulkanPresenter::ConnectOrReconnectPaintingToSurfaceFromUIThread(
     uint32_t swapchain_image_count =
         uint32_t(paint_context_.swapchain_images.size());
     bool swapchain_images_were_empty = !swapchain_image_count;
-    swapchain_images_get_result = dfn.vkGetSwapchainImagesKHR(
-        device, paint_context_.swapchain, &swapchain_image_count,
+    swapchain_images_get_result = bffg::GetSwapchainImages(
+        vulkan_device_, paint_context_.swapchain, &swapchain_image_count,
         swapchain_images_were_empty ? nullptr
                                     : paint_context_.swapchain_images.data());
     // If the original swapchain image count was 0 (first call), SUCCESS is
@@ -1275,8 +1276,9 @@ VkSwapchainKHR VulkanPresenter::PaintContext::CreateSwapchainForVulkanSurface(
   swapchain_create_info.clipped = VK_TRUE;
   swapchain_create_info.oldSwapchain = old_swapchain;
   VkSwapchainKHR swapchain;
-  if (dfn.vkCreateSwapchainKHR(device, &swapchain_create_info, nullptr,
-                               &swapchain) != VK_SUCCESS) {
+  // bf1943: the frame generation swapchain where that is on (bf_fsr3fg.h).
+  if (bffg::CreateSwapchain(vulkan_device, swapchain_create_info,
+                            old_swapchain, &swapchain) != VK_SUCCESS) {
     XELOGE("VulkanPresenter: Failed to create a swapchain");
     return VK_NULL_HANDLE;
   }
@@ -1332,8 +1334,7 @@ VkSwapchainKHR VulkanPresenter::PaintContext::PrepareForSwapchainRetirement() {
 void VulkanPresenter::PaintContext::DestroySwapchainAndVulkanSurface() {
   VkSwapchainKHR old_swapchain = PrepareForSwapchainRetirement();
   if (old_swapchain != VK_NULL_HANDLE) {
-    vulkan_device->functions().vkDestroySwapchainKHR(vulkan_device->device(),
-                                                     old_swapchain, nullptr);
+    bffg::DestroySwapchain(vulkan_device, old_swapchain);
   }
   present_queue_family = UINT32_MAX;
   if (vulkan_surface != VK_NULL_HANDLE) {
@@ -1471,9 +1472,9 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
   }
 
   uint32_t swapchain_image_index;
-  VkResult acquire_result = dfn.vkAcquireNextImageKHR(
-      device, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
-      VK_NULL_HANDLE, &swapchain_image_index);
+  VkResult acquire_result = bffg::AcquireNextImage(
+      vulkan_device_, paint_context_.swapchain, UINT64_MAX, acquire_semaphore,
+      &swapchain_image_index);
   switch (acquire_result) {
     case VK_SUCCESS:
     case VK_SUBOPTIMAL_KHR:
@@ -1496,6 +1497,12 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
       XELOGE("VulkanPresenter: Failed to acquire the swapchain image");
       return PaintResult::kNotPresented;
   }
+
+  // bf1943: with frame generation, this present's configuration and the prepare
+  // pass of the game frame (before the render pass).
+  bffg::BeginPresent(vulkan_device_, paint_context_.swapchain,
+                     draw_command_buffer, paint_context_.swapchain_extent.width,
+                     paint_context_.swapchain_extent.height);
 
   // Non-zero extents needed for both the viewport (width must not be zero) and
   // the guest output rectangle.
@@ -2138,8 +2145,8 @@ Presenter::PaintResult VulkanPresenter::PaintAndPresentImpl(
   {
     const VulkanDevice::Queue::Acquisition queue_acquisition =
         vulkan_device_->AcquireQueue(paint_context_.present_queue_family, 0);
-    present_result =
-        dfn.vkQueuePresentKHR(queue_acquisition.queue(), &present_info);
+    present_result = bffg::QueuePresent(vulkan_device_, queue_acquisition.queue(),
+                                        present_info);
   }
   switch (present_result) {
     case VK_SUCCESS:

@@ -12,6 +12,7 @@
 #include "xenia/base/assert.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/platform.h"
+#include "xenia/ui/vulkan/bf_fsr3fg.h"
 
 #include <algorithm>
 #include <cstring>
@@ -538,6 +539,16 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
       std::max(size_t(1),
                device->queue_families_[device->queue_family_graphics_compute_]
                    .queues.size()));
+  // bf1943: the frame generation swapchain (bf_fsr3fg.h) works on queues of its
+  // own, where the family has them.
+  if (bffg::requested && with_swapchain) {
+    const size_t wanted = std::min<size_t>(
+        1 + bffg::kExtraQueues,
+        queue_families[device->queue_family_graphics_compute_].queueCount);
+    QueueFamily& graphics_family =
+        device->queue_families_[device->queue_family_graphics_compute_];
+    graphics_family.queues.resize(std::max(graphics_family.queues.size(), wanted));
+  }
   if (device->queue_family_sparse_binding_ != UINT32_MAX) {
     device->queue_families_[device->queue_family_sparse_binding_].queues.resize(
         std::max(size_t(1),
@@ -838,6 +849,14 @@ std::unique_ptr<VulkanDevice> VulkanDevice::CreateIfSupported(
     features_KHR_ray_query.enabled.rayQuery = VK_TRUE;
     device->extensions_.bf_ray_query = true;
     XELOGI("* bf1943 ray queries");
+  }
+
+  // bf1943: the frame generation swapchain's semaphores are timeline ones.
+  if (bffg::requested && with_swapchain &&
+      properties.apiVersion >= VK_MAKE_API_VERSION(0, 1, 2, 0) &&
+      features_1_2.supported.timelineSemaphore) {
+    features_1_2.enabled.timelineSemaphore = VK_TRUE;
+    XELOGI("* bf1943 timeline semaphores (frame generation)");
   }
 
 #undef XE_UI_VULKAN_LIMIT

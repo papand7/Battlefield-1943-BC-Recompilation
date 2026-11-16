@@ -6,6 +6,7 @@ const rows = [
   ['resolution', 'Render scale', [['1×', '1'], ['2×', '2'], ['3×', '3']]],
   ['upscaling', 'Upscaling', [['FSR', 'fsr'], ['FSR 3', 'fsr3'], ['DLSS', 'dlss'], ['Auto', 'auto'], ['CAS', 'cas'], ['Off', 'off']]],
   ['upscaleQuality', 'Upscale quality', [['Off', 'off'], ['Quality', 'quality'], ['Balanced', 'balanced'], ['Performance', 'performance']]],
+  ['frameGen', 'Frame generation (FSR 3.1)', [['Off', 'off'], ['On', 'on']]],
   ['preset', 'Look', [['Stock', 'stock'], ['Enhanced', 'enhanced'], ['Vivid', 'vivid'], ['Toon', 'toon'], ['Noir', 'noir'], ['WW2', 'ww2']]],
   ['frameRate', 'Frame rate', [['60', '60'], ['120', '120'], ['144', '144'], ['Max', '0']]],
   ['shadowDetail', 'Shadow detail', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra']]],

@@ -133,6 +133,10 @@ void Build() {
                      L"QUALITY renders about 1.5x smaller, PERFORMANCE about 2x. OFF: the RESOLUTION SCALE above.",
                      {L"OFF", L"QUALITY", L"BALANCED", L"PERFORMANCE"}, {"off", "quality", "balanced", "performance"}, 0,
                      true, "upscaleQuality"));
+  v.push_back(Choice(kGraphics, "frame_gen", L"FRAME GENERATION",
+                     L"AMD FSR 3.1: a generated frame between each two of the game's, about twice the frames shown "
+                     L"(with FSR 3, DLSS or AUTO upscaling; best from 60 frames a second).",
+                     kOffOn, {"off", "on"}, 0, true, "frameGen"));
   v.push_back(Choice(kGraphics, "window", L"WINDOW SIZE", L"The game window's size.",
                      {L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160"},
                      {"1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"}, 2, true,

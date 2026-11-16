@@ -20,6 +20,7 @@ namespace rt::xgpu {
 bool Start(uint8_t*, bool, InterruptFn, uint32_t) { return false; }
 void SetOptions(int, uint32_t, const char*) {}
 void SetDisplayOptions(int, int, int, int, int) {}
+void SetFrameGeneration(bool) {}
 void SetLook(int) {}
 void SetHdr(bool, float, float) {}
 void SetHdrStretch(bool) {}
