@@ -51,6 +51,13 @@ uint32_t SpirvShaderTranslator::GetExtraRegisterCount() {
       return 0;
     }
   }
+  if (config->cam_from_buffer && !pbr::MaterialOutput()) {
+    // camv=1 without a view vector of its own needs the camera the scene
+    // effects leave in the materials buffer; without them, the game's look.
+    XELOGW("pbr: shader {:016X} needs the scene effects' camera (camv=1), left as is",
+           current_shader().ucode_data_hash());
+    return 0;
+  }
   pbr_ = config;
   pbr_need_frag_coord_ =
       config->show_fetch != UINT32_MAX || pbr::MaterialOutput();
@@ -432,11 +439,31 @@ spv::Id SpirvShaderTranslator::PbrRoughness() {
       b.makeFloatConstant(0.045f), b.makeFloatConstant(1.0f));
 }
 
+spv::Id SpirvShaderTranslator::PbrBufferCamera() {
+  if (buffer_bf_material_ == spv::NoResult) return spv::NoResult;
+  SpirvBuilder& b = *builder_;
+  spv::Id c[3];
+  for (uint32_t j = 0; j < 3; ++j) {
+    id_vector_temp_util_.clear();
+    id_vector_temp_util_.push_back(const_int_0_);
+    id_vector_temp_util_.push_back(b.makeIntConstant(int(pbr::kMaterialCameraOffset + j)));
+    spv::Id ptr = b.createAccessChain(
+        features_.spirv_version >= spv::Spv_1_3 ? spv::StorageClassStorageBuffer
+                                                : spv::StorageClassUniform,
+        buffer_bf_material_, id_vector_temp_util_);
+    c[j] = b.createUnaryOp(spv::OpBitcast, type_float_, b.createLoad(ptr, spv::NoPrecision));
+  }
+  return b.createCompositeConstruct(type_float3_, {c[0], c[1], c[2]});
+}
+
 void SpirvShaderTranslator::EmitPbrParallax(
     const ParsedTextureFetchInstruction& normal_fetch) {
   if (pbr_tap_vars_[7] == spv::NoResult || !pbr_->wp.valid()) return;
-  if (current_shader().constant_register_map().GetPackedFloatConstantIndex(pbr_->c_cam) ==
-      UINT32_MAX) {
+  // The camera: c_cam, or for the point-light variants (camv=1, where c7 is
+  // a light's colour) the scene effects' copy.
+  if (pbr_->cam_from_buffer ? buffer_bf_material_ == spv::NoResult
+                            : current_shader().constant_register_map().GetPackedFloatConstantIndex(
+                                  pbr_->c_cam) == UINT32_MAX) {
     return;
   }
   EnsureBuildPointAvailable();
@@ -466,11 +493,16 @@ void SpirvShaderTranslator::EmitPbrParallax(
   spv::Id p = b.createCompositeConstruct(
       f3, {comp(wp4, pbr_->wp.comps[0]), comp(wp4, pbr_->wp.comps[1]),
            comp(wp4, pbr_->wp.comps[std::min(2u, pbr_->wp.count - 1)])});
-  InstructionOperand cam_op;
-  cam_op.storage_source = InstructionStorageSource::kConstantFloat;
-  cam_op.storage_index = pbr_->c_cam;
-  spv::Id cam4 = LoadOperandStorage(cam_op);
-  spv::Id cam = b.createCompositeConstruct(f3, {comp(cam4, 0), comp(cam4, 1), comp(cam4, 2)});
+  spv::Id cam;
+  if (pbr_->cam_from_buffer) {
+    cam = PbrBufferCamera();
+  } else {
+    InstructionOperand cam_op;
+    cam_op.storage_source = InstructionStorageSource::kConstantFloat;
+    cam_op.storage_index = pbr_->c_cam;
+    spv::Id cam4 = LoadOperandStorage(cam_op);
+    cam = b.createCompositeConstruct(f3, {comp(cam4, 0), comp(cam4, 1), comp(cam4, 2)});
+  }
   spv::Id to_eye = sub(f3, cam, p);
   spv::Id dist = ext1(GLSLstd450Length, f1, to_eye);
   spv::Id v = vs(f3, to_eye, div(k(1.0f), ext2(GLSLstd450FMax, f1, dist, k(1e-4f))));
@@ -679,19 +711,13 @@ void SpirvShaderTranslator::EmitPbrLighting() {
         f3, {component(wp4, pbr_->wp.comps[0]), component(wp4, pbr_->wp.comps[1]),
              component(wp4, pbr_->wp.comps[std::min(2u, pbr_->wp.count - 1)])});
   }
+  // Whether there is a real view vector (the bump, the material output and
+  // the reflections need it): the shader's own, or for the point-light
+  // variants the camera minus the position.
+  bool has_view = pbr_->v.valid();
   if (pbr_->cam_from_buffer && buffer_bf_material_ != spv::NoResult && wp_here != spv::NoResult) {
-    spv::Id cam_c[3];
-    for (uint32_t j = 0; j < 3; ++j) {
-      id_vector_temp_util_.clear();
-      id_vector_temp_util_.push_back(const_int_0_);
-      id_vector_temp_util_.push_back(b.makeIntConstant(int(pbr::kMaterialCameraOffset + j)));
-      spv::Id ptr = b.createAccessChain(
-          features_.spirv_version >= spv::Spv_1_3 ? spv::StorageClassStorageBuffer
-                                                  : spv::StorageClassUniform,
-          buffer_bf_material_, id_vector_temp_util_);
-      cam_c[j] = b.createUnaryOp(spv::OpBitcast, f1, b.createLoad(ptr, spv::NoPrecision));
-    }
-    v_raw = sub(f3, b.createCompositeConstruct(f3, {cam_c[0], cam_c[1], cam_c[2]}), wp_here);
+    v_raw = sub(f3, PbrBufferCamera(), wp_here);
+    has_view = true;
   }
   spv::Id v = normalize(v_raw);
   spv::Id ao = sat(tap(6, pbr_->ao, 1, 1.0f));
@@ -703,7 +729,7 @@ void SpirvShaderTranslator::EmitPbrLighting() {
   // the game's mip-filtered normal minus the face normal is the detail, scaled
   // by bump. Only where the two are close (normal map detail, not the smooth
   // shading of curved meshes) and fading out by 60 m.
-  if (pbr_->bump > 0.0f && pbr_->v.valid()) {
+  if (pbr_->bump > 0.0f && has_view) {
     spv::Id sx = b.createUnaryOp(spv::OpDPdx, f3, v_raw);
     spv::Id sy = b.createUnaryOp(spv::OpDPdy, f3, v_raw);
     spv::Id face = ext2(GLSLstd450Cross, f3, sx, sy);
@@ -760,18 +786,23 @@ void SpirvShaderTranslator::EmitPbrLighting() {
   // gets the matching factor of pi.
   spv::Id a = mul(f1, rough, rough);
   spv::Id a2 = mul(f1, a, a);
-  spv::Id d_den = add(f1, mul(f1, mul(f1, n_h, n_h), sub(f1, a2, k(1.0f))), k(1.0f));
-  spv::Id d = div(a2, mul(f1, d_den, d_den));  // * 1/pi, cancelled
   spv::Id kk = mul(f1, mul(f1, add(f1, rough, k(1.0f)), add(f1, rough, k(1.0f))), k(0.125f));
-  spv::Id g_l = add(f1, mul(f1, n_l, sub(f1, k(1.0f), kk)), kk);
   spv::Id g_v = add(f1, mul(f1, n_v, sub(f1, k(1.0f), kk)), kk);
-  spv::Id vis = div(k(0.25f), mul(f1, g_l, g_v));  // G / (4 N.L N.V)
-  spv::Id fw = ext2(GLSLstd450Pow, f1, sub(f1, k(1.0f), v_h), k(5.0f));
-  spv::Id fresnel = add(f3, f0, scale(sub(f3, k3(1.0f), f0), fw));
-  spv::Id spec_sun = mul(f3, fresnel, b.createBinOp(spv::OpVectorTimesScalar, f3, sun,
-                                                    ext2(GLSLstd450FMin, f1,
-                                                         mul(f1, mul(f1, d, vis), n_l),
-                                                         k(pbr_->spec_max))));
+  // The highlight of a light of colour c from direction (n_l, n_h, v_h),
+  // capped at spec_max times c (the sun's, and the point lights').
+  auto specular = [&](spv::Id c, spv::Id n_l_, spv::Id n_h_, spv::Id v_h_) {
+    spv::Id d_den = add(f1, mul(f1, mul(f1, n_h_, n_h_), sub(f1, a2, k(1.0f))), k(1.0f));
+    spv::Id d = div(a2, mul(f1, d_den, d_den));  // * 1/pi, cancelled
+    spv::Id g_l = add(f1, mul(f1, n_l_, sub(f1, k(1.0f), kk)), kk);
+    spv::Id vis = div(k(0.25f), mul(f1, g_l, g_v));  // G / (4 N.L N.V)
+    spv::Id fw = ext2(GLSLstd450Pow, f1, sub(f1, k(1.0f), v_h_), k(5.0f));
+    spv::Id fresnel = add(f3, f0, scale(sub(f3, k3(1.0f), f0), fw));
+    return mul(f3, fresnel, b.createBinOp(spv::OpVectorTimesScalar, f3, c,
+                                          ext2(GLSLstd450FMin, f1,
+                                               mul(f1, mul(f1, d, vis), n_l_),
+                                               k(pbr_->spec_max))));
+  };
+  spv::Id spec_sun = specular(sun, n_l, n_h, v_h);
 
   // Environment: rough surfaces reflect something close to the ambient light.
   // Karis' analytic approximation of the split-sum environment BRDF.
@@ -810,7 +841,7 @@ void SpirvShaderTranslator::EmitPbrLighting() {
   // The material for the scene effects: the nearest pixel's (by its distance
   // from the camera) roughness and metallic.
   if (buffer_bf_material_ != spv::NoResult &&
-      input_fragment_coordinates_ != spv::NoResult && pbr_->v.valid()) {
+      input_fragment_coordinates_ != spv::NoResult && has_view) {
     const spv::Id u1 = type_uint_;
     auto ku = [&](uint32_t v) { return b.makeUintConstant(v); };
     spv::Id frag = b.createLoad(input_fragment_coordinates_, spv::NoPrecision);
@@ -862,8 +893,10 @@ void SpirvShaderTranslator::EmitPbrLighting() {
   }
 
   // The shader's point lights (explosions, muzzle flashes): as the game
-  // lights them, the colour over the distance, unshadowed.
+  // lights them, the colour over the distance, unshadowed; lit like the sun
+  // (diffuse without the metal's share, and the same capped GGX highlight).
   if (pbr_->point_lights && wp_here != spv::NoResult) {
+    spv::Id albedo_diffuse = scale(albedo, sub(f1, k(1.0f), metal));
     const uint32_t lights[2][2] = {{6, 7}, {9, 8}};
     for (const auto& lc : lights) {
       const Shader::ConstantRegisterMap& map = current_shader().constant_register_map();
@@ -875,7 +908,10 @@ void SpirvShaderTranslator::EmitPbrLighting() {
       spv::Id d = ext2(GLSLstd450FMax, f1, ext1(GLSLstd450Length, f1, to_light), k(0.25f));
       spv::Id l = scale(to_light, div(k(1.0f), d));
       spv::Id n_l = sat(dot(n, l));
-      color = add(f3, color, scale(mul(f3, albedo, constant(lc[1])), div(n_l, d)));
+      spv::Id c = scale(constant(lc[1]), div(k(1.0f), d));
+      color = add(f3, color, mul(f3, albedo_diffuse, scale(c, n_l)));
+      spv::Id h = normalize(add(f3, v, l));
+      color = add(f3, color, specular(c, n_l, sat(dot(n, h)), sat(dot(v, h))));
     }
   }
   // Into the game's lit colour register.

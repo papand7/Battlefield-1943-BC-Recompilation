@@ -560,6 +560,9 @@ class SpirvShaderTranslator : public ShaderTranslator {
   spv::Id LoadExtraRegister(uint32_t index);
   spv::Id PbrScalar(const pbr::Scalar& s);
   spv::Id PbrRoughness();
+  // camv=1: the camera position the scene effects leave in the materials
+  // buffer (float3), or NoResult without the buffer.
+  spv::Id PbrBufferCamera();
   // Parallax occlusion at the normal map fetch (spirv_shader_translator_pbr.cc):
   // the shift found in its texture coordinates, kept as the equivalent screen
   // displacement, by which every later 2D fetch is shifted in its own.
