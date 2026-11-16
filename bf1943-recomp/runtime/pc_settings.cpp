@@ -499,6 +499,7 @@ void BurstThread() {
   std::filesystem::create_directories("frames");
   auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
                    std::chrono::system_clock::now().time_since_epoch()).count();
+  xgpu::g_burst_recording = true;
   for (int n = 0; n < 30; ++n) {
     char path[96];
     snprintf(path, sizeof(path), "frames/burst_%lld_%02d.png", (long long)stamp, n);
@@ -506,6 +507,7 @@ void BurstThread() {
     xgpu::CaptureFrame(path, &st);
     std::this_thread::sleep_for(std::chrono::milliseconds(100));
   }
+  xgpu::g_burst_recording = false;
   RT_INFO("F2 burst: 30 screenshots in frames/burst_%lld_*.png", (long long)stamp);
   g_burst_running = false;
 }

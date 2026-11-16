@@ -1,6 +1,7 @@
 // Narrow interface between the runtime and Xenia's GPU (runtime/xenia_shims/bridge.cc),
 // so runtime code never includes Xenia headers.
 #pragma once
+#include <atomic>
 #include <cstdint>
 
 namespace rt::xgpu {
@@ -22,6 +23,8 @@ void SetPicture(float brightness, float gamma);
 void SetGrade(float strength);
 float Grade();
 void SetWind(float metres);
+// True while an F2 screenshot burst is being taken (shown in the window title).
+inline std::atomic<bool> g_burst_recording{false};
 void SetSharpness(float amount);  // FSR 3 / CAS sharpening, 0 off (0...1)
 void SetRtFoliage(bool on);  // RAY-TRACED FOLIAGE (next start)  // the plants' extra gust sway at the top (0 off)  // the enhanced look's colour grade (0 off)
 // VSync: the swapchain waits for the screen's refresh (from its next creation).

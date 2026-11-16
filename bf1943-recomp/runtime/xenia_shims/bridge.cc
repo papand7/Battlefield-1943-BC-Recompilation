@@ -267,7 +267,9 @@ void UiThread() {
       last = now, t0 = t1;
       char buf[32];
       snprintf(buf, sizeof buf, "  |  %.0f fps", fps);
-      app_context.CallInUIThread([&window, title = base + buf] { window->SetTitle(title); });
+      std::string title = base + buf;
+      if (xgpu::g_burst_recording) title += "   [REC]";
+      app_context.CallInUIThread([&window, title] { window->SetTitle(title); });
     }
   });
   fprintf(stderr, "[xgpu] presenter attached, entering message loop\n");
