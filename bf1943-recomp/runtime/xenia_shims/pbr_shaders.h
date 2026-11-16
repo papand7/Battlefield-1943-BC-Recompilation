@@ -106,9 +106,12 @@ struct ShaderConfig {
   // where smoke meets the ground or a wall).
   float soft = 0.0f;
   // camv=1: no view vector in the shader (the point-light variants): the
-  // camera from the scene effects (kMaterialCameraOffset) minus wp. pl=1: the
+  // camera from the scene effects (kMaterialCameraOffset) minus wp, used like
+  // v= (bump, parallax, the material output for the reflections); without
+  // the scene effects such a shader keeps the game's look. pl=1: the
   // shader's two point lights (position c6, colour c7; c9, c8) added to the
-  // PBR light, as the game does (colour over the distance, no shadow).
+  // PBR light, as the game does (colour over the distance, no shadow), with
+  // the sun's diffuse and capped GGX highlight.
   bool cam_from_buffer = false;
   bool point_lights = false;
   float tm_saturation = 1.0f;

@@ -31,10 +31,11 @@ VECTOR_OPS = {'add': 2, 'mul': 2, 'max': 2, 'min': 2, 'seq': 2, 'sgt': 2, 'sge':
 
 
 class Node:
-    __slots__ = ('addr', 'op', 'ins', 'comp', '_tags')
+    __slots__ = ('addr', 'op', 'ins', 'comp', '_tags', 'bc')
 
-    def __init__(self, addr, op, ins, comp=None):
+    def __init__(self, addr, op, ins, comp=None, bc=()):
         self.addr, self.op, self.ins, self.comp, self._tags = addr, op, ins, comp, None
+        self.bc = bc  # per input: read through a broadcast swizzle (.wwww), not a channel
 
     def tags(self):
         """Inputs this value depends on: 't<fetch address>', 'c<constant>', 'i...'."""
@@ -140,7 +141,10 @@ class Shader:
                     writes.append(((int(dm.group(1)), i), Node(addr, base, coord_nodes, XYZW.index(ch))))
             return
         if parts[0].startswith(('oC', 'oDepth')):
-            if parts[0].startswith('oC0'):
+            # The export that writes the colour (not an alpha-only one after it).
+            dsw = (parts[0].split('.') + ['xyzw'])[1]
+            if parts[0].startswith('oC0') and (self.export is None or
+                                               any(ch in 'xyz' for ch in dsw[:3])):
                 self.export = (addr, [parse_source(p) for p in parts[1:]])
             return
         dm = re.match(r'r(\d+)(?:\.([xyzw_]+))?$', parts[0])
@@ -163,7 +167,13 @@ class Shader:
                     ins = [self.read(s, j) for s in srcs for j in range(4)]
                 else:
                     ins = [self.read(s, i) for s in srcs]
-                n = Node(addr, base, ins, i)
+                # An operand whose channel for this lane also feeds another
+                # written lane (r1.yyyz, c5.wwww) is a broadcast, not a channel.
+                lanes = [j for j, ch in enumerate(dmask) if ch != '_']
+                swc = lambda s, j: s['sw'][min(j, len(s['sw']) - 1)]
+                bc = tuple(sum(swc(s, j) == swc(s, i) for j in lanes) > 1
+                           for s in srcs) if len(ins) == len(srcs) else ()
+                n = Node(addr, base, ins, i, bc)
                 writes.append(((dreg, i), n))
                 self.alu.setdefault(addr, []).append((op, dreg, i, n, srcs))
         else:  # scalar unit
@@ -320,7 +330,11 @@ def find_taps(sh):
         t['_alb'] = (mul_addr, per_comp)
         alb = trace_albedo(sh, mul_addr, cube_t, colour_t)
         if alb:
-            t['a'] = alb
+            ordered = order_by_output(sh, alb, nodes_out)
+            if ordered:
+                t['a'] = ordered
+            else:
+                notes.append('albedo %s: colour order not proven, left out' % alb)
     # Ambient occlusion: a one-channel (or grey) map on its own texture coordinates
     # (straight from an interpolator, unlike the albedo's), used by the output.
     out_tags = set()
@@ -422,6 +436,51 @@ def albedo_dfs(sh, reg, comps, addr, cube_t, colour_t, depth):
     return None
 
 
+PER_COMPONENT = ('add', 'mul', 'mad', 'max', 'min', 'seq', 'sgt', 'sge', 'sne',
+                 'cndeq', 'cndge', 'cndgt', 'mov', 'frc', 'trunc', 'floor')
+
+
+def channel_reach(n, target, memo):
+    """Whether value n is computed from target component-wise (through
+    per-component ALU operations only: no dot products, no scalar unit), so
+    that target's channel is n's channel."""
+    k = id(n)
+    if k not in memo:
+        memo[k] = False
+        memo[k] = n is target or (n.comp is not None and n.op.replace('_sat', '') in PER_COMPONENT
+                                  and any(channel_reach(x, target, memo) for j, x in enumerate(n.ins)
+                                          if not (j < len(n.bc) and n.bc[j])))
+    return memo[k]
+
+
+def order_by_output(sh, tap, nodes_out):
+    """The albedo tap's components put in the order of the colour they become.
+
+    out= lists the register components the oC0 export reads as red, green and
+    blue; each albedo component is followed forward to the one output channel
+    it is multiplied into. Shaders keep colours in a permuted register order
+    (r0.xzy ...) and swizzle at every step, so neither the register order nor
+    the texture's channel order is the colour order. None if the components
+    do not map one to one onto red, green and blue."""
+    m = re.match(r'r(\d+)\.([xyzw]{3})@(\d+)$', tap)
+    if not m or not nodes_out or len(nodes_out) < 3:
+        return None
+    reg, comps, at = int(m.group(1)), [XYZW.index(c) for c in m.group(2)], int(m.group(3))
+    st = sh.snap.get(at, {})
+    nodes = [st.get((reg, c), (None,))[0] for c in comps]
+    if None in nodes or len({id(n) for n in nodes}) != 3:
+        return None
+    order = {}
+    for c, n in zip(comps, nodes):
+        hit = [k for k, o in enumerate(nodes_out[:3]) if channel_reach(o, n, {})]
+        if len(hit) != 1:
+            return None
+        order[hit[0]] = c
+    if sorted(order) != [0, 1, 2]:
+        return None
+    return 'r%d.%s@%d' % (reg, ''.join(XYZW[order[k]] for k in range(3)), at)
+
+
 def texel_channel(n, colour_t, depth=0):
     """Channel of the colour texture a value comes from."""
     if n.op.startswith('tfetch'):
@@ -459,9 +518,17 @@ def main():
         keys = ['rm', 'n', 'v', 'a', 'lit', 'env', 'ao', 'out', 'pow']
         line = m.group(1) + ' ' + ' '.join('%s=%s' % (k, t[k]) for k in keys if k in t)
         line += ' rough_scale=0.66 bump=5'  # the pack's wood and stone are nearly matte; stronger relief
+        if 'v' not in t:
+            # The point-light variants: no view vector (camv=1: the camera
+            # from the scene effects), their lights added (pl=1).
+            line += ' camv=1 pl=1'
+            need = ['n', 'a', 'out']
         missing = [k for k in need if k not in t]
+        out_comps = re.match(r'r\d+\.([xyzw]+)@', t.get('out', 'r0.x@0')).group(1)
+        if len(set(out_comps)) != 3:
+            missing.append('out (not three colour channels)')
         if missing:
-            print('# %s  missing %s' % (line, ','.join(missing)))
+            print('# %s  missing %s %s' % (line, ','.join(missing), '; '.join(t['_notes'])))
         else:
             print(line)
 
