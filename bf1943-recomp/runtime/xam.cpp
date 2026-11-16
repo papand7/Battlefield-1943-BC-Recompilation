@@ -300,6 +300,17 @@ void MouseThread() {
         if (!(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
           g_mouse_dx += ri.data.mouse.lLastX;
           g_mouse_dy += ri.data.mouse.lLastY;
+        } else if (GetSystemMetrics(SM_REMOTESESSION)) {
+          // Remote Desktop sends the mouse as absolute positions (0..65535 over
+          // the remote screen): turn each move into a delta from the last one.
+          static LONG last_x = 0, last_y = 0;
+          static bool have_last = false;
+          LONG x = ri.data.mouse.lLastX, y = ri.data.mouse.lLastY;
+          if (have_last) {
+            g_mouse_dx += LONG((x - last_x) * GetSystemMetrics(SM_CXSCREEN) / 65535.0);
+            g_mouse_dy += LONG((y - last_y) * GetSystemMetrics(SM_CYSCREEN) / 65535.0);
+          }
+          last_x = x, last_y = y, have_last = true;
         }
         if (ri.data.mouse.usButtonFlags & RI_MOUSE_WHEEL) g_mouse_wheel += SHORT(ri.data.mouse.usButtonData);
       }
