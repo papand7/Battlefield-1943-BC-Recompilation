@@ -496,22 +496,32 @@ void ApplyLive();
 namespace {
 std::atomic<bool> g_burst_running{false};
 std::atomic<bool> g_burst_stop{false};
+extern "C" std::atomic<uint64_t> g_title_swaps;
 void BurstThread() {
   std::filesystem::create_directories("frames");
   auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
                    std::chrono::system_clock::now().time_since_epoch()).count();
   xgpu::g_burst_recording = true;
+  // Every game frame (each presented swap), 1280x720, up to 3 seconds; kept
+  // in memory, then saved as PNGs.
+  std::vector<std::vector<uint8_t>> frames;
+  uint64_t last = g_title_swaps;
   auto t0 = std::chrono::steady_clock::now();
-  int n = 0;
-  while (!g_burst_stop && std::chrono::steady_clock::now() - t0 < std::chrono::seconds(60)) {
-    char path[96];
-    snprintf(path, sizeof(path), "frames/burst_%lld_%04d.png", (long long)stamp, n++);
-    xgpu::FrameStats st;
-    xgpu::CaptureFrame(path, &st);
-    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  while (!g_burst_stop && frames.size() < 180 &&
+         std::chrono::steady_clock::now() - t0 < std::chrono::seconds(3)) {
+    uint64_t now = g_title_swaps;
+    if (now == last) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
+    last = now;
+    frames.emplace_back();
+    if (!xgpu::CaptureBurstFrame(frames.back())) frames.pop_back();
   }
   xgpu::g_burst_recording = false;
-  RT_INFO("F2 burst: %d screenshots in frames/burst_%lld_*.png", n, (long long)stamp);
+  for (size_t n = 0; n < frames.size(); ++n) {
+    char path[96];
+    snprintf(path, sizeof(path), "frames/burst_%lld_%04d.png", (long long)stamp, int(n));
+    xgpu::SaveBurstPng(path, frames[n]);
+  }
+  RT_INFO("F2 burst: %zu frames (1280x720) in frames/burst_%lld_*.png", frames.size(), (long long)stamp);
   g_burst_stop = false;
   g_burst_running = false;
 }

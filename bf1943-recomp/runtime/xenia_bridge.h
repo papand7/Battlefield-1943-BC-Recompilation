@@ -2,6 +2,7 @@
 // so runtime code never includes Xenia headers.
 #pragma once
 #include <atomic>
+#include <vector>
 #include <cstdint>
 
 namespace rt::xgpu {
@@ -89,6 +90,8 @@ struct FrameStats {
   uint32_t distinct_colors = 0;  // in a coarse 4-bit-per-channel histogram
 };
 bool CaptureFrame(const char* png_path, FrameStats* stats);
+bool CaptureBurstFrame(std::vector<uint8_t>& out);  // F2 burst: 1280x720 RGBA, HDR corrected
+bool SaveBurstPng(const char* path, const std::vector<uint8_t>& rgba);
 }  // namespace rt::xgpu
 
 // Audio: Xenia's XMA decoder (FFmpeg xmaframes) and XAudio2 output (apu_bridge.cc).

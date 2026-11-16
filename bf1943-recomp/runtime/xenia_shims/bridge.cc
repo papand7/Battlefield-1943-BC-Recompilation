@@ -574,4 +574,47 @@ bool CaptureFrame(const char* png_path, FrameStats* stats) {
                         int(image.stride)) != 0;
 }
 
+// F2 burst: one guest frame at 1280x720 (HDR corrected as CaptureFrame does),
+// RGBA, copied into memory; saved later by SaveBurstPng.
+bool CaptureBurstFrame(std::vector<uint8_t>& out) {
+  if (!g_graphics || !g_graphics->presenter()) return false;
+  xe::ui::RawImage image;
+  if (!g_graphics->presenter()->CaptureGuestOutput(image) || !image.width) return false;
+  const uint32_t w = 1280, h = 720;
+  out.resize(size_t(w) * h * 4);
+  float white = HdrWhite();
+  float to_lin[256];
+  for (int v = 0; v < 256; ++v) {
+    double vp = std::pow(v / 255.0, 1.0 / 78.84375);
+    double y = std::max(vp - 0.8359375, 0.0) / (18.8515625 - 18.6875 * vp);
+    to_lin[v] = white > 0.0f ? float(std::pow(y, 1.0 / 0.1593017578125) * 10000.0 / white) : 0.0f;
+  }
+  auto encode = [](float l) {
+    l = std::max(l, 0.0f);
+    if (l > 0.55f) l = 0.55f + 0.45f * (1.0f - std::exp(-(l - 0.55f) / 0.45f));
+    return uint8_t(std::lround(std::pow(std::min(l, 1.0f), 1.0f / 2.2f) * 255.0f));
+  };
+  for (uint32_t y = 0; y < h; ++y) {
+    const uint32_t sy = y * image.height / h;
+    const uint8_t* row = image.data.data() + sy * image.stride;
+    for (uint32_t x = 0; x < w; ++x) {
+      const uint8_t* p = row + (x * image.width / w) * 4;
+      uint8_t* o = out.data() + (size_t(y) * w + x) * 4;
+      if (white > 0.0f) {
+        float r = to_lin[p[0]], g = to_lin[p[1]], b = to_lin[p[2]];
+        o[0] = encode(1.6605f * r - 0.5876f * g - 0.0728f * b);
+        o[1] = encode(-0.1246f * r + 1.1329f * g - 0.0083f * b);
+        o[2] = encode(-0.0182f * r - 0.1006f * g + 1.1187f * b);
+      } else {
+        o[0] = p[0]; o[1] = p[1]; o[2] = p[2];
+      }
+      o[3] = 255;
+    }
+  }
+  return true;
+}
+bool SaveBurstPng(const char* path, const std::vector<uint8_t>& rgba) {
+  return stbi_write_png(path, 1280, 720, 4, rgba.data(), 1280 * 4) != 0;
+}
+
 }  // namespace rt::xgpu
