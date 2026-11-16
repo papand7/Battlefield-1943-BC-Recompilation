@@ -23,6 +23,9 @@
 
 #include <algorithm>
 #include <chrono>
+#include <thread>
+#include <atomic>
+#include <filesystem>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -488,7 +491,36 @@ void ApplyLive();
 
 }  // namespace
 
+// F2 (in game): a burst of screenshots, 3 seconds at 10 a second, into
+// frames/burst_<time>_<n>.png. Started on the key's press, once a frame.
+namespace {
+std::atomic<bool> g_burst_running{false};
+void BurstThread() {
+  std::filesystem::create_directories("frames");
+  auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::system_clock::now().time_since_epoch()).count();
+  for (int n = 0; n < 30; ++n) {
+    char path[96];
+    snprintf(path, sizeof(path), "frames/burst_%lld_%02d.png", (long long)stamp, n);
+    xgpu::FrameStats st;
+    xgpu::CaptureFrame(path, &st);
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+  }
+  RT_INFO("F2 burst: 30 screenshots in frames/burst_%lld_*.png", (long long)stamp);
+  g_burst_running = false;
+}
+void BurstKey() {
+#ifdef _WIN32
+  static bool was_down = false;
+  bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+  if (down && !was_down && !g_burst_running.exchange(true)) std::thread(BurstThread).detach();
+  was_down = down;
+#endif
+}
+}  // namespace
+
 void GovernorFrame() {
+  BurstKey();
   auto now = std::chrono::steady_clock::now();
   if (!g_gov_started) {
     g_gov_started = true;
