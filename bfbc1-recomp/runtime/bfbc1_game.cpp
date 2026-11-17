@@ -116,6 +116,14 @@ bool CustomMenus() { return false; }
 static const bool g_bc_settings_hidden = (g_setting_hidden = [](const char* key) {
   return !std::strcmp(key, "wind");
 }, true);
+// Key binding names in Bad Company: LB (the GRENADE key) takes out the kit's
+// "G" group, the grenade and the gadgets (auto injector, motion mine...), as
+// the kit screen shows; RB (SWITCH WEAPON) the "1" group, the main weapon and
+// its launcher. (Seen in a running game with the pad presses: Y is the knife.)
+static const bool g_bc_action_names = (g_action_name = [](int action) -> const wchar_t* {
+  return action == pcset::kGrenade ? L"GRENADE / GADGET" : action == pcset::kNextWeapon ? L"SWITCH WEAPON / LAUNCHER"
+                                                                                         : nullptr;
+}, true);
 // The PC settings page in Bad Company's menu look (pc_menu.cpp).
 #if defined(_WIN32) || defined(BF1943_CLIENT)  // (the server has no PC menus)
 static const bool g_bc_menu_look = (pcmenu::SetBadCompanyLook(), true);

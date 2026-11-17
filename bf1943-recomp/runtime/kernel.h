@@ -142,6 +142,9 @@ extern bool (*g_vehicle_mouse_stick)(float* x, float* y);
 // PC settings rows this game has no use for (pc_settings.cpp hides them;
 // null: every row). Bad Company sets it (bfbc1_game.cpp).
 extern bool (*g_setting_hidden)(const char* key);
+// A key binding row's name in this game (pc_settings.h Action), or null for
+// the shared one. Bad Company sets it (bfbc1_game.cpp).
+extern const wchar_t* (*g_action_name)(int action);
 extern bool g_plane_mouse_invert;        // PC settings: mouse forward pulls up in planes
 // The local player's vehicle (bots.cpp; none in games without the probe).
 enum LocalVehicleKind { kOnFoot = 0, kDriving = 1, kFlying = 2, kGunner = 3 };
