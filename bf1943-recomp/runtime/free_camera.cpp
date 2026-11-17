@@ -18,6 +18,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstdlib>
 #include <mutex>
 
@@ -30,7 +31,10 @@ std::atomic<bool> g_active{false};
 bool g_placed = false;            // the camera has a place (from the game's or PlaceAt)
 float g_pos[3] = {};
 float g_yaw = 0, g_pitch = 0;     // forward = (sin yaw cos pitch, sin pitch, cos yaw cos pitch)
-float g_left_sign = 1.0f;         // the game's first row: +left (as the bots' convention) or -left
+// The game's first matrix row is the view's RIGHT: minus our left. (A +1 here, as it was
+// for a camera placed before the game's own was seen, mirrors the view: the
+// ground and sea, one-sided, are culled and only the trees and props show.)
+float g_left_sign = -1.0f;
 float g_speed = 12.0f;            // m/s
 float g_fov = 0.96f;              // vertical radians, the last handed to the view
 long g_mouse_dx = 0, g_mouse_dy = 0;
@@ -163,15 +167,30 @@ bool Override(const float game[16], float out[16]) {
     g_pitch = std::asin(std::clamp(f[1] / n, -1.0f, 1.0f));
     float fw[3], lft[3], u[3];
     Basis(g_yaw, g_pitch, fw, lft, u);
-    g_left_sign = game[0] * lft[0] + game[1] * lft[1] + game[2] * lft[2] < 0 ? -1.0f : 1.0f;
+    g_left_sign = game[0] * lft[0] + game[1] * lft[1] + game[2] * lft[2] < 0 ? -1.0f : 1.0f;  // (always -1: checked)
     g_placed = true;
-    RT_INFO("free camera: from %.1f, %.1f, %.1f (yaw %.2f, pitch %.2f; rows: left %.2f %.2f %.2f, up %.2f %.2f %.2f, "
-            "forward %.2f %.2f %.2f; first row %s)",
+    // BF_FREECAM_AT="x,y,z,yaw,pitch" (testing): start there instead.
+    if (const char* at = std::getenv("BF_FREECAM_AT")) {
+      float v[5] = {};
+      if (std::sscanf(at, "%f,%f,%f,%f,%f", &v[0], &v[1], &v[2], &v[3], &v[4]) == 5)
+        g_pos[0] = v[0], g_pos[1] = v[1], g_pos[2] = v[2], g_yaw = v[3], g_pitch = v[4];
+    }
+    RT_INFO("free camera: from %.1f, %.1f, %.1f (yaw %.2f, pitch %.2f; rows: right %.2f %.2f %.2f, up %.2f %.2f %.2f, "
+            "back %.2f %.2f %.2f; first row %s)",
             g_pos[0], g_pos[1], g_pos[2], g_yaw, g_pitch, game[0], game[1], game[2], game[4], game[5], game[6], game[8],
-            game[9], game[10], g_left_sign > 0 ? "left" : "right");
+            game[9], game[10], g_left_sign > 0 ? "left (unexpected)" : "right");
   }
   float f[3], lft[3], u[3];
   Basis(g_yaw, g_pitch, f, lft, u);
+  static const bool log = std::getenv("BF_TERRAIN_LOG") != nullptr;
+  if (log) {
+    static auto next = std::chrono::steady_clock::now();
+    auto now = std::chrono::steady_clock::now();
+    if (now >= next)
+      next = now + std::chrono::seconds(3),
+      RT_INFO("free camera: the game's own camera is at %.1f %.1f %.1f, ours %.1f %.1f %.1f", game[12], game[13],
+              game[14], g_pos[0], g_pos[1], g_pos[2]);
+  }
   for (int i = 0; i < 3; ++i) {
     out[i] = lft[i] * g_left_sign;
     out[4 + i] = u[i];
