@@ -301,7 +301,10 @@ int main(int argc, char** argv) {
     else if (a == "--fov" && i + 1 < argc) g_fov = float(atof(argv[++i]));
     else if (a == "--aspect" && i + 1 < argc) {
       std::string v = argv[++i];
-      g_aspect_override = v == "bars" ? "0" : v == "stretch" ? "1" : "2";
+      if (v == "bars" || v == "16:9") g_aspect_override = "0";
+      else if (v == "stretch") g_aspect_override = "1";
+      else if (v == "ultrawide" || v == "wide") g_aspect_override = "2";
+      else RT_WARN("--aspect %s: unknown (16:9/bars, stretch, ultrawide/wide); ignored", v.c_str());
     } else if (a == "--wide-hud" && i + 1 < argc) {
       g_wide_hud_override = std::string(argv[++i]) == "centre" ? "0" : "1";
     }
@@ -389,7 +392,24 @@ int main(int argc, char** argv) {
     // Training: a dedicated server nobody joins, 16 bots; --speed N: N times as fast.
     else if (a == "--train") g_training = true;
     else if (a == "--spectate") rt::spectate::g_flag = true;  // spectate.h: watch the match, no soldier of your own
-    else if (a == "--replay" && i + 1 < argc) rt::replay::g_replay_file = argv[++i];  // replay.h
+    else if (a == "--replay" && i + 1 < argc) {  // replay.h (the path as UTF-8: argv is in the ANSI code page)
+      std::string path = argv[++i];
+#ifdef _WIN32
+      int wn = MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, nullptr, 0);
+      if (wn > 1) {
+        std::wstring w(size_t(wn), L'\0');
+        MultiByteToWideChar(CP_ACP, 0, path.c_str(), -1, w.data(), wn);
+        int un = WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, nullptr, 0, nullptr, nullptr);
+        if (un > 1) {
+          std::string u(size_t(un), '\0');
+          WideCharToMultiByte(CP_UTF8, 0, w.c_str(), -1, u.data(), un, nullptr, nullptr);
+          u.resize(size_t(un) - 1);
+          path = u;
+        }
+      }
+#endif
+      rt::replay::g_replay_file = path;
+    }
     else if (a == "--train-minutes" && i + 1 < argc) train_minutes = std::max(0, atoi(argv[++i]));
     else if (a == "--speed" && i + 1 < argc) g_time_speed_target = std::clamp(atof(argv[++i]), 0.25, 10.0);
   }

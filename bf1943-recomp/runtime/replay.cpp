@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -71,6 +72,7 @@ class Writer {
     return true;
   }
   bool IsOpen() const { return out_.is_open(); }
+  bool Good() const { return out_.good(); }
   void Close() { out_.close(); }
   void Flush() { out_.flush(); }
   void U8(uint8_t v) { out_.put(char(v)); }
@@ -92,12 +94,14 @@ struct Recorder {
   Writer w;
   std::chrono::steady_clock::time_point t0;
   std::map<uint32_t, uint16_t> player_ids;   // spawner -> id
-  std::map<uint32_t, uint16_t> soldier_ids;  // soldier now -> its player's id
+  std::map<uint32_t, uint16_t> soldier_ids;  // soldier -> its player's id (kept a while after it was last seen)
+  std::map<uint32_t, uint32_t> soldier_seen;  // soldier -> when last seen (ms)
   std::map<uint32_t, uint16_t> vehicle_ids;  // vehicle object -> id
   std::map<uint32_t, uint16_t> point_ids;
   std::map<uint32_t, int> point_owner;
   std::vector<uint32_t> spawners, vehicles, points;
   uint32_t frames = 0, kills = 0;
+  bool failed = false;
   std::filesystem::path path;
 
   uint32_t Now() const {
@@ -110,13 +114,17 @@ struct Recorder {
     char stamp[32];
     std::time_t now = std::time(nullptr);
     std::strftime(stamp, sizeof stamp, "%Y-%m-%d_%H-%M-%S", std::localtime(&now));
-    path = dir / (map + "_" + stamp + ".bfrp");
+    std::string safe;  // (the map name comes from the host's settings: only file-name characters)
+    for (char c : map)
+      if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') safe += c;
+    if (safe.empty()) safe = "level";
+    path = dir / (safe + "_" + stamp + ".bfrp");
     if (!w.Open(path, map)) {
       RT_WARN("replay: could not write %s", path.string().c_str());
       return false;
     }
     t0 = std::chrono::steady_clock::now();
-    player_ids.clear(), soldier_ids.clear(), vehicle_ids.clear(), point_ids.clear(), point_owner.clear();
+    player_ids.clear(), soldier_ids.clear(), soldier_seen.clear(), vehicle_ids.clear(), point_ids.clear(), point_owner.clear();
     spawners.clear(), vehicles.clear(), points.clear();
     frames = kills = 0;
     RT_INFO("replay: recording %s", path.string().c_str());
@@ -125,6 +133,7 @@ struct Recorder {
   void Finish() {
     if (!w.IsOpen()) return;
     w.U8(6), w.U32(Now());
+    if (!w.Good()) RT_WARN("replay: writing %s failed (disk full?)", path.string().c_str());
     w.Close();
     RT_INFO("replay: saved %s (%u frames, %.0f s, %zu players, %u kills)", path.string().c_str(), frames,
             Now() / 1000.0, player_ids.size(), kills);
@@ -146,10 +155,12 @@ struct Recorder {
       float p[3], yaw, pitch;
     };
     std::vector<S> soldiers;
-    soldier_ids.clear();
+    for (auto it = soldier_seen.begin(); it != soldier_seen.end();)  // (a killed soldier is gone by the next tick: ids kept 10 s)
+      if (t - it->second > 10000) soldier_ids.erase(it->first), it = soldier_seen.erase(it);
+      else ++it;
     for (uint32_t sp : spawners) {
       if (!Readable(sp) || Ld32(sp) != kSpawnObject) continue;
-      uint32_t so = Ld32(sp + 0x120);
+      uint32_t so = Ld32(sp + 0x120);  // (sp is Readable above)
       if (!Readable(so) || Ld32(so) != kSoldier) continue;
       uint32_t aim = Ld32(so + 0x130);
       if (!Readable(aim)) continue;
@@ -176,6 +187,7 @@ struct Recorder {
       }
       s.id = it->second;
       soldier_ids[so] = s.id;
+      soldier_seen[so] = t;
       soldiers.push_back(s);
     }
     struct V {
@@ -246,35 +258,50 @@ struct Recorder {
       w.F32(LdF(spatial + 0x60)), w.F32(LdF(spatial + 0x64)), w.F32(LdF(spatial + 0x68));
     }
     if (++frames % 50 == 0) w.Flush();
+    if (!w.Good()) {
+      RT_WARN("replay: write error, recording stopped");
+      w.Close();
+      failed = true;
+    }
   }
 };
 Recorder g_rec;
 std::atomic<bool> g_recording{false};
+std::atomic<bool> g_stop{false};
+std::thread g_thread;
 
 void Run() {
   int64_t level_seen = -1;
   auto last_scan = std::chrono::steady_clock::time_point{};
   bool waiting = false;  // a level opened: a file once players are there
-  for (;;) {
+  while (!g_stop) {
     std::this_thread::sleep_for(std::chrono::milliseconds(kTickMs));
+    // Only a game that hosts sees every soldier: not a joining client.
+    if (!(g_dedicated || g_lan_host) || g_join_address) continue;
     const int64_t level = g_level_open_ms.load();
     const bool in_level = !g_in_menus.load() && level > 0;
-    std::lock_guard l(g_rec.mutex);
     if (!in_level || level != level_seen) {
-      if (g_recording) g_rec.Finish(), g_recording = false;
+      {
+        std::lock_guard l(g_rec.mutex);
+        if (g_recording) g_rec.Finish(), g_recording = false;
+      }
+      g_rec.failed = false;
       waiting = in_level;
       level_seen = level;
       if (!in_level) continue;
     }
+    if (g_rec.failed) continue;
     auto now = std::chrono::steady_clock::now();
     if (now - last_scan > std::chrono::seconds(2)) {
       last_scan = now;
+      // The scans of the whole guest memory run without the lock (Killed, from
+      // the server's thread, takes it); only this thread uses these lists.
       if (waiting) {
-        // Players and their soldiers first (the level is up and someone spawned).
         std::vector<uint32_t> sp = Scan(kSpawnObject);
         bool someone = false;
         for (uint32_t o : sp)
-          if (uint32_t so = Ld32(o + 0x120); Readable(so) && Ld32(so) == kSoldier) someone = true;
+          if (Readable(o))
+            if (uint32_t so = Ld32(o + 0x120); Readable(so) && Ld32(so) == kSoldier) someone = true;
         if (!someone) continue;
         std::string map;
         {
@@ -282,13 +309,19 @@ void Run() {
           map = g_host_map.empty() ? "level" : g_host_map;
         }
         waiting = false;
+        std::lock_guard l(g_rec.mutex);
         if (!g_rec.Start(map)) continue;
         g_recording = true;
       }
       if (g_recording) g_rec.Rescan();
     }
-    if (g_recording) g_rec.Tick();
+    if (g_recording) {
+      std::lock_guard l(g_rec.mutex);
+      g_rec.Tick();
+    }
   }
+  std::lock_guard l(g_rec.mutex);
+  if (g_recording) g_rec.Finish(), g_recording = false;
 }
 }  // namespace
 
@@ -297,7 +330,11 @@ void StartRecorder() {
   if (std::getenv("BF_NO_REPLAY")) return;
   std::call_once(once, [] {
     RT_INFO("replay: matches are recorded to %s", (g_user_root / "replays").string().c_str());
-    std::thread(Run).detach();
+    g_thread = std::thread(Run);
+    std::atexit([] {  // (the file gets its end record when the game exits)
+      g_stop = true;
+      if (g_thread.joinable()) g_thread.join();
+    });
   });
 }
 

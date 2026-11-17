@@ -30,6 +30,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cctype>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -449,7 +450,12 @@ void StartViewer() {
   }
   // The recorded level, hosted alone (no bots, nobody joins it).
   g_lan_host = true;
-  g_host_map = g_rec.map;
+  {
+    std::string safe;  // (the name comes from the file: map-name characters only)
+    for (char c : g_rec.map)
+      if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') safe += c;
+    g_host_map = safe;
+  }
   g_bot_count = 0;
   g_auto_start = true;
   RT_INFO("replay: %s: %s, %.0f s, %zu players", g_replay_file.c_str(), g_rec.map.c_str(), g_rec.length / 1000.0,
