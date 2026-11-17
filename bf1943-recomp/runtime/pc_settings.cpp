@@ -6,6 +6,7 @@
 // launcher's settings, which it passes on the next start. Everything is
 // also kept in <user>/pc_settings.ini.
 #include "kernel.h"
+#include "admin_server.h"
 #include "pc_settings.h"
 #include "xenia_bridge.h"
 #include "pbr_shaders.h"
@@ -137,6 +138,10 @@ void Build() {
                      L"QUALITY renders about 1.5x smaller, PERFORMANCE about 2x. OFF: the RESOLUTION SCALE above.",
                      {L"OFF", L"QUALITY", L"BALANCED", L"PERFORMANCE"}, {"off", "quality", "balanced", "performance"}, 0,
                      true, "upscaleQuality"));
+  v.push_back(Choice(kGraphics, "frame_gen", L"FRAME GENERATION",
+                     L"AMD FSR 3.1: a generated frame between each two of the game's, about twice the frames shown "
+                     L"(with FSR 3, DLSS or AUTO upscaling; best from 60 frames a second).",
+                     kOffOn, {"off", "on"}, 0, true, "frameGen"));
   v.push_back(Choice(kGraphics, "window", L"WINDOW SIZE", L"The game window's size.",
                      {L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160"},
                      {"1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"}, 2, true,
@@ -550,6 +555,9 @@ void BurstKeyThread() {
 #endif
 }
 void BurstKey() {
+  // Off unless BF_BURST_KEY=1 (a developer tool; the REC marker only shows while a burst runs).
+  static const bool enabled = std::getenv("BF_BURST_KEY") != nullptr;
+  if (!enabled) return;
   static std::once_flag started;
   std::call_once(started, [] { std::thread(BurstKeyThread).detach(); });
 }
@@ -932,6 +940,11 @@ void Activate(Setting& s) {
         return;
       }
       lan::SetPublish(PageValue("online") == "1");
+      if (g_hardcore_supported) {
+        int hardcore = std::atoi(PageValue("hardcore").c_str());
+        g_hardcore = hardcore > 0;
+        if (g_hardcore) g_hardcore_damage = float(hardcore);
+      }
       g_server_name = PageText("server_name");
       g_server_password = PageText("password");
       g_weather = PageValue("weather") == "1" ? 1 : 0;
@@ -983,6 +996,7 @@ void Activate(Setting& s) {
 }
 
 void StartPuppet(int row) {
+  if (row == kExitGameRow) rt::g_leaving_level = true;  // (a host's bots leave with it: bot_players.cpp)
   g_puppet = Puppet{};
   g_puppet.on = true;
   g_puppet.row = row;
@@ -1137,6 +1151,7 @@ void BuildJoinRows() {
     descs[k] = L"Join " + Wide(sv.name) + L"'s game on " + MapName(sv.map) + L" at " + Wide(sv.address) +
                (sv.online ? L" (on the internet)." : L" (" + std::to_wstring(sv.ping_ms) + L" ms).");
     if (sv.online) labels[k] += L"  [INTERNET]";
+    if (sv.hardcore) labels[k] += L"  [HARDCORE]", descs[k] += L" Hardcore: no HUD or crosshair, fewer hits to kill.";
     if (sv.locked) labels[k] = L"[LOCK] " + labels[k];
     s.label = labels[k].c_str();
     s.desc = descs[k].c_str();
@@ -1214,6 +1229,12 @@ void OpenMode(Mode mode, Mode back_to) {
                               {L"NO", L"YES"}, {"0", "1"}, lan::Publish() ? 1 : 0);
       g_host_rows.push_back(online);
     }
+    if (g_hardcore_supported)
+      g_host_rows.push_back(Choice(kGraphics, "hardcore", L"HARDCORE",
+                                   L"No HUD or crosshair for anyone in your game (players who join too), and "
+                                   L"soldiers die in fewer hits. The scoreboard (Tab) stays.",
+                                   {L"OFF", L"ON (2X DAMAGE)", L"ON (3X DAMAGE)"}, {"0", "2", "3"},
+                                   !g_hardcore ? 0 : g_hardcore_damage >= 2.5f ? 2 : 1));
     Setting start;
     start.category = kGraphics, start.kind = Kind::kButton, start.key = "start", start.button = kHostStart;
     start.label = L"START SERVER";
@@ -1237,6 +1258,7 @@ void OpenHost() { OpenMode(kModeHost, kModeSettings); }
 void OpenJoin() { OpenMode(kModeJoin, kModeSettings); }
 
 bool ControlsPad() { return g_open || g_puppet.on || g_wait_release; }
+void QuitToMenu() { StartPuppet(kExitGameRow); }
 uint16_t PuppetButtons() {
   using namespace std::chrono;
   return PuppetStep(duration<double>(steady_clock::now().time_since_epoch()).count());

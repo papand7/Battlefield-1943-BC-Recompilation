@@ -2,6 +2,7 @@
 // Usage: bf1943 [--game <dir with default.xex>] [--user <writable dir>] [--trace]
 #include "kernel.h"
 #include "admin.h"
+#include "admin_server.h"
 #include "lan.h"
 #include "pc_settings.h"
 #include "texture_replacement.h"  // xenia_shims
@@ -9,6 +10,7 @@
 #include "xenia_bridge.h"
 #include "bot_knowledge.h"
 #include "bot_llm.h"
+#include "replay.h"
 namespace xe::gpu::scenefx { void Configure(const char* settings); }  // xenia gpu/vulkan/scene_fx.h
 
 #include "../tools/msvc_compat/crash_diag.h"  // symbolised stack on crash
@@ -218,6 +220,8 @@ int main(int argc, char** argv) {
     else if (a == "--join" && i + 1 < argc) join_address = argv[++i];
     else if (a == "--password" && i + 1 < argc) rt::g_server_password = argv[++i];
     else if (a == "--join-password" && i + 1 < argc) rt::g_join_password = argv[++i];
+    else if (a == "--admin-password" && i + 1 < argc) rt::g_admin_password = argv[++i];  // remote admins' (/login)
+    else if (a == "--console") rt::g_admin_console = true;  // admin commands on stdin (a windowed host too)
     else if ((a == "--servername" || a == "--server-name") && i + 1 < argc) rt::g_server_name = argv[++i];
     else if (a == "--name" && i + 1 < argc) g_gamertag = std::string(argv[++i]).substr(0, 15);
     else if (a == "--maps" && i + 1 < argc) {
@@ -273,6 +277,13 @@ int main(int argc, char** argv) {
     else if (a == "--host") g_lan_host = true;
     else if (a == "--bots" && i + 1 < argc) g_bot_count = std::clamp(atoi(argv[++i]), 0, 16);  // (botapi::kMaxBots)
     else if (a == "--host-map" && i + 1 < argc) g_host_map = argv[++i];
+    // Hardcore (a host's or dedicated server's): no HUD or crosshair for its
+    // players, soldier damage times --hardcore-damage (default 2; it implies --hardcore).
+    else if (a == "--hardcore") g_hardcore = true;
+    else if (a == "--hardcore-damage" && i + 1 < argc) {
+      g_hardcore = true;
+      g_hardcore_damage = std::clamp(float(atof(argv[++i])), 0.1f, 20.0f);
+    }
     else if (a == "--log-ui") g_log_ui = true;
     else if (a == "--log-settings" && i + 1 < argc) g_log_settings = argv[++i];
     else if (a == "--ui-call" && i + 1 < argc) g_ui_call = argv[++i];
@@ -355,6 +366,7 @@ int main(int argc, char** argv) {
     else if (a == "--upscale-quality" && i + 1 < argc) upscale_quality = argv[++i];
     else if (a == "--master" && i + 1 < argc) rt::lan::SetMaster(argv[++i]);  // "" for none
     else if (a == "--publish") rt::lan::SetPublish(true);  // a host: on the master server's list
+    else if (a == "--frame-gen") xgpu::SetFrameGeneration(true);  // AMD FSR 3.1 frame generation (with FSR 3 / DLSS)
     else if (a == "--present-vsync") g_present_vsync = true;  // the swapchain waits for the refresh
     else if (a == "--trace-texture" && i + 1 < argc) xe::gpu::texrep::SetTrace(argv[++i]);
     else if (a == "--log-textures") xe::gpu::texrep::SetLogMisses(true);
@@ -365,6 +377,7 @@ int main(int argc, char** argv) {
     else if (a == "--bot-llm") bot_llm = i + 1 < argc && argv[i + 1][0] != '-' ? argv[++i] : "llm";
     // Training: a dedicated server nobody joins, 16 bots; --speed N: N times as fast.
     else if (a == "--train") g_training = true;
+    else if (a == "--replay" && i + 1 < argc) rt::replay::g_replay_file = argv[++i];  // replay.h
     else if (a == "--train-minutes" && i + 1 < argc) train_minutes = std::max(0, atoi(argv[++i]));
     else if (a == "--speed" && i + 1 < argc) g_time_speed_target = std::clamp(atof(argv[++i]), 0.25, 10.0);
   }
@@ -427,6 +440,14 @@ int main(int argc, char** argv) {
             g_host_map.c_str(), 1003 + g_port_offset, g_bot_count ? ", with bots" : "");
   }
   if (g_lan_host && join_address.empty() && !g_training && !nav_run) rt::lan::StartBeacon();  // --host: shown in server browsers
+  if (!join_address.empty()) g_hardcore = false;  // (a joiner plays by the host's: lan.cpp asks it)
+  else if (g_hardcore && !g_hardcore_supported) {
+    g_hardcore = false;
+    RT_WARN("hardcore: not in this game yet, ignored");
+  } else if (g_hardcore) {
+    g_hardcore_hud = true;
+    RT_INFO("hardcore: no HUD or crosshair, soldier damage x%.2f", g_hardcore_damage);
+  }
   // --publish: on the master server's list once the level runs.
   rt::admin::Start();  // chat on T (fps_overlay.cpp); a dedicated server's console too
   if ((g_dedicated || g_lan_host) && join_address.empty() && !g_training && !nav_run) rt::lan::StartPublishing();
@@ -440,6 +461,10 @@ int main(int argc, char** argv) {
   g_game_root = std::filesystem::absolute(g_game_root);
   g_user_root = std::filesystem::absolute(g_user_root);
   std::filesystem::create_directories(g_user_root);
+  // Match replays (replay.h): a game that hosts records its matches (a server's
+  // soldiers are only there when hosting); --replay plays one back instead.
+  if (!rt::replay::g_replay_file.empty()) rt::replay::StartViewer();
+  else if (!g_training) rt::replay::StartRecorder();
   rt::pcset::Load();  // pc_settings.cpp: the PC settings page's saved choices
 #ifdef _WIN32
   AddVectoredExceptionHandler(1, GuestFaultReporter);

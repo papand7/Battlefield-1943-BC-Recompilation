@@ -20,12 +20,14 @@ namespace rt::xgpu {
 bool Start(uint8_t*, bool, InterruptFn, uint32_t) { return false; }
 void SetOptions(int, uint32_t, const char*) {}
 void SetDisplayOptions(int, int, int, int, int) {}
+void SetFrameGeneration(bool) {}
 void SetLook(int) {}
 void SetGrade(float) {}
 float Grade() { return 0.0f; }
 void SetWind(float) {}
 void SetRtFoliage(bool) {}
 void SetSharpness(float) {}
+void SetHideUi(bool) {}
 void SetHdr(bool, float, float) {}
 void SetHdrStretch(bool) {}
 void SetOverlay(const uint8_t*, uint32_t, uint32_t) {}

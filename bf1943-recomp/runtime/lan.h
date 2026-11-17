@@ -14,6 +14,7 @@ struct Server {
   bool online = false;  // from the master server's list (not this network)
   bool locked = false;  // needs a password (this network's beacon says so)
   int players = 0;
+  bool hardcore = false;  // the host's hardcore mode (its beacon says)
 };
 
 // The game's 4-letter tag in browser packets and the beacon's UDP port

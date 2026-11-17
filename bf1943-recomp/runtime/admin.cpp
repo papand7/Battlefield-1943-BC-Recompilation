@@ -15,6 +15,7 @@
 
 #include "kernel.h"
 #include "xenia_bridge.h"
+#include "admin_server.h"
 #include "bot_llm.h"
 
 #ifdef _WIN32
@@ -47,7 +48,8 @@ std::wstring Wide(const std::string& s) {
     unsigned c = uint8_t(s[i]);
     size_t n = c < 0x80 ? 1 : (c >> 5) == 6 ? 2 : (c >> 4) == 14 ? 3 : 4;
     if (i + n > s.size()) break;
-    w.push_back(wchar_t((c & (0x7F >> n)) << (6 * (n - 1)) |
+    // (the lead byte's bits: 7 of a single byte, 5 / 4 / 3 of a sequence's)
+    w.push_back(wchar_t((c & (n == 1 ? 0x7F : 0xFF >> (n + 1))) << (6 * (n - 1)) |
                         (n > 1 ? (uint8_t(s[i + 1]) & 0x3F) << (6 * (n - 2)) : 0) |
                         (n > 2 ? (uint8_t(s[i + 2]) & 0x3F) << 6 : 0) | (n > 3 ? uint8_t(s[i + 3]) & 0x3F : 0)));
     i += n;
@@ -58,12 +60,24 @@ std::string Trim(std::string s) {
   size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
   return a == std::string::npos ? "" : s.substr(a, b - a + 1);
 }
+// A remote admin's command (run here for it): what it says goes back to it too.
+thread_local std::string* t_reply = nullptr;
+std::string Narrow(const std::wstring& w) {
+  std::string s;
+  for (wchar_t c : w) s.push_back(c < 0x80 ? char(c) : '?');
+  return s;
+}
 void AddLine(std::wstring line) {
+  if (t_reply) *t_reply += (t_reply->empty() ? "" : "\n") + Narrow(line);
+  if (g_dedicated) RT_INFO("admin> %s", Narrow(line).c_str());  // (no screen: the console's answer)
   std::lock_guard lock(g_lock);
   g_lines.push_back({std::chrono::steady_clock::now(), std::move(line)});
   while (g_lines.size() > kMaxLines) g_lines.pop_front();
 }
-bool Host() { return g_dedicated || g_admin_host || !g_lan_host; }
+// (--host hosts without lan::Host: a game that joined nobody is its own host)
+bool Host() { return g_dedicated || g_admin_host || !g_lan_host || !g_join_address; }
+void Command(const std::string& line);
+thread_local bool g_console_command = false;  // (the command being run came from the console)
 
 // All-talk chat over our own UDP port (19431 + this game's offset): a client's
 // line goes to the host with its listen port, the host shows it and relays it
@@ -75,21 +89,29 @@ std::mutex g_peers_lock;
 std::map<uint32_t, std::pair<uint16_t, std::chrono::steady_clock::time_point>> g_peers;  // ip -> port, last seen
 std::atomic<int> g_chat_port{0};  // ours, as told to the host
 
-void SendTo(uint32_t ip, uint16_t port, const std::string& text) {
+void SendRaw(uint32_t ip, uint16_t port, const std::string& packet) {
   if (g_chat_socket == INVALID_SOCKET || !ip) return;
   sockaddr_in to{};
   to.sin_family = AF_INET;
   to.sin_port = htons(port);
   to.sin_addr.s_addr = ip;
-  const std::string packet = "BF43C!" + text;
   sendto(g_chat_socket, packet.data(), int(packet.size()), 0, (sockaddr*)&to, sizeof(to));
 }
+void SendTo(uint32_t ip, uint16_t port, const std::string& text) { SendRaw(ip, port, "BF43C!" + text); }
+// The host's chat port (a joiner's packets for it).
+// (its port offset as its game port's: 1003 + offset)
+uint16_t HostChatPort() {
+  const int game = ntohs(g_join_port);
+  return uint16_t(kChatPortBase + (game > 1003 ? game - 1003 : g_base_port_offset));
+}
+std::string g_login;  // a joiner's /login: the host's admin password, sent with its commands
+std::atomic<bool> g_sent_away{false};  // kicked or banned: no hellos until in a level again
 void BroadcastChat(const std::string& text) {
   if (!Host()) {
     if (g_join_address) {
       char head[16];
       snprintf(head, sizeof(head), "%u|", unsigned(g_chat_port.load()));
-      SendTo(g_join_address, uint16_t(kChatPortBase + g_base_port_offset), std::string(head) + text);
+      SendTo(g_join_address, HostChatPort(), std::string(head) + text);
     } else {
       AddLine(L"> " + Wide(text));  // (offline: to this screen only)
     }
@@ -104,25 +126,88 @@ void ChatNetThread() {
   WSAStartup(MAKEWORD(2, 2), &wsa);
   g_chat_socket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
   if (g_chat_socket == INVALID_SOCKET) return;
-  const uint16_t port = uint16_t(kChatPortBase + g_port_offset);
-  g_chat_port = port;
+  uint16_t port = uint16_t(kChatPortBase + g_port_offset);
   sockaddr_in a{};
   a.sin_family = AF_INET;
   a.sin_port = htons(port);
-  if (bind(g_chat_socket, (sockaddr*)&a, sizeof(a))) {
+  bool bound = bind(g_chat_socket, (sockaddr*)&a, sizeof(a)) == 0;
+  // Taken (a joiner on the host's PC, before its port offset moved): one of
+  // the next ports; a joiner tells the host which (a host keeps its own).
+  for (int i = 1; !bound && i <= 20 && !g_dedicated; ++i) {
+    a.sin_port = htons(uint16_t(port + 20 + i));
+    if (bind(g_chat_socket, (sockaddr*)&a, sizeof(a)) == 0) bound = true, port = uint16_t(port + 20 + i);
+  }
+  if (!bound) {
     RT_WARN("chat: port %u busy (chat is local only)", port);
     return;
   }
+  g_chat_port = port;
   DWORD timeout = 200;
   setsockopt(g_chat_socket, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
   RT_INFO("chat: all-talk on UDP %u", port);
   char buf[512];
+  auto next_hello = std::chrono::steady_clock::now();
   for (;;) {
+    // A joiner in a level: its hello to the host every 5 s (admin_server.h).
+    // (in the menus too: waiting to join again after a /map, the host's new
+    // run learns of it)
+    if (!g_in_menus) g_sent_away = false;  // (in a level again: joined anew)
+    if (!Host() && g_join_address && !g_sent_away && std::chrono::steady_clock::now() >= next_hello) {
+      next_hello = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+      SendRaw(g_join_address, HostChatPort(), "BF43H!" + std::to_string(g_chat_port.load()) + "|" + HelloBody());
+    }
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(g_chat_socket, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
-    if (n < 7 || memcmp(buf, "BF43C!", 6)) continue;
-    std::string text(buf + 6, size_t(n) - 6);
+    if (n < 6 || memcmp(buf, "BF43", 4) || buf[5] != '!') continue;
+    const char kind = buf[4];
+    std::string body(buf + 6, size_t(n) - 6);
+    if (kind != 'C') {
+      if (Host() && (kind == 'H' || kind == 'A')) {
+        // "<chat port>|...": a joiner's hello, or a remote admin's command
+        // ("<chat port>|<password>|<line>").
+        size_t bar = body.find('|');
+        const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
+        if (!peer_port) continue;
+        {
+          std::lock_guard lock(g_peers_lock);  // (it hears the chat from now on)
+          g_peers[from.sin_addr.s_addr] = {peer_port, std::chrono::steady_clock::now()};
+        }
+        body = body.substr(bar + 1);
+        if (kind == 'H') {
+          OnHello(from.sin_addr.s_addr, peer_port, body);
+          continue;
+        }
+        size_t bar2 = body.find('|');
+        if (bar2 == std::string::npos) continue;
+        const std::string password = body.substr(0, bar2), line = Trim(body.substr(bar2 + 1));
+        std::string reply;
+        if (g_admin_password.empty() || password != g_admin_password) {
+          reply = g_admin_password.empty() ? "This server takes no remote admins." : "Wrong admin password (/login).";
+          RT_INFO("admin: a command from %u.%u.%u.%u refused", from.sin_addr.S_un.S_un_b.s_b1,
+                  from.sin_addr.S_un.S_un_b.s_b2, from.sin_addr.S_un.S_un_b.s_b3, from.sin_addr.S_un.S_un_b.s_b4);
+        } else if (!line.empty() && line[0] == '/') {
+          RT_INFO("admin: remote command %s", line.c_str());
+          t_reply = &reply;
+          Command(line);
+          t_reply = nullptr;
+        }
+        for (size_t at = 0; at < reply.size();) {  // (a line a packet)
+          size_t e = reply.find('\n', at);
+          if (e == std::string::npos) e = reply.size();
+          SendTo(from.sin_addr.s_addr, peer_port, "[admin] " + reply.substr(at, e - at));
+          at = e + 1;
+        }
+      } else if (!Host() && from.sin_addr.s_addr == g_join_address) {
+        // The host's notices: kicked, the map changes, the new map is up.
+        if (kind == 'K') AddLine(Wide(body)), OnKicked(body), g_sent_away = true;
+        else if (kind == 'N') AddLine(L"The host changes the map to " + Wide(body) + L"."), OnMapChanging(body);
+        else if (kind == 'R') OnMapReady(body);
+      }
+      continue;
+    }
+    if (body.empty()) continue;
+    std::string text = body;
     if (Host()) {
       // From a player: "port|text"; remember where to answer, relay to the rest.
       size_t bar = text.find('|');
@@ -156,6 +241,13 @@ void Command(const std::string& line) {
   arg = Trim(arg);
   if (cmd == "help") {
     AddLine(L"/weather clear|rain  /time dawn|day|sunset|night  /name <text>  /password <text>  /bottalk on|off  /say <text>");
+    AddLine(Wide(ServerHelp()) + (Host() ? L"" : L"  /login <admin password>"));
+    return;
+  }
+  if (cmd == "login") {
+    // A joiner: the host's admin password, sent along with its commands.
+    g_login = arg;
+    AddLine(arg.empty() ? L"logged out" : L"admin password kept: the host's commands go to it");
     return;
   }
   if (cmd == "say") {
@@ -167,8 +259,29 @@ void Command(const std::string& line) {
     return;
   }
   if (!Host()) {
-    AddLine(L"Only the host can change the game.");
+#ifdef _WIN32
+    if (!g_login.empty() && g_join_address) {  // a remote admin: the host runs it (and answers)
+      SendRaw(g_join_address, HostChatPort(),
+              "BF43A!" + std::to_string(g_chat_port.load()) + "|" + g_login + "|" + line);
+      return;
+    }
+#endif
+    AddLine(L"Only the host can change the game (an admin: /login <password>).");
     return;
+  }
+  if (std::string reply; ServerCommand(cmd, arg, g_console_command, reply)) {
+    for (size_t at = 0; at <= reply.size();) {
+      size_t e = reply.find('\n', at);
+      if (e == std::string::npos) e = reply.size();
+      AddLine(Wide(reply.substr(at, e - at)));
+      at = e + 1;
+    }
+    return;
+  }
+  if (cmd == "quit" && g_console_command) {
+    RT_INFO("admin: the server stops (console)");
+    std::fflush(nullptr);
+    std::_Exit(0);
   }
   if (cmd == "bottalk") {
     std::string a = arg;
@@ -282,6 +395,7 @@ void ChatThread() {
 void ConsoleThread() {
   std::string line;
   while (std::getline(std::cin, line)) {
+    if (line.compare(0, 3, "\xEF\xBB\xBF") == 0) line.erase(0, 3);  // (a UTF-8 mark some pipes start with)
     line = Trim(line);
     if (!line.empty()) Execute(line, true);
   }
@@ -289,11 +403,12 @@ void ConsoleThread() {
 }  // namespace
 
 void Start() {
+  if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
 #ifdef _WIN32
   std::thread(ChatThread).detach();
   std::thread(ChatNetThread).detach();
 #endif
-  if (g_dedicated) std::thread(ConsoleThread).detach();
+  if (g_dedicated || g_admin_console) std::thread(ConsoleThread).detach();
 }
 
 bool Typing() { return g_typing; }
@@ -319,11 +434,29 @@ void Execute(const std::string& raw, bool console) {
   std::string line = Trim(raw);
   if (line.empty()) return;
   if (console) RT_INFO("admin: %s", line.c_str());
+  // The console takes commands without their '/' too ("kick Bob").
+  if (console && line[0] != '/') {
+    static const char* const kWords[] = {"help", "players", "who", "kick", "ban", "unban", "map", "bots", "weather",
+                                         "time", "name", "password", "bottalk", "say", "quit", "clear"};
+    std::string first = line.substr(0, line.find(' '));
+    std::transform(first.begin(), first.end(), first.begin(), [](unsigned char c) { return char(tolower(c)); });
+    for (const char* w : kWords)
+      if (first == w) line = "/" + line;
+  }
+  g_console_command = console;
   if (line[0] == '/') Command(line);
+  g_console_command = false;
+  if (line[0] == '/') return;
 #ifdef _WIN32
-  else BroadcastChat(line);
+  BroadcastChat(line);
 #else
-  else AddLine(L"> " + Wide(line));
+  AddLine(L"> " + Wide(line));
 #endif
 }
+
+#ifdef _WIN32
+void SendPacket(uint32_t ip, uint16_t port, const std::string& packet) { SendRaw(ip, port, packet); }
+#else
+void SendPacket(uint32_t, uint16_t, const std::string&) {}  // (no chat network here yet)
+#endif
 }  // namespace rt::admin

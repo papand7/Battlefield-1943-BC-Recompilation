@@ -17,8 +17,14 @@ void SetOptions(int anisotropic, uint32_t texture_memory_mb, const char* shader_
 // window's client size. Before Start.
 // shadowmap: the sun shadowmap size, kept at 1x (its render target pitch).
 void SetDisplayOptions(int resolution_scale, int effect, int window_width, int window_height, int shadowmap);
+// AMD FSR 3.1 frame generation (--frame-gen): one generated frame between the game's, with FSR 3 or
+// DLSS upscaling (it needs their depth and motion vectors). Before SetDisplayOptions.
+void SetFrameGeneration(bool on);
 // The look of the final frame, HUD included (0 the game's, 1 toon, 2 noir).
 void SetLook(int look);
+// Hardcore mode: the game's 2D UI draws (its menu/HUD movies: the HUD and
+// crosshair) skipped while on (live).
+void SetHideUi(bool on);
 // BRIGHTNESS (-0.3...0.3) and GAMMA (0.7...1.3) of the final frame (live).
 void SetPicture(float brightness, float gamma);
 void SetGrade(float strength);

@@ -7,6 +7,7 @@
 #ifndef XENIA_GPU_VULKAN_BF_MENU_H_
 #define XENIA_GPU_VULKAN_BF_MENU_H_
 
+#include <atomic>
 #include <cstdint>
 #include <mutex>
 #include <vector>
@@ -27,6 +28,9 @@ struct Icon {
   uint32_t address, width, height;
   float u0, v0, u1, v1;  // texels
 };
+
+// Hardcore mode (runtime xgpu::SetHideUi): the game's 2D UI draws skipped.
+inline std::atomic<bool> g_hide_ui{false};
 
 inline std::mutex g_mutex;
 inline std::vector<Box> g_building, g_done;

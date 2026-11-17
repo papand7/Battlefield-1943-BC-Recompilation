@@ -104,6 +104,12 @@ add_custom_command(TARGET bf1943 POST_BUILD
 add_custom_command(TARGET bf1943 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ROOT}/thirdparty/fidelityfx/bin/amd_fidelityfx_loader_vk.dll
           ${ROOT}/thirdparty/fidelityfx/bin/amd_fidelityfx_upscaler_vk.dll $<TARGET_FILE_DIR:bf1943>)
+# FSR 3.1 frame generation (bf_fsr3fg.cc; fetched by tools/fetch_fsr3fg.py, loaded next to the loader).
+if(EXISTS ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll)
+  add_custom_command(TARGET bf1943 POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll $<TARGET_FILE_DIR:bf1943>)
+endif()
 # DLSS (NGX loads it from the exe's folder; NVIDIA's licence: thirdparty/dlss/LICENSE.txt).
 add_custom_command(TARGET bf1943 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_if_different ${ROOT}/thirdparty/dlss/bin/nvngx_dlss.dll $<TARGET_FILE_DIR:bf1943>)

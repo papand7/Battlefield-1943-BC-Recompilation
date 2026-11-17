@@ -19,6 +19,7 @@ const defaults = {
   window: '1920x1080',
   display: 'windowed',  // --display (fullscreen: borderless on the monitor)
   upscaleQuality: 'off',  // --upscale-quality (with FSR 3 / DLSS / auto)
+  frameGen: 'off',      // --frame-gen (AMD FSR 3.1 frame generation, with FSR 3 / DLSS / auto)
   shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
   fov: '0',             // --fov (0: the game's own)
   textures: true,
@@ -365,6 +366,7 @@ async function serve(job, o) {
   if (o.train) args.push('--train', '--speed', '2', '--train-minutes', String(o.trainMinutes));
   else if (o.publish) args.push('--publish');
   if (o.llm) args.push('--bot-llm', 'llm');
+  if (o.hardcore) args.push('--hardcore');
   const python = pythonExe();
 
   if (o.llm && !isFile(path.join(o.tree, 'llm', 'bot_llm.ini'))) {
@@ -449,7 +451,7 @@ ipcMain.handle('server-start', (_, game, c) => {
     time: ['dawn', 'day', 'sunset', 'night'].includes(c.time) ? c.time : 'day',
     bots: Math.max(0, Math.min(16, Math.round(+c.bots) || 0)),
     trainMinutes: Math.max(5, Math.min(1440, Math.round(+c.trainMinutes) || 30)),
-    publish: !!c.publish, llm: !!c.llm, train: !!c.train,
+    publish: !!c.publish, llm: !!c.llm, train: !!c.train, hardcore: game === 'bf1943' && !!c.hardcore,
   };
   const s = load();
   save({ ...s, server: { ...s.server, [game]: { ...c, name: o.name, servername: o.servername,
@@ -530,6 +532,7 @@ ipcMain.handle('play', async (_, s) => {
     '--preset', s.preset, '--max-fps', s.frameRate, '--window', s.window,
     '--display', s.display || 'windowed', '--upscale-quality', s.upscaleQuality || 'off'];
   if (s.textures) args.push('--textures', texturePack);
+  if (s.frameGen === 'on') args.push('--frame-gen');
   if (s.collectShaders) args.push('--dump-shaders', shaderDump);
   if (s.collectTextures) args.push('--log-textures');
   if (s.fov && s.fov !== '0') args.push('--fov', s.fov);

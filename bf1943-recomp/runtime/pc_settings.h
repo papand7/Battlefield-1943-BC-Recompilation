@@ -38,6 +38,9 @@ bool Update(HWND__* window, bool title_passed);
 // presses that work the game's own pause menu for suicide and quit).
 bool ControlsPad();
 uint16_t PuppetButtons();
+// Leaves the level through the game's pause menu (Exit Game), as QUIT TO
+// MENU does (the host's /map, a kicked player's game).
+void QuitToMenu();
 
 // ADAPTIVE QUALITY: called once a frame at the swap; cuts the heavy effects
 // when frames run long (PC settings: governor).

@@ -197,6 +197,18 @@ extern bool g_lan_host;            // --host: local game over real UDP (LAN serv
 extern std::string g_host_map;     // --host-map: level hosted from the main menu
 extern uint32_t g_join_address;    // lan.cpp: the joined host (network order, 0 none)
 extern uint16_t g_join_port;       // lan.cpp: the joined host's server port (network order)
+// Hardcore mode (lan.cpp; --hardcore, HOST GAME, the server window). A server
+// setting: g_hardcore on the host or dedicated server, its soldier damage times
+// g_hardcore_damage (bot_players.cpp's damage hook). Its players play without
+// the HUD and crosshair: g_hardcore_hud, the host's own and, on a joining PC,
+// learned from the host's beacon answer (lan.cpp) before its level loads.
+// g_hardcore_supported: this game applies it (bf1943's game_patches.cpp).
+extern bool g_hardcore;
+extern float g_hardcore_damage;
+extern std::atomic<bool> g_hardcore_hud;
+extern bool g_hardcore_supported;
+// xam.cpp: the scoreboard key (Back / Tab) is held: the scoreboard is up.
+extern std::atomic<bool> g_scoreboard_open;
 extern std::string g_server_password;  // --password: a hosted game only lets in those who know it
 extern std::string g_join_password;    // --join-password: the password of the game joined
 extern std::string g_server_name;      // --servername: the name browsers show (empty: the player name)

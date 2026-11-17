@@ -405,7 +405,7 @@ bool CreateStorageImage(const ui::vulkan::VulkanDevice* device, VkFormat format,
   image_info.arrayLayers = 1;
   image_info.samples = VK_SAMPLE_COUNT_1_BIT;
   image_info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;  // sampled: FSR 3 reads some
+  image_info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;  // sampled: FSR 3 reads some; copied for frame generation
   image_info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (!ui::vulkan::util::CreateDedicatedAllocationImage(
           device, image_info, ui::vulkan::util::MemoryPurpose::kDeviceLocal,

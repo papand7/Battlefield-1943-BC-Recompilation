@@ -1,6 +1,7 @@
 // xam.xex imports: loader, user/sign-in, input (host XInput), notifications,
 // network (offline). Anything not here is a
 // logged stub from the generated import_stubs.cpp.
+#include "free_camera.h"
 #include "kernel.h"
 #include "admin.h"
 #include "xenia_bridge.h"
@@ -404,6 +405,11 @@ MouseLook SampleMouse() {
     g_mouse_dx = g_mouse_dy = g_mouse_wheel = 0;
   }
   dt = std::min(dt, 0.05);
+  // The free camera (free_camera.h) takes the mouse while it flies.
+  if (rt::freecam::Active() && !g_in_menus && !g_level_menu) {
+    rt::freecam::AddMouse(dx, dy, wheel);
+    dx = dy = wheel = 0;
+  }
   rt::AimMouseAdd(dx, dy);  // pc_look.cpp: the local aim turns by it directly
   {
     std::lock_guard l2(g_vehicle_mouse_mutex);
@@ -486,6 +492,7 @@ float rt::MouseLookAxis(int axis) {
     return 0;
   }
   MouseLook look = SampleMouse();
+  if (rt::freecam::Active()) return 0;
   g_mouse_looks = !g_in_menus && !g_level_menu;
   if (!g_mouse_looks) rt::AimMouseReset();
   // A vehicle's guns and turrets: the mouse aims them (game_patches.cpp).
@@ -513,7 +520,20 @@ float rt::MouseLookAxis(int axis) {
 namespace rt { std::atomic<bool> g_title_passed{false}; }  // declared in kernel.h
 using rt::g_title_passed;
 
+static void AddKeyboardKeys(XINPUT_GAMEPAD& g);
+// The free camera (F3, free_camera.h): while it flies, the player's soldier
+// gets none of the keys (only the menu and the score).
 static void AddKeyboard(XINPUT_GAMEPAD& g) {
+  const bool menus = g_in_menus || g_level_menu;
+  if (OurForegroundWindow() || TestKeysActive()) rt::freecam::PollKeys(menus || pcset::ControlsPad());
+  AddKeyboardKeys(g);
+  if (rt::freecam::Active() && !menus) {
+    g.wButtons &= XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK;
+    g.bLeftTrigger = g.bRightTrigger = 0;
+    g.sThumbLX = g.sThumbLY = g.sThumbRX = g.sThumbRY = 0;
+  }
+}
+static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
   // A game dialog dismissed for the player (pc_settings.cpp: the connection
   // notice): A held a few polls.
   if (std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
@@ -866,6 +886,8 @@ GUEST_IMPORT(XamInputGetState) {
       }
     }
     RecordPad(s.Gamepad.wButtons);
+    // The scoreboard (kernel.h g_scoreboard_open): up while Back (Tab) is held.
+    g_scoreboard_open = (s.Gamepad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
     // Like XInput, a new packet number only when the state changes: a held key
     // must not look like repeated presses (the scoreboard toggles on each one).
     static std::mutex m;
