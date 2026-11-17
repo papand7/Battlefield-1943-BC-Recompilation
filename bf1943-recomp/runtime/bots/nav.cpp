@@ -11,6 +11,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cctype>
 #include <chrono>
 #include <map>
 #include <cmath>
@@ -166,6 +167,53 @@ void Unload() {
 std::chrono::steady_clock::time_point g_look_again{};
 bool g_missing = false;
 
+// A map name goes into file names: letters, digits, _ and - only.
+bool SafeMapName(const std::string& map) {
+  if (map.empty()) return false;
+  for (char c : map)
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return false;
+  return true;
+}
+
+// The tile's data (a file's, not trusted) holds what its header says: Detour reads the polygons'
+// vertices and neighbours by these indices without looking.
+bool TileSane(const unsigned char* d, int size) {
+  if (size < int(sizeof(dtMeshHeader))) return false;
+  const dtMeshHeader* h = reinterpret_cast<const dtMeshHeader*>(d);
+  if (h->magic != DT_NAVMESH_MAGIC || h->version != DT_NAVMESH_VERSION) return false;
+  const int counts[] = {h->vertCount, h->polyCount, h->maxLinkCount, h->detailMeshCount, h->detailVertCount,
+                        h->detailTriCount, h->bvNodeCount, h->offMeshConCount};
+  for (int c : counts)
+    if (c < 0 || c > (1 << 22)) return false;
+  const int hs = dtAlign4(sizeof(dtMeshHeader)), vs = dtAlign4(int(sizeof(float)) * 3 * h->vertCount),
+            ps = dtAlign4(int(sizeof(dtPoly)) * h->polyCount), ls = dtAlign4(int(sizeof(dtLink)) * h->maxLinkCount),
+            dms = dtAlign4(int(sizeof(dtPolyDetail)) * h->detailMeshCount),
+            dvs = dtAlign4(int(sizeof(float)) * 3 * h->detailVertCount), dts = dtAlign4(4 * h->detailTriCount),
+            bvs = dtAlign4(int(sizeof(dtBVNode)) * h->bvNodeCount),
+            offs = dtAlign4(int(sizeof(dtOffMeshConnection)) * h->offMeshConCount);
+  const int64_t total = int64_t(hs) + vs + ps + ls + dms + dvs + dts + bvs + offs;
+  if (total > size) return false;
+  const dtPoly* polys = reinterpret_cast<const dtPoly*>(d + hs + vs);
+  for (int i = 0; i < h->polyCount; ++i) {
+    const dtPoly& p = polys[i];
+    if (p.vertCount > DT_VERTS_PER_POLYGON) return false;
+    for (int j = 0; j < p.vertCount; ++j) {
+      if (p.verts[j] >= h->vertCount) return false;
+      if (!(p.neis[j] & DT_EXT_LINK) && p.neis[j] > h->polyCount) return false;
+    }
+  }
+  const dtPolyDetail* dm = reinterpret_cast<const dtPolyDetail*>(d + hs + vs + ps + ls);
+  for (int i = 0; i < h->detailMeshCount; ++i) {
+    if (int(dm[i].vertBase) + dm[i].vertCount > h->detailVertCount) return false;
+    if (int(dm[i].triBase) + dm[i].triCount > h->detailTriCount) return false;
+  }
+  const unsigned char* tris = d + hs + vs + ps + ls + dms + dvs;
+  for (int i = 0; i < h->detailTriCount; ++i)
+    for (int k = 0; k < 3; ++k)
+      if (tris[4 * i + k] >= DT_VERTS_PER_POLYGON + h->detailVertCount) return false;
+  return true;
+}
+
 // A navigation file of the map (<exe dir>/nav, then nav/): empty if neither has it.
 std::filesystem::path FindFile(const std::string& file) {
   for (const std::filesystem::path& dir : {ExeDir() / "nav", std::filesystem::path("nav")}) {
@@ -191,7 +239,7 @@ dtNavMesh* ReadMesh(const std::filesystem::path& path, int* bytes, int* tile_cou
     int tx, ty, ts;
     ok = fread(&tx, 4, 1, f) == 1 && fread(&ty, 4, 1, f) == 1 && fread(&ts, 4, 1, f) == 1 && ts > 0;
     unsigned char* data = ok ? static_cast<unsigned char*>(dtAlloc(ts, DT_ALLOC_PERM)) : nullptr;
-    ok = ok && data && fread(data, 1, size_t(ts), f) == size_t(ts);
+    ok = ok && data && ts <= (64 << 20) && fread(data, 1, size_t(ts), f) == size_t(ts) && TileSane(data, ts);
     if (ok && dtStatusFailed(mesh->addTile(data, ts, DT_TILE_FREE_DATA, 0, nullptr))) ok = false;
     if (!ok && data) dtFree(data);
     size += ts, ++tiles;
@@ -213,6 +261,11 @@ bool Load(const std::string& map) {
   Unload();
   g_map = map;
   g_missing = false;
+  if (!SafeMapName(map)) {
+    g_missing = true;  // (not a name for file names: no mesh, no looking)
+    g_look_again = std::chrono::steady_clock::now() + std::chrono::hours(1);
+    return false;
+  }
   g_blocked_path = g_user_root / "nav" / (map + ".blocked");
   std::filesystem::path path = FindFile(map + ".nav");
   if (path.empty()) {
@@ -224,7 +277,11 @@ bool Load(const std::string& map) {
   }
   int size = 0, tiles = 0;
   g_navmesh = ReadMesh(path, &size, &tiles);
-  if (!g_navmesh) return false;
+  if (!g_navmesh) {  // (unreadable now, maybe being rewritten: again in a minute)
+    g_missing = true;
+    g_look_again = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    return false;
+  }
   g_navquery = dtAllocNavMeshQuery();
   g_navquery->init(g_navmesh, 4096);
   RT_INFO("bot nav: navigation mesh %s (%d bytes, %d tiles)", Utf8(path).c_str(), size, tiles);
@@ -252,6 +309,7 @@ bool LoadVehicles(const std::string& map) {
   }
   if (g_vquery) return true;
   if (g_vbad || std::chrono::steady_clock::now() < g_vlook_again) return false;
+  if (!SafeMapName(map)) return !(g_vbad = true);
   std::filesystem::path path = FindFile(map + ".vnav");
   if (path.empty()) {
     if (g_vlook_again == std::chrono::steady_clock::time_point{})
@@ -263,7 +321,10 @@ bool LoadVehicles(const std::string& map) {
   }
   int size = 0, tiles = 0;
   g_vmesh = ReadMesh(path, &size, &tiles);
-  if (!g_vmesh) return !(g_vbad = true);
+  if (!g_vmesh) {  // (again in a minute: the file may be rewritten)
+    g_vlook_again = std::chrono::steady_clock::now() + std::chrono::seconds(60);
+    return false;
+  }
   g_vquery = dtAllocNavMeshQuery();
   g_vquery->init(g_vmesh, 4096);
   RT_INFO("bot nav: vehicles' navigation mesh %s (%d bytes, %d tiles)", Utf8(path).c_str(), size, tiles);
@@ -486,6 +547,7 @@ constexpr size_t kTrailPointsMax = 40000, kCellPointsMax = 32;
 // (Again when the file has grown, at most every 30 s.) Takes the mutex itself,
 // only to look and to publish: the reading and linking run without it.
 void LoadTrails(const std::string& map) {
+  if (!SafeMapName(map)) return;
   auto now = std::chrono::steady_clock::now();
   std::error_code ec;
   std::filesystem::path path = TrailPath(map);
@@ -582,6 +644,7 @@ static void FlushTrail(FILE* f, std::vector<std::array<float, 3>>& t, bool keep_
 }
 
 void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos, int count) {
+  if (!SafeMapName(map)) return;
   std::lock_guard lock(g_trail_mutex);
   if (map != g_trail_map) {
     g_trail_open.clear(), g_trail_map = map;

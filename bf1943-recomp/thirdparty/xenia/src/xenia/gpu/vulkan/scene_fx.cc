@@ -1223,7 +1223,13 @@ void VulkanRenderTargetCache::ApplySceneFx(
     if (sun > 0.15f) {
       const float elev = 3.14159265f * (h - 6.0f) / 12.0f;
       const float horiz = std::sqrt(p.sun_dir[0] * p.sun_dir[0] + p.sun_dir[2] * p.sun_dir[2]);
-      if (horiz > 0.05f) p.sun_dir[1] = horiz * std::tan(std::clamp(elev, -1.2f, 1.2f));
+      // (blended in over the two hours around 12: at 12 the game's own sun stays, so stepping
+      // /time across noon does not jump the shadows)
+      const float w = std::clamp(std::fabs(h - 12.0f) * 0.5f, 0.0f, 1.0f);
+      if (horiz > 0.05f) {
+        const float mine = horiz * std::tan(std::clamp(elev, -1.2f, 1.2f));
+        p.sun_dir[1] += (mine - p.sun_dir[1]) * w;
+      }
     }
     p.tod[0] = lerp(a.r, b.r);
     p.tod[1] = lerp(a.g, b.g);

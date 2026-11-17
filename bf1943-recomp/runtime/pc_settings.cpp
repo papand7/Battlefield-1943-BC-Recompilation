@@ -461,8 +461,52 @@ size_t SkipJsonValue(const std::string& s, size_t i) {
 std::string JsonDecode(const std::string& raw) {
   if (raw.size() < 2 || raw.front() != '"') return raw;
   std::string out;
+  auto utf8 = [&out](uint32_t cp) {
+    if (cp < 0x80) out += char(cp);
+    else if (cp < 0x800) out += char(0xC0 | (cp >> 6)), out += char(0x80 | (cp & 0x3F));
+    else if (cp < 0x10000)
+      out += char(0xE0 | (cp >> 12)), out += char(0x80 | ((cp >> 6) & 0x3F)), out += char(0x80 | (cp & 0x3F));
+    else
+      out += char(0xF0 | (cp >> 18)), out += char(0x80 | ((cp >> 12) & 0x3F)), out += char(0x80 | ((cp >> 6) & 0x3F)),
+          out += char(0x80 | (cp & 0x3F));
+  };
+  auto hex4 = [&raw](size_t at, uint32_t& v) {
+    if (at + 4 > raw.size() - 1) return false;
+    v = 0;
+    for (size_t k = 0; k < 4; ++k) {
+      const char c = raw[at + k];
+      v = v * 16 + uint32_t(c >= '0' && c <= '9' ? c - '0' : c >= 'a' && c <= 'f' ? c - 'a' + 10 : c >= 'A' && c <= 'F' ? c - 'A' + 10 : 99);
+      if (!std::isxdigit(static_cast<unsigned char>(c))) return false;
+    }
+    return true;
+  };
   for (size_t i = 1; i + 1 < raw.size(); ++i) {
-    if (raw[i] == '\\' && i + 2 < raw.size()) ++i;
+    if (raw[i] == '\\' && i + 2 < raw.size()) {
+      ++i;
+      switch (raw[i]) {
+        case 'n': out += '\n'; continue;
+        case 'r': out += '\r'; continue;
+        case 't': out += '\t'; continue;
+        case 'b': out += '\b'; continue;
+        case 'f': out += '\f'; continue;
+        case 'u': {
+          uint32_t cp;
+          if (hex4(i + 1, cp)) {
+            i += 4;
+            uint32_t lo;
+            if (cp >= 0xD800 && cp < 0xDC00 && i + 6 < raw.size() && raw[i + 1] == '\\' && raw[i + 2] == 'u' &&
+                hex4(i + 3, lo) && lo >= 0xDC00 && lo < 0xE000) {
+              cp = 0x10000 + ((cp - 0xD800) << 10) + (lo - 0xDC00);
+              i += 6;
+            }
+            utf8(cp);
+            continue;
+          }
+          break;
+        }
+        default: break;
+      }
+    }
     out += raw[i];
   }
   return out;
@@ -500,8 +544,15 @@ bool ReadJson(const std::filesystem::path& path, std::vector<JsonEntry>& out) {
 std::string JsonString(const std::string& s) {
   std::string out = "\"";
   for (char c : s) {
-    if (c == '"' || c == '\\') out += '\\';
-    out += c;
+    if (c == '"' || c == '\\') out += '\\', out += c;
+    else if (c == '\n') out += "\\n";
+    else if (c == '\r') out += "\\r";
+    else if (c == '\t') out += "\\t";
+    else if (static_cast<unsigned char>(c) < 0x20) {
+      char u[8];
+      snprintf(u, sizeof(u), "\\u%04X", unsigned(static_cast<unsigned char>(c)));
+      out += u;
+    } else out += c;
   }
   return out + "\"";
 }
@@ -509,21 +560,36 @@ std::string JsonString(const std::string& s) {
 void WriteJson(const std::filesystem::path& path, const std::vector<JsonEntry>& entries) {
   std::error_code ec;
   std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path, std::ios::trunc);
-  out << "{\n";
-  for (size_t i = 0; i < entries.size(); ++i)
-    out << "  " << JsonString(entries[i].key) << ": " << entries[i].raw
-        << (i + 1 < entries.size() ? ",\n" : "\n");
-  out << "}";
+  // Written beside it and renamed over it: a crash or a full disk never leaves half a file.
+  std::filesystem::path temp = path;
+  temp += L".tmp";
+  {
+    std::ofstream out(temp, std::ios::trunc);
+    out << "{\n";
+    for (size_t i = 0; i < entries.size(); ++i)
+      out << "  " << JsonString(entries[i].key) << ": " << entries[i].raw
+          << (i + 1 < entries.size() ? ",\n" : "\n");
+    out << "}";
+    out.flush();
+    if (!out) {
+      RT_WARN("settings: could not write %s", temp.string().c_str());
+      out.close();
+      std::filesystem::remove(temp, ec);
+      return;
+    }
+  }
+  std::filesystem::rename(temp, path, ec);
+  if (ec) {
+    RT_WARN("settings: could not replace %s (%s)", path.string().c_str(), ec.message().c_str());
+    std::filesystem::remove(temp, ec);
+  }
 }
 
 void SetJson(std::vector<JsonEntry>& entries, const std::string& key, const std::string& raw) {
-  for (JsonEntry& e : entries)
-    if (e.key == key) {
-      e.raw = raw;
-      return;
-    }
-  entries.push_back({key, raw});
+  bool found = false;
+  for (JsonEntry& e : entries)  // (a key twice: both, so every reader sees the same, whichever it takes)
+    if (e.key == key) e.raw = raw, found = true;
+  if (!found) entries.push_back({key, raw});
 }
 
 void Save() {
@@ -1407,8 +1473,8 @@ bool SavedFrameGen() {
   if (!lp.empty()) {
     std::vector<JsonEntry> entries;
     ReadJson(lp, entries);
-    for (const JsonEntry& e : entries)
-      if (e.key == "frameGen") return JsonDecode(e.raw) == "on";
+    for (auto it = entries.rbegin(); it != entries.rend(); ++it)  // (the last of a key twice, as Load)
+      if (it->key == "frameGen") return JsonDecode(it->raw) == "on";
   }
   std::ifstream saved(IniPath());
   for (std::string line; std::getline(saved, line);) {

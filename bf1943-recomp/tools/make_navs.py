@@ -482,6 +482,9 @@ def parse(argv):
     except ValueError:
         raise Fail('--timeout: seconds')
     maps = [m.strip() for m in (a['maps'] or '').split(',') if m.strip()]
+    for m in maps:  # (a map name becomes file names: nothing else)
+        if not all(c.isascii() and (c.isalnum() or c in '_-') for c in m):
+            raise Fail('--maps: %r is not a map name (letters, digits, _ and -)' % m)
     a['maps'] = maps or TITLES[a['title']]['maps']
     return a
 

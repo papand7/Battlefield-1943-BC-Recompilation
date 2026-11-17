@@ -26,6 +26,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <mutex>
+#include <cctype>
 #include <set>
 #include <thread>
 #include <vector>
@@ -171,20 +172,32 @@ std::set<std::string> g_requested;
 
 void Request(const char* title, const std::string& map) {
   if (map.empty()) return;
-  {
-    std::lock_guard lock(g_mutex);
-    if (!g_requested.insert(std::string(title) + "/" + map).second) return;
-  }
+  for (char c : map)  // (the name goes into file names and a command line)
+    if (!(std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-')) return;
   for (const char* off : {"BF_MAKE_NAVS_CHILD", "BF_BOT_DUMP_COLLISION", "BF_NO_NAV_AUTOGEN"})
     if (const char* v = getenv(off); v && *v) return;
   if (!g_dedicated && !g_lan_host) return;
+  const std::string key = std::string(title) + "/" + map;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_requested.count(key)) return;
+  }
+  // (Python is looked for outside the lock; a map is only "requested" once there is something to run, so
+  // Python installed later still makes it.)
   std::filesystem::path script = FindScript();
   auto python = FindPython();
   if (script.empty() || python.empty()) {
-    RT_WARN("bot nav: no navigation files for %s, and %s to make them: the bots play without routes "
-            "(the launcher makes them, or tools/make_navs.py)", map.c_str(),
-            script.empty() ? "tools/make_navs.py isn't found" : "Python isn't found");
+    static std::set<std::string> warned;
+    std::lock_guard lock(g_mutex);
+    if (warned.insert(key).second)
+      RT_WARN("bot nav: no navigation files for %s, and %s to make them: the bots play without routes "
+              "(the launcher makes them, or tools/make_navs.py)", map.c_str(),
+              script.empty() ? "tools/make_navs.py isn't found" : "Python isn't found");
     return;
+  }
+  {
+    std::lock_guard lock(g_mutex);
+    if (!g_requested.insert(key).second) return;
   }
   // Into <exe dir>/nav (where both games look first), else nav/ here.
   std::error_code ec;
