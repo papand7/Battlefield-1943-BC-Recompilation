@@ -10,6 +10,7 @@
 #include "bot_players.h"
 #include "guest.h"
 #include "kernel.h"
+#include "spectate.h"
 
 #include <algorithm>
 #include <atomic>
@@ -301,6 +302,7 @@ void StartRecorder() {
 }
 
 void Killed(uint32_t victim, uint32_t killer) {
+  rt::spectate::Killed(victim, killer);  // (live spectating: scores, the killer to follow)
   if (!g_recording) return;
   std::lock_guard l(g_rec.mutex);
   if (!g_recording) return;

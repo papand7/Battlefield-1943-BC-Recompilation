@@ -1,6 +1,7 @@
 // Game patches: strong definitions of chosen weak sub_ symbols from the
 // recompiled code.
 #include "free_camera.h"
+#include "spectate.h"
 #include "kernel.h"
 #include "admin_server.h"
 #include "lan.h"
@@ -303,7 +304,7 @@ void HardcoreHud() {
   if (rt::g_level_menu) spawn_seen = true;
   xgpu::SetUiMenu(rt::g_in_menus || rt::g_level_menu || rt::g_scoreboard_open || !spawn_seen);
   static int last = -1;
-  const bool hide = rt::g_hardcore_hud && !rt::g_in_menus && !rt::g_level_menu && !rt::g_scoreboard_open;
+  const bool hide = (rt::g_hardcore_hud || rt::spectate::Active()) && !rt::g_in_menus && !rt::g_level_menu && !rt::g_scoreboard_open;
   if (int(hide) == last) return;
   last = int(hide);
   xgpu::SetHideUi(hide);
@@ -877,7 +878,8 @@ GAME_PATCH(8246D918) {
 // the front-end flag (g_in_menus) does not cover these, so the mouse works the
 // menu way while it is set (xam.cpp).
 GAME_PATCH(823CD3E8) {
-  g_level_menu = (ctx.r4.u32 & 0xFF) != 0;
+  // (spectating by choice: the spawn screen is not shown to the player: spectate.h)
+  g_level_menu = rt::spectate::MenuValue((ctx.r4.u32 & 0xFF) != 0);
   if (g_log_ui) RT_INFO("ui: level menu %s", g_level_menu ? "shown" : "hidden");
   __imp__sub_823CD3E8(ctx, base);
 }

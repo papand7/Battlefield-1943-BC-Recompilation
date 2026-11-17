@@ -12,6 +12,7 @@
 #include "pbr_shaders.h"
 #include "lan.h"
 #include "pc_menu.h"
+#include "spectate.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -351,6 +352,10 @@ void Build() {
   v.push_back(Choice(kSound, "background_fps", L"BACKGROUND FRAME RATE",
                      L"Most frames a second while another window is in front (saves power and heat).",
                      {L"15", L"30", L"60", L"AS IN FRONT"}, {"15", "30", "60", "0"}, 1));
+  v.push_back(Choice(kControls, "spectate_death", L"WATCH WHEN DEAD",
+                     L"When you die in a game you host, the camera follows your killer or a teammate until the "
+                     L"spawn screen. F4 spectates a game at any time (N / B player, Space free camera).",
+                     kOffOn, {"0", "1"}, 1));
   v.push_back(Choice(kControls, "prompts", L"BUTTON PROMPTS",
                      L"The buttons the game shows. AUTO: your keys, or the Xbox 360's with a controller plugged in. "
                      L"Shows from the next menu or map.",
@@ -698,6 +703,7 @@ void ApplyLive() {
   g_sprint_toggle = Value("sprint_toggle") == "1";
   g_background_fps = uint32_t(std::atoi(Value("background_fps").c_str()));
   g_background_mute = Value("background_mute") == "1";
+  rt::spectate::g_on_death = Value("spectate_death") != "0";
   g_master_volume = float(std::atof(Value("master_volume").c_str()));
   g_music_volume = float(std::atof(Value("music_volume").c_str()));
   g_voice_volume = float(std::atof(Value("voice_volume").c_str()));
@@ -971,6 +977,7 @@ void Activate(Setting& s) {
         g_hardcore = hardcore > 0;
         if (g_hardcore) g_hardcore_damage = float(hardcore);
       }
+      rt::spectate::g_flag = PageValue("spectate") == "1";
       g_server_name = PageText("server_name");
       g_server_password = PageText("password");
       g_weather = PageValue("weather") == "1" ? 1 : 0;
@@ -1263,6 +1270,10 @@ void OpenMode(Mode mode, Mode back_to) {
                                    L"soldiers die in fewer hits. The scoreboard (Tab) stays.",
                                    {L"OFF", L"ON (2X DAMAGE)", L"ON (3X DAMAGE)"}, {"0", "2", "3"},
                                    !g_hardcore ? 0 : g_hardcore_damage >= 2.5f ? 2 : 1));
+    g_host_rows.push_back(Choice(kGraphics, "spectate", L"SPECTATE",
+                                 L"Watch your own game instead of playing in it: no soldier of yours, the camera "
+                                 L"follows the players (N / B next, Space free camera, wheel zoom). F4 does it at any time.",
+                                 {L"NO", L"YES"}, {"0", "1"}, rt::spectate::g_flag ? 1 : 0));
     Setting start;
     start.category = kGraphics, start.kind = Kind::kButton, start.key = "start", start.button = kHostStart;
     start.label = L"START SERVER";

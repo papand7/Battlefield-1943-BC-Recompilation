@@ -42,4 +42,9 @@ bool CurrentView(View& v);
 void PlaceAt(const float eye[3], float yaw, float pitch);
 // A key held (the game window in front, or a test's key file).
 bool KeyHeld(int vk);
+// The spectator (spectate.h) drives the camera: its step runs at the start of
+// each camera frame (it places the camera: PlaceAt), its wheel hook takes the
+// mouse wheel (true: consumed). While driven the mouse and keys don't fly it.
+void SetDriver(void (*step)(), bool (*wheel)(long));
+void SetDriven(bool on);
 }  // namespace rt::freecam

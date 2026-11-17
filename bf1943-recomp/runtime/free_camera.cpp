@@ -5,6 +5,7 @@
 #include "free_camera.h"
 
 #include "kernel.h"
+#include "spectate.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -36,6 +37,9 @@ float g_yaw = 0, g_pitch = 0;     // forward = (sin yaw cos pitch, sin pitch, co
 // ground and sea, one-sided, are culled and only the trees and props show.)
 float g_left_sign = -1.0f;
 float g_speed = 12.0f;            // m/s
+void (*g_driver)() = nullptr;
+bool (*g_wheel_hook)(long) = nullptr;
+std::atomic<bool> g_driven{false};
 float g_fov = 0.96f;              // vertical radians, the last handed to the view
 long g_mouse_dx = 0, g_mouse_dy = 0;
 std::chrono::steady_clock::time_point g_last_step{};
@@ -92,12 +96,15 @@ void Toggle() { SetActive(!Active()); }
 void PollKeys(bool menus) {
   static bool f3_was = false;
   bool f3 = Held(VK_F3);
-  if (f3 && !f3_was) Toggle();
+  if (f3 && !f3_was) {
+    if (rt::spectate::Active()) rt::spectate::FreeKey();  // (the spectator's: free camera on / off)
+    else Toggle();
+  }
   f3_was = f3;
   Keys k{};
   if (Active() && !menus) {
     k.w = Held('W'), k.a = Held('A'), k.s = Held('S'), k.d = Held('D');
-    k.up = Held(VK_SPACE) || Held('E');
+    k.up = (Held(VK_SPACE) && !rt::spectate::Active()) || Held('E');  // (spectating: Space switches follow / free)
     k.down = Held(VK_CONTROL) || Held('C') || Held('Q');
     k.fast = Held(VK_SHIFT);
     k.slow = Held(VK_MENU);
@@ -111,11 +118,16 @@ void AddMouse(long dx, long dy, long wheel) {
   if (trace && (dx || dy)) RT_INFO("free camera: mouse %ld %ld", dx, dy);
   std::lock_guard l(g_mutex);
   g_mouse_dx += dx, g_mouse_dy += dy;
+  if (wheel && g_wheel_hook && g_wheel_hook(wheel)) wheel = 0;
   if (wheel) g_speed = std::clamp(g_speed * (wheel > 0 ? 1.25f : 0.8f), 2.0f, 200.0f);
 }
 
+void SetDriver(void (*step)(), bool (*wheel)(long)) { g_driver = step, g_wheel_hook = wheel; }
+void SetDriven(bool on) { g_driven = on; }
+
 void FrameStep() {
   if (!Active()) return;
+  if (g_driver) g_driver();
   std::lock_guard l(g_mutex);
   auto now = std::chrono::steady_clock::now();
   float dt = g_last_step == std::chrono::steady_clock::time_point{}
@@ -124,6 +136,10 @@ void FrameStep() {
   g_last_step = now;
   dt = std::clamp(dt, 0.0f, 0.1f);
   if (!g_placed) return;  // (placed by the first Override)
+  if (g_driven) {
+    g_mouse_dx = g_mouse_dy = 0;  // (the spectator follows a player: nothing flies it)
+    return;
+  }
   // Look: 0.0022 radians a count at sensitivity 1 (about the game's own feel).
   const float k = 0.0022f * (g_mouse_sensitivity > 0 ? g_mouse_sensitivity : 1.0f);
   g_yaw -= float(g_mouse_dx) * k;  // right lowers yaw
