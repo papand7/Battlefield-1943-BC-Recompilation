@@ -10,7 +10,7 @@
 
 namespace botapi {
 
-constexpr int kVersion = 8;      // bump when a struct here changes
+constexpr int kVersion = 9;     // bump when a struct here changes
 constexpr int kMaxBots = 16;
 constexpr int kMemSize = 1024;   // per-bot brain state
 constexpr float kPi = 3.14159265f;
@@ -109,6 +109,9 @@ struct World {
   // --train: a server only bots play on; asking about medium situations too
   // (kind 5: where to fight a new enemy from).
   bool training;
+  // The jeeps' and tanks' mesh (nav/<map>.vnav; null without one): up to max
+  // corners of a vehicle's route from a to b (0: no way).
+  int (*vroute)(Vec a, Vec b, Vec* corners, int max);
 };
 
 using ThinkFn = void (*)(World*);

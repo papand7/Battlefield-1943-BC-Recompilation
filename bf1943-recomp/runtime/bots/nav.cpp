@@ -164,6 +164,46 @@ void Unload() {
 std::chrono::steady_clock::time_point g_look_again{};
 bool g_missing = false;
 
+// A navigation file of the map (<exe dir>/nav, then nav/): empty if neither has it.
+std::filesystem::path FindFile(const std::string& file) {
+  for (const std::filesystem::path& dir : {ExeDir() / "nav", std::filesystem::path("nav")}) {
+    std::error_code ec;
+    if (std::filesystem::exists(dir / file, ec)) return dir / file;
+  }
+  return {};
+}
+
+// Reads a "BFNV" file (navgen's) into a new mesh; null if it can't.
+dtNavMesh* ReadMesh(const std::filesystem::path& path, int* bytes, int* tile_count) {
+  FILE* f = Open(path, "rb");
+  if (!f) return nullptr;
+  char magic[4];
+  int version = 0, size = 0, tiles = 0;
+  bool ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "BFNV", 4) && fread(&version, 4, 1, f) == 1 && version == 2;
+  dtNavMesh* mesh = dtAllocNavMesh();
+  dtNavMeshParams params;
+  int count = 0;
+  ok = ok && fread(&params, sizeof(params), 1, f) == 1 && fread(&count, 4, 1, f) == 1 &&
+       dtStatusSucceed(mesh->init(&params));
+  for (int i = 0; ok && i < count; ++i) {
+    int tx, ty, ts;
+    ok = fread(&tx, 4, 1, f) == 1 && fread(&ty, 4, 1, f) == 1 && fread(&ts, 4, 1, f) == 1 && ts > 0;
+    unsigned char* data = ok ? static_cast<unsigned char*>(dtAlloc(ts, DT_ALLOC_PERM)) : nullptr;
+    ok = ok && data && fread(data, 1, size_t(ts), f) == size_t(ts);
+    if (ok && dtStatusFailed(mesh->addTile(data, ts, DT_TILE_FREE_DATA, 0, nullptr))) ok = false;
+    if (!ok && data) dtFree(data);
+    size += ts, ++tiles;
+  }
+  fclose(f);
+  if (!ok) {
+    RT_WARN("bot nav: %s isn't a navigation mesh Detour can read", Utf8(path).c_str());
+    dtFreeNavMesh(mesh);
+    return nullptr;
+  }
+  *bytes = size, *tile_count = tiles;
+  return mesh;
+}
+
 bool Load(const std::string& map) {
   if (map == g_map && (g_navquery || !g_missing || std::chrono::steady_clock::now() < g_look_again))
     return g_navquery != nullptr;
@@ -172,14 +212,7 @@ bool Load(const std::string& map) {
   g_map = map;
   g_missing = false;
   g_blocked_path = g_user_root / "nav" / (map + ".blocked");
-  std::filesystem::path path;
-  for (const std::filesystem::path& dir : {ExeDir() / "nav", std::filesystem::path("nav")}) {
-    std::error_code ec;
-    if (std::filesystem::exists(dir / (map + ".nav"), ec)) {
-      path = dir / (map + ".nav");
-      break;
-    }
-  }
+  std::filesystem::path path = FindFile(map + ".nav");
   if (path.empty()) {
     if (!again) RT_INFO("bot nav: no navigation mesh for %s (nav/%s.nav)", map.c_str(), map.c_str());
     g_missing = true;
@@ -187,30 +220,9 @@ bool Load(const std::string& map) {
     navauto::Request("bf1943", map);
     return false;
   }
-  FILE* f = Open(path, "rb");
-  if (!f) return false;
-  char magic[4];
-  int version = 0, size = 0, tiles = 0;
-  bool ok = fread(magic, 1, 4, f) == 4 && !memcmp(magic, "BFNV", 4) && fread(&version, 4, 1, f) == 1 && version == 2;
-  g_navmesh = dtAllocNavMesh();
-  dtNavMeshParams params;
-  int count = 0;
-  ok = ok && fread(&params, sizeof(params), 1, f) == 1 && fread(&count, 4, 1, f) == 1 &&
-       dtStatusSucceed(g_navmesh->init(&params));
-  for (int i = 0; ok && i < count; ++i) {
-    int tx, ty, ts;
-    ok = fread(&tx, 4, 1, f) == 1 && fread(&ty, 4, 1, f) == 1 && fread(&ts, 4, 1, f) == 1 && ts > 0;
-    unsigned char* data = ok ? static_cast<unsigned char*>(dtAlloc(ts, DT_ALLOC_PERM)) : nullptr;
-    ok = ok && data && fread(data, 1, size_t(ts), f) == size_t(ts) &&
-         dtStatusSucceed(g_navmesh->addTile(data, ts, DT_TILE_FREE_DATA, 0, nullptr));
-    size += ts, ++tiles;
-  }
-  fclose(f);
-  if (!ok) {
-    RT_WARN("bot nav: %s isn't a navigation mesh Detour can read", Utf8(path).c_str());
-    Unload();
-    return false;
-  }
+  int size = 0, tiles = 0;
+  g_navmesh = ReadMesh(path, &size, &tiles);
+  if (!g_navmesh) return false;
   g_navquery = dtAllocNavMeshQuery();
   g_navquery->init(g_navmesh, 4096);
   RT_INFO("bot nav: navigation mesh %s (%d bytes, %d tiles)", Utf8(path).c_str(), size, tiles);
@@ -219,7 +231,85 @@ bool Load(const std::string& map) {
   return true;
 }
 
+// The jeeps' and tanks' mesh (nav/<map>.vnav, as Bad Company's RouteVehicle in
+// bc_bots.cpp: navgen with a vehicle's size), for the map in g_vmap; looked
+// for again every 15 s while missing (tools/make_navs.py makes it).
+dtNavMesh* g_vmesh = nullptr;
+dtNavMeshQuery* g_vquery = nullptr;
+std::string g_vmap;
+std::chrono::steady_clock::time_point g_vlook_again{};
+bool g_vbad = false;  // there but unreadable: not again for this map
+
+bool LoadVehicles(const std::string& map) {
+  if (map != g_vmap) {
+    if (g_vquery) dtFreeNavMeshQuery(g_vquery);
+    if (g_vmesh) dtFreeNavMesh(g_vmesh);
+    g_vquery = nullptr, g_vmesh = nullptr, g_vbad = false;
+    g_vmap = map;
+    g_vlook_again = {};
+  }
+  if (g_vquery) return true;
+  if (g_vbad || std::chrono::steady_clock::now() < g_vlook_again) return false;
+  std::filesystem::path path = FindFile(map + ".vnav");
+  if (path.empty()) {
+    if (g_vlook_again == std::chrono::steady_clock::time_point{})
+      RT_INFO("bot nav: no vehicles' navigation mesh for %s (nav/%s.vnav): they drive straight", map.c_str(),
+              map.c_str());
+    g_vlook_again = std::chrono::steady_clock::now() + std::chrono::seconds(15);
+    navauto::Request("bf1943", map);
+    return false;
+  }
+  int size = 0, tiles = 0;
+  g_vmesh = ReadMesh(path, &size, &tiles);
+  if (!g_vmesh) return !(g_vbad = true);
+  g_vquery = dtAllocNavMeshQuery();
+  g_vquery->init(g_vmesh, 4096);
+  RT_INFO("bot nav: vehicles' navigation mesh %s (%d bytes, %d tiles)", Utf8(path).c_str(), size, tiles);
+  return true;
+}
+
 }  // namespace
+
+bool VehiclesReady(const std::string& map) {
+  std::lock_guard lock(g_mutex);
+  return LoadVehicles(map);
+}
+
+// A vehicle's route from a to b on the vehicles' mesh: the nearest polygons
+// to both ends (the goal's within 20 m across), A* (a partial route is driven
+// too), the straight path's corners. 0 without the mesh or a way.
+int RouteVehicle(const float a[3], const float b[3], float* corners, int max) {
+  std::lock_guard lock(g_mutex);
+  if (!g_vquery || max <= 0) return 0;
+  dtQueryFilter filter;
+  const float ext[3] = {6, 10, 6}, goal_ext[3] = {20, 60, 20};
+  dtPolyRef sa = 0, sb = 0;
+  float pa[3], pb[3];
+  g_vquery->findNearestPoly(a, ext, &filter, &sa, pa);
+  g_vquery->findNearestPoly(b, goal_ext, &filter, &sb, pb);
+  if (!sa || !sb) return 0;
+  dtPolyRef polys[512];
+  int n = 0;
+  g_vquery->findPath(sa, sb, pa, pb, &filter, polys, &n, 512);
+  if (!n) return 0;
+  float end[3];
+  dtVcopy(end, pb);
+  if (polys[n - 1] != sb) g_vquery->closestPointOnPoly(polys[n - 1], pb, end, nullptr);
+  static float c[128 * 3];
+  unsigned char flags[128];
+  dtPolyRef refs[128];
+  int nc = 0;
+  g_vquery->findStraightPath(pa, end, polys, n, c, flags, refs, &nc, 128);
+  int k = std::min(nc, max);
+  memcpy(corners, c, size_t(k) * 3 * sizeof(float));
+  static std::string routed;
+  if (k > 0 && routed != g_vmap) {
+    routed = g_vmap;
+    RT_INFO("bot nav: driving on %s's vehicles' mesh (the first route: %d corners, %.0f m straight)", g_vmap.c_str(),
+            k, dtVdist(a, b));
+  }
+  return k;
+}
 
 void ChooseMain(const float* points, int count) {
   std::lock_guard lock(g_mutex);

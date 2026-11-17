@@ -210,6 +210,13 @@ int BrainRoute(int slot, Vec a, Vec b, Vec* corners, int max) {
   for (int i = 0; i < n; ++i) corners[i] = Vec{buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]};
   return n;
 }
+int BrainVehicleRoute(Vec a, Vec b, Vec* corners, int max) {
+  float fa[3] = {a.x, a.y, a.z}, fb[3] = {b.x, b.y, b.z};
+  static float buf[128 * 3];
+  int n = nav::RouteVehicle(fa, fb, buf, std::min(max, 128));
+  for (int i = 0; i < n; ++i) corners[i] = Vec{buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]};
+  return n;
+}
 float BrainGround(float x, float z) { return TerrainHeight(x, z); }
 float BrainLearned(int what, int team, Vec at, float radius) {
   return knowledge::Get(knowledge::What(std::clamp(what, 0, 2)), team, at.x, at.z, radius);
@@ -707,6 +714,7 @@ void StartBotDirector() {
       }
       w.route = have_mesh ? BrainRoute : nullptr;
       w.block = have_mesh ? BrainBlock : nullptr;
+      w.vroute = nav::VehiclesReady(map) ? BrainVehicleRoute : nullptr;
       SightForMap(map);
       w.sight = BrainSight;
       w.ground = BrainGround;

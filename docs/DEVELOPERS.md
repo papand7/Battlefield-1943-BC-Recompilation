@@ -225,7 +225,8 @@ found through their RTTI with `BF_FIND_VTABLE=hkRigidBody,hkWorld`).
 briefly as a dedicated server (`BF_BOT_DUMP_COLLISION`, a temporary `--user`, no bots,
 `BF_MAKE_NAVS_CHILD=1`), stops that process when the play area is logged, adds the
 terrain and runs `navgen` (built by the launcher's setup and `build_linux.sh`, next to
-the exe and in `build/navgen`). It makes only the files missing (Bad Company: `.nav`,
+the exe and in `build/navgen`). It makes only the files missing (BF1943: `.nav` and
+`.vnav`, the jeeps' and tanks' mesh, routed with `World::vroute`; Bad Company: `.nav`,
 `.vnav`, `.hf`), about a minute and a half per map:
 
 ```

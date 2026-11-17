@@ -1,4 +1,4 @@
-// The bots' navigation files (nav/<map>.nav, Bad Company also .vnav and .hf)
+// The bots' navigation files (nav/<map>.nav and .vnav, Bad Company also .hf)
 // are made on the player's PC from their own game (tools/make_navs.py): where
 // the game looks for them, and a hosting server that has none for its map
 // starting the tool by itself, once, in the background.
