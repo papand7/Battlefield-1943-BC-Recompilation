@@ -1,5 +1,6 @@
 // bf1943: native host for the recompiled Battlefield 1943 code.
 // Usage: bf1943 [--game <dir with default.xex>] [--user <writable dir>] [--trace]
+#include <fstream>
 #include "kernel.h"
 #include "admin.h"
 #include "admin_server.h"
@@ -391,6 +392,19 @@ int main(int argc, char** argv) {
   // Frame generation takes the scene's depth and motion vectors from the scene
   // effects: without them no frame is ever interpolated (the title then shows
   // as many frames shown as the game makes), so they are turned on with it.
+  // The PC settings page's FRAME GENERATION row (pc_settings.ini; the launcher passes --frame-gen
+  // itself) works at the next start too.
+  if (!frame_gen) {
+    std::ifstream saved(g_user_root / "pc_settings.ini");
+    for (std::string line; std::getline(saved, line);) {
+      while (!line.empty() && (line.back() == 13 || line.back() == 32)) line.pop_back();
+      if (line == "frame_gen=on") {
+        frame_gen = true;
+        xgpu::SetFrameGeneration(true);
+        break;
+      }
+    }
+  }
   if (frame_gen && !xe::gpu::scenefx::Enabled()) {
     xe::gpu::scenefx::Configure("");
     RT_INFO("frame generation: scene effects turned on (it needs their depth and motion vectors)");
