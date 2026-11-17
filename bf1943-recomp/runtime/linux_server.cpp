@@ -86,6 +86,7 @@ void PatchPcText(uint8_t*, size_t) {}
 }  // namespace rt
 namespace rt::pcset {
 void Load() {}
+bool SavedFrameGen() { return false; }
 int Key(Action, int) { return 0; }
 bool IsOpen() { return false; }
 const char* Screen() { return ""; }

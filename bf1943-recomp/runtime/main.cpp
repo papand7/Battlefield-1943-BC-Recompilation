@@ -395,17 +395,11 @@ int main(int argc, char** argv) {
   // effects: without them no frame is ever interpolated (the title then shows
   // as many frames shown as the game makes), so they are turned on with it.
   // The PC settings page's FRAME GENERATION row (pc_settings.ini; the launcher passes --frame-gen
-  // itself) works at the next start too.
-  if (!frame_gen) {
-    std::ifstream saved(g_user_root / "pc_settings.ini");
-    for (std::string line; std::getline(saved, line);) {
-      while (!line.empty() && (line.back() == 13 || line.back() == 32)) line.pop_back();
-      if (line == "frame_gen=on") {
-        frame_gen = true;
-        xgpu::SetFrameGeneration(true);
-        break;
-      }
-    }
+  // itself) works at the next start too; the launcher's own choice wins over
+  // the file, as in pcset::Load.
+  if (!frame_gen && rt::pcset::SavedFrameGen()) {
+    frame_gen = true;
+    xgpu::SetFrameGeneration(true);
   }
   if (frame_gen && !xe::gpu::scenefx::Enabled()) {
     xe::gpu::scenefx::Configure("");

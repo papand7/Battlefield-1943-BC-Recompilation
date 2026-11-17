@@ -420,46 +420,77 @@ std::filesystem::path LauncherPath() {
   return std::filesystem::path(buffer) / L"BF1943Launcher" / L"settings.json";
 }
 
-// The launcher's settings: a flat JSON object of strings and booleans.
-std::map<std::string, std::string> ReadJson(const std::filesystem::path& path) {
-  std::map<std::string, std::string> out;
-  std::ifstream in(path);
-  std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-  size_t at = 0;
-  while ((at = s.find('"', at)) != std::string::npos) {
-    size_t end = s.find('"', at + 1);
-    if (end == std::string::npos) break;
-    std::string key = s.substr(at + 1, end - at - 1);
-    size_t colon = s.find(':', end);
-    if (colon == std::string::npos) break;
-    size_t v = s.find_first_not_of(" \t\r\n", colon + 1);
-    if (v == std::string::npos) break;
-    if (s[v] == '"') {
-      size_t ve = v + 1;
-      std::string value;
-      while (ve < s.size() && s[ve] != '"') {
-        if (s[ve] == '\\' && ve + 1 < s.size()) ++ve;
-        value += s[ve++];
+// The launcher's settings: a JSON object. Its top-level entries are kept as
+// written (raw JSON text, nested objects and arrays included: the launcher's
+// server lists), so saving here only replaces the keys this page touched.
+struct JsonEntry {
+  std::string key, raw;
+};
+
+// The end of the JSON value starting at s[i] (a string, object, array or literal).
+size_t SkipJsonValue(const std::string& s, size_t i) {
+  if (i >= s.size()) return i;
+  if (s[i] == '"') {
+    for (++i; i < s.size() && s[i] != '"'; ++i)
+      if (s[i] == '\\') ++i;
+    return std::min(i + 1, s.size());
+  }
+  if (s[i] == '{' || s[i] == '[') {
+    int depth = 0;
+    while (i < s.size()) {
+      char c = s[i];
+      if (c == '"') {
+        i = SkipJsonValue(s, i);
+        continue;
       }
-      out[key] = "\"" + value + "\"";
-      at = ve + 1;
-    } else {
-      size_t ve = s.find_first_of(",}\r\n", v);
-      out[key] = s.substr(v, ve - v);
-      at = ve;
+      if (c == '{' || c == '[') ++depth;
+      else if ((c == '}' || c == ']') && --depth == 0) return i + 1;
+      ++i;
     }
+    return i;
+  }
+  size_t e = s.find_first_of(",}] \t\r\n", i);
+  return e == std::string::npos ? s.size() : e;
+}
+
+// A raw JSON value as text: strings unquoted and unescaped, the rest as is.
+std::string JsonDecode(const std::string& raw) {
+  if (raw.size() < 2 || raw.front() != '"') return raw;
+  std::string out;
+  for (size_t i = 1; i + 1 < raw.size(); ++i) {
+    if (raw[i] == '\\' && i + 2 < raw.size()) ++i;
+    out += raw[i];
   }
   return out;
 }
 
-void WriteJson(const std::filesystem::path& path, const std::map<std::string, std::string>& map) {
-  std::error_code ec;
-  std::filesystem::create_directories(path.parent_path(), ec);
-  std::ofstream out(path, std::ios::trunc);
-  out << "{\n";
-  size_t i = 0;
-  for (const auto& [k, v] : map) out << "  \"" << k << "\": " << v << (++i < map.size() ? ",\n" : "\n");
-  out << "}";
+// False if the file is there but not an object read to its end (then it is
+// not written back: nothing of the launcher's is lost).
+bool ReadJson(const std::filesystem::path& path, std::vector<JsonEntry>& out) {
+  out.clear();
+  std::ifstream in(path);
+  if (!in) return true;  // none yet
+  std::string s((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+  size_t i = s.find_first_not_of(" \t\r\n\xEF\xBB\xBF");
+  if (i == std::string::npos) return true;  // empty
+  if (s[i] != '{') return false;
+  ++i;
+  for (;;) {
+    i = s.find_first_not_of(" \t\r\n,", i);
+    if (i == std::string::npos) return false;
+    if (s[i] == '}') return true;
+    if (s[i] != '"') return false;
+    size_t ke = SkipJsonValue(s, i);
+    std::string key = JsonDecode(s.substr(i, ke - i));
+    size_t colon = s.find_first_not_of(" \t\r\n", ke);
+    if (colon == std::string::npos || s[colon] != ':') return false;
+    size_t v = s.find_first_not_of(" \t\r\n", colon + 1);
+    if (v == std::string::npos) return false;
+    size_t ve = SkipJsonValue(s, v);
+    if (ve <= v) return false;
+    out.push_back({key, s.substr(v, ve - v)});
+    i = ve;
+  }
 }
 
 std::string JsonString(const std::string& s) {
@@ -469,6 +500,26 @@ std::string JsonString(const std::string& s) {
     out += c;
   }
   return out + "\"";
+}
+
+void WriteJson(const std::filesystem::path& path, const std::vector<JsonEntry>& entries) {
+  std::error_code ec;
+  std::filesystem::create_directories(path.parent_path(), ec);
+  std::ofstream out(path, std::ios::trunc);
+  out << "{\n";
+  for (size_t i = 0; i < entries.size(); ++i)
+    out << "  " << JsonString(entries[i].key) << ": " << entries[i].raw
+        << (i + 1 < entries.size() ? ",\n" : "\n");
+  out << "}";
+}
+
+void SetJson(std::vector<JsonEntry>& entries, const std::string& key, const std::string& raw) {
+  for (JsonEntry& e : entries)
+    if (e.key == key) {
+      e.raw = raw;
+      return;
+    }
+  entries.push_back({key, raw});
 }
 
 void Save() {
@@ -481,21 +532,28 @@ void Save() {
   }
   std::filesystem::path lp = LauncherPath();
   if (lp.empty()) return;
-  auto json = ReadJson(lp);
+  std::vector<JsonEntry> json;
+  if (!ReadJson(lp, json)) {
+    RT_WARN("settings: %s is not a JSON object this page can read: left as it is",
+            lp.string().c_str());
+    return;
+  }
+  bool changed = false;
   for (const Setting& s : g_settings) {
     // Only what was changed here: the rest of this run (its name, frame
     // limit... from the command line) must not overwrite the launcher's.
     if (!s.launcher || !s.touched) continue;
+    changed = true;
     if (s.kind == Kind::kText) {
-      json[s.launcher] = JsonString(s.text);
+      SetJson(json, s.launcher, JsonString(s.text));
     } else {
       const std::string& v = s.values[s.index];
       bool flag = !std::strcmp(s.launcher, "hdr") || !std::strcmp(s.launcher, "blood") ||
                   !std::strcmp(s.launcher, "textures");
-      json[s.launcher] = flag ? (v == "1" ? "true" : "false") : JsonString(v);
+      SetJson(json, s.launcher, flag ? (v == "1" ? "true" : "false") : JsonString(v));
     }
   }
-  WriteJson(lp, json);
+  if (changed) WriteJson(lp, json);
 }
 
 // ---- applying ----------------------------------------------------------------
@@ -1316,17 +1374,36 @@ uint16_t PuppetButtons() {
   return PuppetStep(duration<double>(steady_clock::now().time_since_epoch()).count());
 }
 
+bool SavedFrameGen() {
+  // As Load: the launcher's frameGen if it has one, else the page's file.
+  std::filesystem::path lp = LauncherPath();
+  if (!lp.empty()) {
+    std::vector<JsonEntry> entries;
+    ReadJson(lp, entries);
+    for (const JsonEntry& e : entries)
+      if (e.key == "frameGen") return JsonDecode(e.raw) == "on";
+  }
+  std::ifstream saved(IniPath());
+  for (std::string line; std::getline(saved, line);) {
+    while (!line.empty() && (line.back() == 13 || line.back() == 32)) line.pop_back();
+    if (line == "frame_gen=on") return true;
+  }
+  return false;
+}
+
 void Load() {
   if (g_settings.empty()) Build();
   for (int a = 0; a < kActionCount; ++a) g_keys[a][0] = kActions[a].key;
   // Current values: the launcher's settings, then the page's own file.
   std::filesystem::path lp = LauncherPath();
   if (!lp.empty()) {
-    auto json = ReadJson(lp);
+    std::vector<JsonEntry> entries;
+    ReadJson(lp, entries);  // (what it could read)
+    std::map<std::string, std::string> json;
+    for (const JsonEntry& e : entries) json[e.key] = JsonDecode(e.raw);
     for (Setting& s : g_settings) {
       if (!s.launcher || !json.count(s.launcher)) continue;
       std::string v = json[s.launcher];
-      if (v.size() >= 2 && v.front() == '"') v = v.substr(1, v.size() - 2);
       if (v == "true") v = "1";
       if (v == "false") v = "0";
       if (s.kind == Kind::kText) s.text = v;

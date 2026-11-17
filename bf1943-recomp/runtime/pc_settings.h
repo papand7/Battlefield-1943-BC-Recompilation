@@ -19,6 +19,9 @@ enum Action {
 
 // After the command line: reads <user>/pc_settings.ini and applies it.
 void Load();
+// FRAME GENERATION as Load reads it (the launcher's frameGen, else
+// pc_settings.ini): for main.cpp before Load.
+bool SavedFrameGen();
 // The keys bound to an action (slot 0 the one set on the page, 1 a default
 // second key that no other action uses; 0 if none).
 int Key(Action action, int slot);
