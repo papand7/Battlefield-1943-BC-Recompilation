@@ -38,10 +38,15 @@ uint32_t g_capture_seconds = 0;
 uint32_t g_capture_burst = 0;
 uint32_t g_look_showcase = 0;
 bool g_blood = false;
+int g_weather = 0;          // main.cpp: --weather (host/server), synced to joiners in lan.cpp
+float g_time_of_day = 12.0f;  // main.cpp: --time (hours, 12 noon)
 }
 
 namespace rt {
 uint32_t g_vblank_hz = 60;
+// The display mode the game is told about (XGetVideoMode, VdGetCurrentDisplay-
+// Information): its own 1280x720 unless the window has another shape.
+uint32_t g_video_width = 1280, g_video_height = 720;
 }
 
 namespace {
@@ -387,14 +392,30 @@ using SoldierKind = rt::SoldierLayout;
 const SoldierKind& kServerSoldier = rt::g_blood_server;
 const SoldierKind& kClientSoldier = rt::g_blood_client;
 
-bool HealthObject(uint32_t health, const SoldierKind& kind) {
+bool SaneHealth(uint32_t health) {
+  uint32_t v = Ld32(health);
+  float f;
+  memcpy(&f, &v, 4);
+  return std::isfinite(f) && f > -1000.0f && f <= 1000.0f;
+}
+bool HealthObject(uint32_t health, const SoldierKind& kind, bool strict) {
+  if (Ld32(health - 0x3C) != kind.vtable) return false;
+  if (!strict) return SaneHealth(health);
   return Ld32(health - 8) == kind.part && Ld32(health - 16) == 0x00011100u &&
-         Ld32(health + 4) == kind.part - 0xC && Ld32(health - 0x3C) == kind.vtable;
+         Ld32(health + 4) == kind.part - 0xC;
 }
 
-std::vector<uint32_t> FindHealthObjects(const SoldierKind& kind) {
+std::vector<uint32_t> FindHealthObjects(const SoldierKind& kind, bool strict) {
   std::vector<uint32_t> found;
-  const uint32_t vtable = _byteswap_ulong(kind.part);
+  // A strict scan looks for the soldier's second vtable (its part, at s+0x34);
+  // a relaxed one for the entity vtable itself (s+0), for a game whose part or
+  // words there are not known.
+  const uint32_t pattern = _byteswap_ulong(strict ? kind.part : kind.vtable);
+  const uint32_t health_at = strict ? 8 : 0x3C;
+  auto Found = [&](uint32_t at) {
+    uint32_t h = at + health_at;
+    if (HealthObject(h, kind, strict)) found.push_back(h);
+  };
   // The heaps (0xC0000000 and up mirror 0xA0000000).
 #ifndef _WIN32
   // Linux: committed pages, from the runtime's own record of them.
@@ -402,7 +423,7 @@ std::vector<uint32_t> FindHealthObjects(const SoldierKind& kind) {
     if (!IsCommitted(uint32_t(a))) continue;
     const uint32_t* p = reinterpret_cast<const uint32_t*>(g_base + a);
     for (uint32_t i = 0; i + 3 < 1024; ++i)
-      if (p[i] == vtable && HealthObject(uint32_t(a + i * 4 + 8), kind)) found.push_back(uint32_t(a + i * 4 + 8));
+      if (p[i] == pattern) Found(uint32_t(a + i * 4));
   }
   return found;
 #else
@@ -414,7 +435,7 @@ std::vector<uint32_t> FindHealthObjects(const SoldierKind& kind) {
         !(mi.Protect & PAGE_GUARD)) {
       const uint32_t* p = reinterpret_cast<const uint32_t*>(g_base + a);
       for (uint64_t n = (std::min<uint64_t>(end, 0xC0000000ull) - a) / 4, i = 16; i + 3 < n; ++i) {
-        if (p[i] == vtable && HealthObject(uint32_t(a + i * 4 + 8), kind)) found.push_back(uint32_t(a + i * 4 + 8));
+        if (p[i] == pattern) Found(uint32_t(a + i * 4));
       }
     }
     a = end;
@@ -437,6 +458,7 @@ void HealthWatchThread() {
   };
   std::vector<Watched> soldiers;
   const SoldierKind* kind = &kClientSoldier;
+  bool kind_relaxed = false;
   auto last_scan = std::chrono::steady_clock::now() - std::chrono::seconds(10);
   for (;;) {
     std::this_thread::sleep_for(std::chrono::milliseconds(33));
@@ -444,16 +466,21 @@ void HealthWatchThread() {
     // Again every few seconds for the soldiers spawned since.
     if (now - last_scan > std::chrono::seconds(2)) {
       last_scan = now;
-      std::vector<uint32_t> found = FindHealthObjects(kServerSoldier);
+      std::vector<uint32_t> found = FindHealthObjects(kServerSoldier, true);
       const SoldierKind* found_kind = &kServerSoldier;
-      if (found.empty()) {
-        found = FindHealthObjects(kClientSoldier);
-        found_kind = &kClientSoldier;
+      bool relaxed = false;
+      if (found.empty()) found = FindHealthObjects(kClientSoldier, true), found_kind = &kClientSoldier;
+      if (found.empty()) {  // a game whose part words are not known (Bad Company): the entity vtable
+        found = FindHealthObjects(kServerSoldier, false), found_kind = &kServerSoldier, relaxed = true;
+        if (found.empty()) found = FindHealthObjects(kClientSoldier, false), found_kind = &kClientSoldier;
       }
-      if (found_kind != kind) {
+      if (found_kind != kind || relaxed != kind_relaxed) {
         soldiers.clear();
         kind = found_kind;
-        RT_INFO("blood: watching the %s soldiers", kind == &kServerSoldier ? "server's" : "client's");
+        kind_relaxed = relaxed;
+        if (!found.empty())
+          RT_INFO("blood: watching the %s soldiers%s", kind == &kServerSoldier ? "server's" : "client's",
+                  relaxed ? " (by the entity vtable)" : "");
       }
       for (uint32_t h : found) {
         if (std::none_of(soldiers.begin(), soldiers.end(), [h](const Watched& w) { return w.health == h; }))
@@ -462,7 +489,7 @@ void HealthWatchThread() {
     }
     for (size_t i = 0; i < soldiers.size();) {
       Watched& w = soldiers[i];
-      if (!HealthObject(w.health, *kind)) {
+      if (!HealthObject(w.health, *kind, false)) {
         soldiers.erase(soldiers.begin() + i);
         continue;
       }
@@ -473,6 +500,13 @@ void HealthWatchThread() {
       if (w.last > 0.0f && drop > 0.5f) {
         uint32_t s = w.health - 0x3C;
         float feet[3] = {HealthAt(s + kind->feet), HealthAt(s + kind->feet + 4), HealthAt(s + kind->feet + 8)};
+        // A layout only matched by vtable: the feet must still be somewhere real.
+        if (kind_relaxed && !(std::isfinite(feet[0]) && std::isfinite(feet[1]) && std::isfinite(feet[2]) &&
+                              std::fabs(feet[0]) < 20000.0f && std::fabs(feet[2]) < 20000.0f && feet[1] > -1000.0f &&
+                              feet[1] < 5000.0f)) {
+          w.last = h;
+          continue;
+        }
         // The blow's impulse (the server's only).
         float push[3] = {0.0f, 0.0f, 0.0f};
         float impulse = 0.0f;
@@ -499,6 +533,7 @@ void HealthWatchThread() {
     // third one a death that bursts the body apart.
     static const bool test = getenv("BF_GORE_TEST") != nullptr;
     static int test_tick = 0;
+    if (test && soldiers.empty() && test_tick % 450 == 0) RT_WARN("blood: no soldiers found yet");
     if (test && ++test_tick % 45 == 0) {
       for (const Watched& w : soldiers) {
         uint32_t s = w.health - 0x3C;
@@ -568,6 +603,7 @@ void StartGpu() {
       }
       if (!xgpu::Start(g_base, g_present, XeniaInterrupt, 0)) Fatal("Vulkan GPU failed to start");
       RT_INFO("GPU: Xenia Vulkan command processor started%s", g_present ? "" : " (headless)");
+      xgpu::SetWeather(float(g_weather), g_time_of_day);
       g_mirror_running = true;
       std::thread(RegisterMirrorThread).detach();
       std::thread(InterruptThread).detach();
@@ -633,8 +669,8 @@ void StartGpu() {
 
 void WriteVideoMode(uint32_t m) {
   memset(G(m), 0, 0x30);
-  St32(m + 0x00, 1280);
-  St32(m + 0x04, 720);
+  St32(m + 0x00, g_video_width);
+  St32(m + 0x04, g_video_height);
   St32(m + 0x08, 0);  // interlaced
   St32(m + 0x0C, 1);  // widescreen
   St32(m + 0x10, 1);  // HD
@@ -664,21 +700,21 @@ GUEST_IMPORT(XGetAVPack) { RETURN(6); }           // HDMI
 GUEST_IMPORT(VdGetCurrentDisplayInformation) {
   uint32_t i = ARG32(3);
   memset(G(i), 0, 0x58);
-  St16(i + 0x00, 1280);
-  St16(i + 0x02, 720);
-  St16(i + 0x08, 1280);
-  St16(i + 0x0A, 720);
-  St32(i + 0x40, 1280);
-  St32(i + 0x44, 720);
+  St16(i + 0x00, uint16_t(g_video_width));
+  St16(i + 0x02, uint16_t(g_video_height));
+  St16(i + 0x08, uint16_t(g_video_width));
+  St16(i + 0x0A, uint16_t(g_video_height));
+  St32(i + 0x40, g_video_width);
+  St32(i + 0x44, g_video_height);
   // Display size, refresh and actual width: D3D's display-mode path reads these
   // (BFBC1 divides by them when it sets up the scaler).
-  St16(i + 0x48, 1280);
-  St16(i + 0x4A, 720);
+  St16(i + 0x48, uint16_t(g_video_width));
+  St16(i + 0x4A, uint16_t(g_video_height));
   float hz = 60.0f;
   uint32_t hz_bits;
   memcpy(&hz_bits, &hz, 4);
   St32(i + 0x4C, hz_bits);
-  St16(i + 0x56, 1280);
+  St16(i + 0x56, uint16_t(g_video_width));
   RETURN(0);
 }
 
@@ -738,6 +774,22 @@ GUEST_IMPORT(VdSetGraphicsInterruptCallback) {
 // kernel's swap packets. Same scheme as Xenia: write the front buffer's fetch
 // constant (virtual address made physical) and Xenia's private XE_SWAP packet.
 GUEST_IMPORT(VdSwap) {
+  // PREWARM: a level just opened (its files are in): wait for the stored
+  // shaders' pipelines to be made before drawing its first frames, so the
+  // first shots and effects don't show the black placeholder until the
+  // creation threads get to them. The loading screen's last frame stays up
+  // meanwhile; BF_NO_PREWARM=1 turns this off.
+  {
+    static int64_t warmed = 0;
+    static const bool off = getenv("BF_NO_PREWARM") != nullptr;
+    const int64_t level = rt::g_level_open_ms.load();
+    if (!off && level && level != warmed && !rt::g_in_menus.load()) {
+      warmed = level;
+      RT_INFO("prewarm: making the stored shaders' pipelines before the level draws");
+      xgpu::PrewarmPipelines(20000);
+      RT_INFO("prewarm: done");
+    }
+  }
   uint32_t buffer = ARG32(3), fetch = ARG32(4);
   uint32_t width_ptr = Ld32(ctx.r1.u32 + 0x54), height_ptr = Ld32(ctx.r1.u32 + 0x5C);
   // r6: 0x94-byte display-change result D3D reads back (flags at +8 and +0x1C,

@@ -2,6 +2,8 @@
 // recompiled code.
 #include "free_camera.h"
 #include "kernel.h"
+#include "admin_server.h"
+#include "lan.h"
 #include "xenia_bridge.h"
 
 #include <algorithm>
@@ -17,12 +19,15 @@
 #ifdef _WIN32
 #include <excpt.h>
 #endif
+#include "bot_players.h"
+#include "pc_settings.h"
 #include <string>
 #include <thread>
 #include <vector>
 
 namespace rt {
 uint32_t g_max_fps = 120;  // --max-fps (0 = no limit), applied in VdSwap
+uint32_t g_tick_rate = 75; // --tickrate: the server's simulation rate (30, 60, 75, 100...)
 bool g_lan_host = false;   // --host
 bool g_vsync = false;      // --vsync
 std::string g_host_map;    // --host-map: host this level from the main menu
@@ -47,26 +52,35 @@ static void LogSettings(PPCContext& ctx, uint8_t* base);
 // so a limit above the rate makes the game run fast. With 0 (no limit) it ticks
 // at +44 and measures real frame time. So the client's timer gets 0 and VdSwap (gpu.cpp)
 // caps the frame rate at --max-fps. The server's timer (mode 1: one tick per
-// loop, paced by sleeping 1/Game.MaxFps) keeps 30, else it spins.
+// loop, paced by sleeping 1/Game.MaxFps) gets the tick rate (--tickrate, 75 by
+// default), else it spins.
 static thread_local uint32_t t_timer_mode;
 GAME_PATCH(822C4830) {
   HostFromMainLoop(ctx, base);
   LogSettings(ctx, base);
   __imp__sub_822C4830(ctx, base);
-  ctx.f1.f64 = t_timer_mode == 1 ? 30.0 : 0.0;
+  ctx.f1.f64 = t_timer_mode == 1 ? double(g_tick_rate) : 0.0;
 }
 
 // Frame timer setup: r3 = timer, r4 = tick rate (30), r5 = mode. Every
 // simulation tick lasts 1/rate (worked out here), so the client's timers (made
 // on the main thread at boot) tick at the frame rate: movement then updates
 // every frame instead of every 4th at 120 fps. The server's timer (made later
-// on its loading thread) stays at 30. Up to 4 ticks a frame (+56, game: 2)
-// keep game time right when the frame rate dips below half the tick rate.
+// on its loading thread) runs at --tickrate (75 by default, the rate its
+// matches are played at). Up to 4 ticks a frame (+56, game: 2) keep game time
+// right when the frame rate dips below half the tick rate.
 static uint32_t g_client_thread;
+uint32_t rt::ClientThreadId() { return g_client_thread; }
 GAME_PATCH(822C7270) {
   if (!g_client_thread) g_client_thread = CurrentThreadId();
   bool client = CurrentThreadId() == g_client_thread;
   if (client) ctx.r4.u64 = g_max_fps ? std::clamp(g_max_fps, 30u, 240u) : 120u;
+  else ctx.r4.u64 = std::clamp(g_tick_rate, 30u, 120u);
+  static bool logged_rate = false;
+  if (!client && !logged_rate) {
+    logged_rate = true;
+    RT_INFO("server: simulating %u ticks a second", uint32_t(ctx.r4.u32));
+  }
   uint32_t timer = ctx.r3.u32;
   __imp__sub_822C7270(ctx, base);
   if (client) St32(timer + 56, 4);
@@ -167,6 +181,8 @@ GAME_PATCH(82583248) {
       static const bool trace = std::getenv("BF_FOV_TRACE") != nullptr;
       if (trace && aiming != rt::g_aiming) RT_INFO("fov: aiming %s (%.1f of %.1f degrees)", aiming ? "on" : "off", now, own);
       rt::g_aiming = aiming;
+      rt::g_fov_now_deg.store(now, std::memory_order_relaxed);
+      rt::g_fov_own_deg.store(own, std::memory_order_relaxed);
     }
     ctx.f1.f64 = WiderFov(ctx.f1.f64);
     rt::freecam::NoteFov(float(ctx.f1.f64));
@@ -630,6 +646,81 @@ GAME_PATCH(822ADE38) {
   __imp__sub_822ADE38(ctx, base);
 }
 
+// INFANTRY AIM: on foot the mouse turns the local soldier's aim itself
+// (xam.cpp keeps its counts). The aim update sub_822B0B18(aim, input, zoom
+// flag) adds the stick's turn to the yaw at aim+8 and the pitch at aim+0xC,
+// wraps the yaw to [0, 2*pi) and clamps the pitch to input+0x14/+0x18 (degrees)
+// and the aim's limit object at aim+0x38. It runs as usual (a controller still
+// turns through the stick and the game's aim assist follows the result) and
+// the mouse's turn, a fixed angle per count, is added on top; putting the
+// counts into the stick instead left its curve, acceleration and speed cap in
+// the way. The local player is simulated only on the client's thread (the
+// server's soldiers run on its loading thread), which is what makes an update
+// here ours. Nothing turns in a menu, without a window, or in a vehicle (its
+// guns are aimed above; planes keep the stick).
+GAME_PATCH(822B0B18) {
+  const uint32_t aim = ctx.r3.u32, input = ctx.r4.u32, client = rt::ClientThreadId();
+  const bool client_thread = client && rt::CurrentThreadId() == client;
+  const bool look = client_thread && aim && input && rt::g_present &&
+                    !rt::g_in_menus.load(std::memory_order_relaxed) &&
+                    !rt::g_level_menu.load(std::memory_order_relaxed) && rt::LocalVehicle() == rt::kOnFoot;
+  if (client_thread && !look) rt::AimMouseReset();  // a menu, a vehicle, a dead player: drop it
+  __imp__sub_822B0B18(ctx, base);
+  if (!look) return;
+  double dx = 0, dy = 0;
+  bool stale = false;
+  if (!rt::AimMouseTake(dx, dy, stale)) return;  // BF_NO_MOUSE_AIM
+  rt::AimMouseSeen();
+  if (stale || (dx == 0 && dy == 0)) return;
+
+  static const double yaw_sign =
+      std::getenv("BF_MOUSE_YAW_SIGN") ? std::atof(std::getenv("BF_MOUSE_YAW_SIGN")) : 1.0;
+  double sens = std::clamp(double(rt::g_mouse_sensitivity), 0.05, 10.0);
+  if (rt::g_aiming.load(std::memory_order_relaxed)) {
+    sens *= std::clamp(double(rt::g_aim_mouse_sensitivity), 0.05, 2.0);
+    // While a sight or scope narrows the view, turn by less so a movement
+    // covers the same distance on screen: the view's own half-angle tangents.
+    const double now = rt::g_fov_now_deg.load(std::memory_order_relaxed);
+    const double own = rt::g_fov_own_deg.load(std::memory_order_relaxed);
+    if (now > 1.0 && own > 1.0 && now < own && own < 179.0)
+      sens *= std::clamp(std::tan(now * kPi / 360.0) / std::tan(own * kPi / 360.0), 0.02, 1.0);
+  }
+  constexpr double kRadiansPerCount = 0.07 * kPi / 180.0;  // a count at sensitivity 1 (0.07 degrees)
+  const double k = kRadiansPerCount * sens;
+  const double turn = dx * k * yaw_sign;
+  const double tilt = (rt::g_mouse_invert ? dy : -dy) * k;
+
+  double lo = double(GuestFloat(input + 0x14)) * kPi / 180.0;
+  double hi = double(GuestFloat(input + 0x18)) * kPi / 180.0;
+  if (const uint32_t limits = Ld32(aim + 0x38)) {
+    lo = std::max(lo, double(GuestFloat(limits + 0x0C)));
+    hi = std::min(hi, double(GuestFloat(limits + 0x10)));
+  }
+  if (!(lo < hi)) lo = -1.5, hi = 1.5;
+  double yaw = std::fmod(double(GuestFloat(aim + 8)) + turn, 2.0 * kPi);
+  if (yaw < 0) yaw += 2.0 * kPi;
+  const double pitch = std::clamp(double(GuestFloat(aim + 0x0C)) + tilt, lo, hi);
+  if (!std::isfinite(yaw) || !std::isfinite(pitch)) return;
+  SetGuestFloat(aim + 8, float(yaw));
+  SetGuestFloat(aim + 0x0C, float(pitch));
+
+  // BF_MOUSE_LOG: how often the aim turned and by how much, once a second.
+  static const bool log_on = std::getenv("BF_MOUSE_LOG") != nullptr;
+  static int logged_updates = 0;
+  static double logged_turn = 0, logged_tilt = 0, logged_counts = 0;
+  static auto logged_at = std::chrono::steady_clock::now();
+  if (log_on) {
+    ++logged_updates, logged_turn += turn * 180.0 / kPi, logged_tilt += tilt * 180.0 / kPi, logged_counts += dx;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - logged_at > std::chrono::seconds(1)) {
+      RT_INFO("mouse aim: %d updates, turned %+.1f deg, pitch %+.1f deg, %+.0f counts (yaw %.3f pitch %.3f)",
+              logged_updates, logged_turn, logged_tilt, logged_counts, double(GuestFloat(aim + 8)),
+              double(GuestFloat(aim + 0x0C)));
+      logged_updates = 0, logged_turn = logged_tilt = logged_counts = 0, logged_at = now;
+    }
+  }
+}
+
 GAME_PATCH(82205B20) {
   uint32_t obj = ctx.r3.u32;
   __imp__sub_82205B20(ctx, base);
@@ -697,6 +788,7 @@ GAME_PATCH(82413BC0) {
     St8(ctx.r6.u32 + 41, 0);
   }
   bool multiplayer = create && Ld32(ctx.r6.u32 + 44) == 1;
+  if (create) ++g_server_generation;  // (a new level's server: the bots join it, bot_players.cpp)
   __imp__sub_82413BC0(ctx, base);
   // Online (--online-server): list it on Arcadia so Quick Match finds it.
   if (multiplayer) RegisterHostedGame(uint16_t(1003 + g_port_offset), g_host_map);
@@ -753,9 +845,130 @@ bool rt::g_dedicated = false;
 bool rt::g_auto_start = false;
 std::vector<std::string> rt::g_map_rotation;
 
+// The host's /map (admin_server.cpp) and a joiner sent along with it, or one
+// kicked: the level is left as the game's own menu does (the UI callback
+// doExitLevel, id 0x18 in the table at 82020080), then, back in the front end,
+// the map is hosted (or the host joined again once it says the map is up).
+std::atomic<int> rt::g_server_generation{0};
+namespace {
+std::mutex g_admin_mutex;
+std::string g_admin_map;        // the map to host (or join) after leaving; empty: stay in the menus
+std::atomic<int> g_admin_exit{0};  // 1 leave the level now, 2 left: waiting for the front end
+bool g_rejoin = false;          // a joiner: join the host again on g_admin_map
+std::atomic<bool> g_rejoin_ready{false};
+double g_rejoin_since = 0;      // (seconds; it joins anyway after 90 s without the host's word)
+bool g_admin_map_up = false;    // host: tell the joiners once the new level is up
+bool g_was_in_level = false;    // the dedicated server's rotation: a level was played
+}  // namespace
+void rt::RequestMapChange(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = false, g_admin_exit = 1;
+}
+void rt::RequestRejoin(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = true, g_rejoin_ready = false, g_admin_exit = 1;
+  g_rejoin_since = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+}
+void rt::RejoinReady() { g_rejoin_ready = true; }
+
+static void FireUi(PPCContext& ctx, uint8_t* base, const char* name, const char* arg) {
+  uint32_t strs = g_system_heap->Alloc(512, 16);
+  snprintf(G<char>(strs), 64, "%s", name);
+  snprintf(G<char>(strs + 64), 448, "%s", arg);
+  PPCContext c = ctx;
+  c.r3.u64 = g_ui_manager;
+  c.r4.u64 = strs;
+  c.r5.u64 = strs + 64;
+  sub_8246D918(c, base);
+}
+
+static void AdminFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  if (g_admin_exit == 1 && g_ui_manager) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (!rejoin && !map.empty() && (g_dedicated || !CustomMenus() || rt::BotPlayerCount() > 0) &&
+        rt::admin::RestartOnMap(map))
+      return;
+    if (!g_in_menus) {
+      g_leaving_level = true;
+      if (CustomMenus()) {
+        // A window: the game's own pause menu, Exit Game (pc_settings.cpp).
+        RT_INFO("admin: leaving the level (the pause menu's Exit Game)");
+        rt::pcset::QuitToMenu();
+      } else {
+        RT_INFO("admin: leaving the level (doExitLevel)");
+        FireUi(ctx, base, "doExitLevel", "");
+      }
+    }
+    g_admin_exit = 2;
+  }
+  // Back in the front end, and settled there (no notice up) for 4 s: hosting
+  // at once, while the game still went through its exit, was dropped.
+  static double settled_since = 0;
+  const double now_s = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+  if (g_admin_exit != 2 || !g_in_menus || g_dialogs != 0) settled_since = 0;
+  else if (!settled_since) settled_since = now_s;
+  if (g_admin_exit == 2 && settled_since && now_s - settled_since >= 4.0) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (rejoin) {
+      // A joiner: once the host says its map is up (or after 90 s), join it.
+      double now = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+      if (!g_rejoin_ready && now - g_rejoin_since < 90) return;
+      g_admin_exit = 0;
+      // (both in network order: the address's bytes as they are)
+      const uint8_t* ip = reinterpret_cast<const uint8_t*>(&g_join_address);
+      const uint8_t* port = reinterpret_cast<const uint8_t*>(&g_join_port);
+      char target_text[64];
+      snprintf(target_text, sizeof(target_text), "%u.%u.%u.%u:%u", ip[0], ip[1], ip[2], ip[3], unsigned(port[0] << 8 | port[1]));
+      std::string target = target_text;
+      RT_INFO("admin: joining the host again (%s, %s)", target.c_str(), map.c_str());
+      if (!g_join_address || !rt::lan::Join(target, map, g_join_password)) RT_WARN("admin: could not join the host again");
+      return;
+    }
+    g_admin_exit = 0;
+    g_was_in_level = false;  // (not the rotation's next map: this one)
+    if (map.empty()) return;
+    {
+      std::lock_guard lock(g_host_map_mutex);  // (the bots' director reads it)
+      g_host_map = map;
+    }
+    RT_INFO("admin: hosting %s", map.c_str());
+    g_admin_map_up = true;
+    g_host_state = 2;
+  }
+  // The new level is up: the joiners sent away by /map come back.
+  if (g_admin_map_up && g_host_state == 3 && !g_in_menus) {
+    g_admin_map_up = false;
+    std::string map;
+    {
+      std::lock_guard lock(g_host_map_mutex);
+      map = g_host_map;
+    }
+    std::thread([map] {
+      for (int i = 0; i < 3; ++i) {  // (UDP: said three times; a joiner acts on the first)
+        std::this_thread::sleep_for(std::chrono::seconds(i ? 5 : 3));
+        rt::admin::MapReady(map);
+      }
+    }).detach();
+  }
+}
+
 static void HostFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  AdminFromMainLoop(ctx, base);
   // Dedicated server: back in the front end after a round, host the next map.
-  static bool was_in_level = false;
+  bool& was_in_level = g_was_in_level;
   if (g_dedicated && g_host_state == 3) {
     if (!g_in_menus) was_in_level = true;
     if (was_in_level && g_in_menus && g_dialogs == 0) {
@@ -895,6 +1108,7 @@ std::string g_emitter;      // --emitter "Field=value,..."
 float g_wind_cli = -1.0f;   // --wind (-1: the PLANT WIND setting)
 float g_fov = 0.0f;         // --fov, the FIELD OF VIEW setting
 std::atomic<bool> g_aiming{false};
+std::atomic<float> g_fov_now_deg{0}, g_fov_own_deg{0};  // the FOV controller's now and own (82583248)
 float g_lod = 4.0f;         // --lod N: N times the vegetation detail (1 = the game's)
 }
 namespace {

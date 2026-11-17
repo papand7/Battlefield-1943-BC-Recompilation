@@ -485,6 +485,13 @@ class VulkanCommandProcessor final : public CommandProcessor {
   bool AwaitQueryResolve(ReportHandle report_handle,
                          uint64_t wait_for_submission) override;
 
+  // Creates the stored shaders' pipelines now (a level's load), so the first
+  // draws that use them don't run with the placeholder (black) until the
+  // creation threads get to them.
+ public:
+  void PrewarmPipelines(uint32_t timeout_ms);
+
+ private:
   bool EnsureVIZPredicateBuffer();
   // Drains the queued predicate copies.
   void RecordVIZPredicateCopies();

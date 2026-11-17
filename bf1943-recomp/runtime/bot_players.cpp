@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 
+#include "admin_server.h"
 #include "bot_knowledge.h"
 #include "bot_tuning.h"
 #include "bot_llm.h"
@@ -285,11 +286,18 @@ uint32_t g_real_mover = 0;  // a real player's move receiver (to clone for the b
 std::deque<BotPlayer> g_players;
 // How many bot players: --bots N, or BF_BOT_FAKE=N. Read once the arguments
 // are (the first join).
+// (g_bot_count as it is: the host's /bots changes it for the next level)
 int FakeCount() {
-  static const int n = getenv("BF_BOT_FAKE") ? std::clamp(atoi(getenv("BF_BOT_FAKE")), 1, 16) : std::clamp(g_bot_count, 0, 16);  // (botapi::kMaxBots)
-  return n;
+  static const int env = getenv("BF_BOT_FAKE") ? std::clamp(atoi(getenv("BF_BOT_FAKE")), 1, 16) : 0;
+  return env ? env : std::clamp(g_bot_count, 0, 16);  // (botapi::kMaxBots)
 }
 #define g_fake_count FakeCount()
+
+// /bots, /kick BOT n: benched bots (by index) leave the fight.
+std::atomic<bool> g_benched[16];
+std::atomic<int> g_kill_due{0};  // bit i: BOT i+1's soldier is to be killed (the server's update does)
+bool g_spawn_replayed = false;   // the host's spawn message given to this level's bots (823AEF90)
+std::atomic<bool> g_level_reset{false};
 
 }  // namespace
 
@@ -309,8 +317,25 @@ std::string Around(uint32_t a, int32_t from, int32_t to) {
 }
 
 int rt::BotPlayerCount() { return int(g_players.size()); }
+void rt::SetBotBenched(int i, bool benched) {
+  if (i < 0 || i >= 16) return;
+  if (benched && !g_benched[i].exchange(true)) g_kill_due.fetch_or(1 << i);
+  if (!benched) g_benched[i] = false, g_kill_due.fetch_and(~(1 << i));
+  RT_INFO("bot %d: %s", i, benched ? "benched (leaves the fight)" : "back in the fight");
+}
+bool rt::BotBenched(int i) { return i >= 0 && i < 16 && g_benched[i]; }
+int rt::SetActiveBots(int n) {
+  int playing = 0;
+  for (int i = 0; i < int(g_players.size()) && i < 16; ++i) {
+    bool bench = i >= n;
+    if (bench != g_benched[i]) SetBotBenched(i, bench);
+    playing += !bench;
+  }
+  return playing;
+}
 uint32_t rt::BotPlayerSoldier(int i) {
   if (i < 0 || i >= int(g_players.size())) return 0;
+  if (rt::BotBenched(i)) return 0;  // (the director leaves it alone)
   uint32_t so = g_players[size_t(i)].soldier;
   return so && IsCommitted(so + 0x400) && Ld32(so) == kSoldier ? so : 0;
 }
@@ -355,15 +380,32 @@ GAME_PATCH(823B59E0) {  // the player manager's join
   // (r5 and what follows) as it was; then each one's network peer, as after a
   // real join: 827559F0 on the peer manager (the player manager + 8) with the
   // player's index (7 + i), 1 and its connection part.
-  static bool done = false;
-  if (g_fake_count && !done) {
-    done = true;
+  // Each level's server anew (a map change, the dedicated server's rotation):
+  // the last one's players went with it. The entries are kept (the director
+  // reads them from its thread) and made over; those past the count stay
+  // empty (no connection: never deployed).
+  static int joined_server = -1;
+  if (g_fake_count && joined_server != g_server_generation.load()) {
+    const bool again = joined_server >= 0;
+    joined_server = g_server_generation.load();
+    if (again) {
+      RT_INFO("bot players: a new level's server: %d bots join it", g_fake_count);
+      for (size_t i = 0; i < g_players.size(); ++i) {
+        g_players[i] = BotPlayer{};
+        g_players[i].index = int(i);
+      }
+      g_spawn_replayed = false, g_real_mover = 0;
+      g_level_reset = true;  // (ApplyHits: the last level's hits and soldiers forgotten)
+    }
+    for (int i = 0; i < 16; ++i) g_benched[i] = false;
+    g_kill_due = 0;
+    g_leaving_level = false;  // (this level's bots are kept again)
     const char* team_env = getenv("BF_BOT_TEAM");
     int one_team = team_env ? atoi(team_env) : 0;
     std::vector<uint8_t> snap(0x800);
     memcpy(snap.data(), G<uint8_t>(ctx.r5.u32), snap.size());
     for (int i = 0; i < g_fake_count; ++i) {
-      BotPlayer& b = g_players.emplace_back();
+      BotPlayer& b = size_t(i) < g_players.size() ? g_players[size_t(i)] : g_players.emplace_back();
       b.index = i;
       b.team = one_team == 1 || one_team == 2 ? uint32_t(one_team) : uint32_t(i % 2 + 1);
       uint32_t conn = g_system_heap->Alloc(0x60, 16);
@@ -569,11 +611,10 @@ GAME_PATCH(823AEF90) {
   }
   PPCContext saved = ctx;
   __imp__sub_823AEF90(ctx, base);
-  static bool replayed = false;
   bool from_bot = false;
-  for (BotPlayer& b : g_players) from_bot |= b.conn == saved.r3.u32;
-  if (g_players.empty() || replayed || from_bot) return;
-  replayed = true;
+  for (BotPlayer& b : g_players) from_bot |= b.conn && b.conn == saved.r3.u32;
+  if (g_players.empty() || g_spawn_replayed || from_bot) return;
+  g_spawn_replayed = true;
   uint32_t rec = saved.r4.u32;
   uint32_t b0 = Ld32(rec + 8), e0 = Ld32(rec + 0xC);
   uint32_t len = e0 >= b0 && e0 - b0 < 0x1000 ? e0 - b0 : 0;
@@ -666,6 +707,15 @@ uint32_t GhostId(PPCContext& ctx, uint8_t* base, uint32_t table, uint32_t entity
   return 0;
 }
 void ApplyHits(PPCContext& ctx, uint8_t* base);  // (below: the bot players' hits)
+struct Hit {
+  uint32_t soldier, spawner;
+  int bot;
+  float dist, at[3], dir[3], from[3];
+  float damage = 20.0f;  // (a rifle's, as a real player's hits; a benched bot's own: all of its health)
+};
+std::vector<Hit> g_hits;  // the bot players' hits waiting for the end of the server's update
+// Every soldier stepped lately (on foot: a seated one isn't), with when.
+std::map<uint32_t, int64_t> g_seen_soldiers;
 namespace rt {
 uint32_t TlsFromAnotherThread(uint32_t slot);
 uint32_t SetCurrentTls(uint32_t slot, uint32_t value);
@@ -743,7 +793,7 @@ GAME_PATCH(82414430) {
   // EXPERIMENT (BF_BOT_DRIVE): a move message for each bot soldier every
   // tick, as its client would send (the server simulates a soldier per move
   // message): 823B2C80 on its spawn object + 180.
-  static const bool drive = g_fake_count > 0;
+  const bool drive = true;  // (g_players isn't empty here)
   // Without a moving player to copy (a server of bots): a move message made
   // from what a real one holds (vtables, the button words +78/+7C, +80/+84,
   // the 1.0 at +90).
@@ -1056,6 +1106,22 @@ GAME_PATCH(82414430) {
   }
   if (!kit) return;
   for (BotPlayer& b : g_players) {
+    if (!b.conn) continue;  // (not joined to this level's server)
+    if (BotBenched(b.index)) {
+      // Benched (/bots, /kick): its soldier killed once (a hit of its own,
+      // after this update: ApplyHits), then no deploy.
+      if (b.index < 16 && (g_kill_due.load() & (1 << b.index))) {
+        g_kill_due.fetch_and(~(1 << b.index));
+        if (b.soldier && IsCommitted(b.soldier + 0x400) && Ld32(b.soldier) == kSoldier && LdF(b.soldier + 0x3C) > 0) {
+          Hit h{b.soldier, b.spawner, b.index, 0.0f};
+          for (int i = 0; i < 3; ++i) h.at[i] = h.from[i] = LdF(b.soldier + 0x180 + 4 * i), h.dir[i] = i == 1 ? -1.0f : 0.0f;
+          h.damage = 1000.0f;
+          g_hits.push_back(h);
+          RT_INFO("bot %d: benched: its soldier %08X is killed", b.index, b.soldier);
+        }
+      }
+      continue;
+    }
     // Its move receiver (its network object's +2FC, made with the join) and
     // the spawn object that one drives (+30): deploy on that one, so the
     // move messages reach the soldier.
@@ -1487,7 +1553,7 @@ GAME_PATCH(8236F238) {
           // + 20) * 2 (822C1818: entering a vehicle wants Interact, 16, held
           // long enough; Bad Company's records the same).
           for (int a = 8; a < 40; ++a) {
-            b.held[a] = (bits >> a & 1) ? b.held[a] + 1.0f / 30.0f : 0.0f;
+            b.held[a] = (bits >> a & 1) ? b.held[a] + 1.0f / float(std::max(1u, g_tick_rate)) : 0.0f;
             uint16_t h = HalfFloat(b.held[a]);
             for (uint32_t o : {rec, ctx.r3.u32}) St16(o + uint32_t(a + 20) * 2, h);
           }
@@ -1692,14 +1758,6 @@ GAME_PATCH(822C1818) {
 }
 
 extern "C" PPC_FUNC(__imp__sub_823194B0);
-struct Hit {
-  uint32_t soldier, spawner;
-  int bot;
-  float dist, at[3], dir[3], from[3];
-};
-std::vector<Hit> g_hits;  // the bot players' hits waiting for the end of the server's update
-// Every soldier stepped lately (on foot: a seated one isn't), with when.
-std::map<uint32_t, int64_t> g_seen_soldiers;
 
 // A bot player's shots. A hit is decided by the shooter's game (its client
 // reports it), and a bot player has none: the server's damage to a soldier,
@@ -1712,7 +1770,7 @@ std::map<uint32_t, int64_t> g_seen_soldiers;
 // (InSight: the map's collision and terrain).
 void BotShoot(PPCContext& ctx, uint8_t* base, BotPlayer& b, int64_t now) {
   uint32_t so = b.soldier, aim = Ld32(so + 0x130);
-  if (!IsCommitted(aim) || ((b.triggers >> 8) & 0xFF) < 128 || now < b.next_shot) return;
+  if (BotBenched(b.index) || !IsCommitted(aim) || ((b.triggers >> 8) & 0xFF) < 128 || now < b.next_shot) return;
   b.next_shot = now + 300;
   float yaw = LdF(aim + 0x134), pitch = LdF(aim + 0x138);
   float o[3] = {LdF(so + 0x180), LdF(so + 0x184) + 1.6f, LdF(so + 0x188)};
@@ -1764,6 +1822,7 @@ void BotShoot(PPCContext& ctx, uint8_t* base, BotPlayer& b, int64_t now) {
 // The bot players' hits of this update, through the server's damage.
 PPC_FUNC(sub_823194B0);  // (the damage hook below)
 void ApplyHits(PPCContext& ctx, uint8_t* base) {
+  if (g_level_reset.exchange(false)) g_hits.clear(), g_seen_soldiers.clear();  // (a new level's server)
   if (g_hits.empty()) return;
   static uint32_t record = 0, giver = 0;
   if (!record) record = g_system_heap->Alloc(0x100, 16), giver = g_system_heap->Alloc(0x10, 16);
@@ -1781,7 +1840,7 @@ void ApplyHits(PPCContext& ctx, uint8_t* base) {
     memset(G<uint8_t>(record), 0, 0x100);
     for (int i = 0; i < 3; ++i)
       put(record + 4 * i, h.at[i]), put(record + 0x10 + 4 * i, h.dir[i]), put(record + 0x20 + 4 * i, h.from[i]);
-    put(record + 0x38, 20.0f);  // (a rifle's, as a real player's hits)
+    put(record + 0x38, h.damage);
     St32(giver, giver + 4), St32(giver + 4, h.spawner + 0xDC);
     float before = LdF(h.soldier + 0x3C);
     PPCContext c = ctx;
@@ -2011,10 +2070,18 @@ GAME_PATCH(825EEED0) {
 // a few minutes; its network object and move receiver went with it, and what
 // the bot did next crashed (a dead receiver, the null peer entry above). A
 // bot's connection is kept, as Bad Company's bots' are.
+// Leaving the level (g_leaving_level) they go too: kept, the server never
+// finished closing and the game stood at its exit.
 GAME_PATCH(823AFC20) {
   uint32_t c = ctx.r4.u32;
-  for (const BotPlayer& b : g_players)
+  for (BotPlayer& b : g_players)
     if (b.conn && (c == b.conn || c == b.conn + 4 || c == Ld32(b.conn + 0x14))) {
+      if (g_leaving_level) {
+        RT_INFO("bot %d: its connection %08X goes with the level", b.index, c);
+        b.soldier = 0, b.spawner = 0, b.mover = 0, b.conn = 0;
+        __imp__sub_823AFC20(ctx, base);
+        return;
+      }
       static int said = 0;
       if (said++ < 8) RT_INFO("bot %d: its connection %08X kept (the network would drop it)", b.index, c);
       return;

@@ -1,6 +1,7 @@
 #include "xenia/gpu/vulkan/scene_fx_rt.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
@@ -283,6 +284,9 @@ std::unordered_map<uint64_t, Instance> instances;
 std::vector<uint32_t> retired;
 uint64_t frame = 0;
 uint32_t decoded_this_frame = 0;
+// Decoding also has a time budget: a cutscene with many new meshes must not
+// freeze a frame (the mesh is tried again next frame).
+std::chrono::steady_clock::time_point decode_started;
 bool recording = true;  // off from the depth copy to the scene resolve
 
 // The terrain: every heightmap patch drawn (the level's and the coarser ones
@@ -1579,6 +1583,9 @@ void AddDraw(const MeshKey& key, const PositionFetch& pf, const RegisterFile& re
   uint32_t id;
   if (it == mesh_ids.end()) {
     if (decoded_this_frame >= kDecodeBudget) return;
+    if (decoded_this_frame &&
+        std::chrono::steady_clock::now() - decode_started > std::chrono::milliseconds(2))
+      return;
     decoded_this_frame += key.index_count;
     id = uint32_t(meshes.size());
     meshes.emplace_back();
@@ -1746,6 +1753,7 @@ uint32_t BuildFrame(vulkan::VulkanCommandProcessor& command_processor,
   }
   ++frame;
   decoded_this_frame = 0;
+  decode_started = std::chrono::steady_clock::now();
   vk.next_slot = (slot + 1) % kSlots;
   vk.slot_submission[slot] = current;
 

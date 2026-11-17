@@ -3,6 +3,7 @@
 // logged stub from the generated import_stubs.cpp.
 #include "free_camera.h"
 #include "kernel.h"
+#include "admin.h"
 #include "xenia_bridge.h"
 #include "pc_settings.h"
 
@@ -267,6 +268,7 @@ bool TestKeyDown(int vk) {
 }
 bool TestKeysActive() { return std::getenv("BF_TEST_KEY") != nullptr || std::getenv("BF_TEST_KEY_FILE") != nullptr; }
 bool Down(int vk) {
+  if (rt::admin::Typing()) return false;  // (the chat line is being typed)
   // (Alt+Enter is the fullscreen switch, not Enter.)
   if (vk == VK_RETURN && (GetAsyncKeyState(VK_MENU) & 0x8000)) return false;
   return (GetAsyncKeyState(vk) & 0x8000) != 0 || TestKeyDown(vk);
@@ -373,6 +375,12 @@ std::mutex g_vehicle_mouse_mutex;
 double g_vehicle_dx = 0, g_vehicle_dy = 0;  // counts for the turret aiming (rt::TakeVehicleMouse)
 std::chrono::steady_clock::time_point g_vehicle_moved{};
 std::atomic<bool> g_mouse_looks{false};      // the last mouse-look read was live (not Alt, a menu, the background)
+// The mouse's counts for the local soldier's aim update (game_patches.cpp),
+// which turns the aim itself instead of pushing the stick.
+std::mutex g_aim_mouse_mutex;
+double g_aim_dx = 0, g_aim_dy = 0;           // counts since that update last took them
+std::chrono::steady_clock::time_point g_aim_last{};
+std::atomic<bool> g_aim_seen{false};         // the local aim update has run (until then the stick stays)
 MouseLook SampleMouse() {
   static std::once_flag started;
   std::call_once(started, [] { std::thread(MouseThread).detach(); });
@@ -381,6 +389,11 @@ MouseLook SampleMouse() {
   static auto last = std::chrono::steady_clock::now();
   static int wheel_pending = 0;
   std::lock_guard lock(m);
+  if (rt::admin::Typing()) {  // (chat: no look, and the mouse movement is dropped)
+    std::lock_guard l2(g_mouse_mutex);
+    g_mouse_dx = g_mouse_dy = 0;
+    return MouseLook{};
+  }
   auto now = std::chrono::steady_clock::now();
   double dt = std::chrono::duration<double>(now - last).count();
   if (dt < 0.004) return look;  // several game threads poll the pad per frame
@@ -397,6 +410,7 @@ MouseLook SampleMouse() {
     rt::freecam::AddMouse(dx, dy, wheel);
     dx = dy = wheel = 0;
   }
+  rt::AimMouseAdd(dx, dy);  // pc_look.cpp: the local aim turns by it directly
   {
     std::lock_guard l2(g_vehicle_mouse_mutex);
     g_vehicle_dx += dx, g_vehicle_dy += dy;
@@ -430,6 +444,39 @@ MouseLook SampleMouse() {
 
 static std::atomic<bool> g_local_flying{false};
 bool rt::SimulatedKeyDown(int vk) { return TestKeyDown(vk); }
+void rt::AimMouseAdd(long dx, long dy) {
+  static const bool off = std::getenv("BF_NO_MOUSE_AIM") != nullptr;
+  if (off) return;
+  std::lock_guard lock(g_aim_mouse_mutex);
+  g_aim_dx += double(dx), g_aim_dy += double(dy);
+}
+void rt::AimMouseReset() {
+  std::lock_guard lock(g_aim_mouse_mutex);
+  g_aim_dx = g_aim_dy = 0;
+}
+bool rt::AimMouseTake(double& dx, double& dy, bool& stale) {
+  static const bool off = std::getenv("BF_NO_MOUSE_AIM") != nullptr;
+  if (off) return false;
+  {
+    std::lock_guard lock(g_aim_mouse_mutex);
+    dx = g_aim_dx, dy = g_aim_dy;
+    g_aim_dx = g_aim_dy = 0;
+  }
+  const auto now = std::chrono::steady_clock::now();
+  // The first update of a level, and any after a pause, a death or a spawn,
+  // drops what was gathered rather than turning by all of it at once.
+  stale = g_aim_last.time_since_epoch().count() == 0 ||
+          std::chrono::duration<double>(now - g_aim_last).count() > 0.25;
+  g_aim_last = now;
+  return true;
+}
+void rt::AimMouseSeen() { g_aim_seen.store(true, std::memory_order_relaxed); }
+bool rt::AimMouseOwnsLook() {
+  static const bool off = std::getenv("BF_NO_MOUSE_AIM") != nullptr;
+  return !off && g_aim_seen.load(std::memory_order_relaxed) && g_present &&
+         !g_in_menus.load(std::memory_order_relaxed) && !g_level_menu.load(std::memory_order_relaxed) &&
+         LocalVehicle() == kOnFoot;
+}
 bool (*rt::g_vehicle_mouse_stick)(float* x, float* y) = nullptr;
 bool rt::TakeVehicleMouse(double& dx, double& dy, double& idle) {
   std::lock_guard l(g_vehicle_mouse_mutex);
@@ -440,15 +487,22 @@ bool rt::TakeVehicleMouse(double& dx, double& dy, double& idle) {
 }
 float rt::MouseLookAxis(int axis) {
   g_mouse_looks = false;
-  if (Down(VK_MENU) && g_test_mouse_at <= 0) return 0;
+  if (Down(VK_MENU) && g_test_mouse_at <= 0) {
+    rt::AimMouseReset();
+    return 0;
+  }
   MouseLook look = SampleMouse();
   if (rt::freecam::Active()) return 0;
   g_mouse_looks = !g_in_menus && !g_level_menu;
+  if (!g_mouse_looks) rt::AimMouseReset();
   // A vehicle's guns and turrets: the mouse aims them (game_patches.cpp).
   if (!g_local_flying.load(std::memory_order_relaxed) && rt::g_vehicle_mouse_stick) {
     float x, y;
     if (rt::g_vehicle_mouse_stick(&x, &y)) return axis == 0 ? x : y;
   }
+  // On foot the mouse turns the aim itself (pc_look.cpp): no stick push as
+  // well, which would turn twice with the stick's curve.
+  if (!g_local_flying.load(std::memory_order_relaxed) && rt::AimMouseOwnsLook()) return 0;
   float v = axis == 0 ? look.rx : look.ry;
   // Planes (the right stick is pitch and roll): their own sensitivity, and
   // optionally mouse forward pulls the nose up.
@@ -556,7 +610,7 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
       if (vk && Down(vk) && !(menus && (vk == VK_LBUTTON || vk == VK_RBUTTON))) g.wButtons |= b.button;
     }
   }
-  if (!g_in_menus) {
+  if (!g_in_menus && !pcset::WaitRelease()) {
     for (int slot = 0; slot < 2; ++slot)
       if (int vk = Key(pcset::kMenu, slot); vk && Down(vk)) g.wButtons |= XINPUT_GAMEPAD_START;
   }

@@ -3,6 +3,7 @@
 // OpenAI-style HTTP API (/v1/chat/completions) with the map as a PNG, the
 // answer held to a JSON schema ({"why": ..., "place": 0..n}).
 #include "kernel.h"
+#include "admin.h"
 
 #include "bot_llm.h"
 
@@ -40,6 +41,7 @@
 #include <map>
 #include <mutex>
 #include <thread>
+#include <unordered_map>
 
 #define STB_IMAGE_WRITE_STATIC
 #define STB_IMAGE_WRITE_IMPLEMENTATION
@@ -60,7 +62,8 @@ int64_t Now() {
 }
 
 // ---- HTTP (plain, one request per connection) --------------------------------
-bool Http(const char* method, const std::string& path, const std::string& body, std::string* out, int timeout_ms) {
+bool HttpTo(const char* method, const std::string& path, const std::string& body, std::string* out, int timeout_ms,
+            const std::string& host, int port) {
   static std::once_flag wsa;
   std::call_once(wsa, [] {
     WSADATA d;
@@ -69,7 +72,7 @@ bool Http(const char* method, const std::string& path, const std::string& body, 
   addrinfo hints{}, *res = nullptr;
   hints.ai_family = AF_INET;
   hints.ai_socktype = SOCK_STREAM;
-  if (getaddrinfo(g_host.c_str(), std::to_string(g_port).c_str(), &hints, &res) != 0 || !res) return false;
+  if (getaddrinfo(host.empty() ? g_host.c_str() : host.c_str(), std::to_string(port ? port : g_port).c_str(), &hints, &res) != 0 || !res) return false;
   SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (s == INVALID_SOCKET) return freeaddrinfo(res), false;
 #ifdef _WIN32
@@ -81,7 +84,7 @@ bool Http(const char* method, const std::string& path, const std::string& body, 
   setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&tv), sizeof(tv));
   bool ok = connect(s, res->ai_addr, int(res->ai_addrlen)) == 0;
   freeaddrinfo(res);
-  std::string req = std::string(method) + " " + path + " HTTP/1.1\r\nHost: " + g_host + "\r\nConnection: close\r\n";
+  std::string req = std::string(method) + " " + path + " HTTP/1.1\r\nHost: " + (host.empty() ? g_host : host) + "\r\nConnection: close\r\n";
   if (!body.empty()) req += "Content-Type: application/json\r\nContent-Length: " + std::to_string(body.size()) + "\r\n";
   req += "\r\n" + body;
   for (size_t sent = 0; ok && sent < req.size();) {
@@ -112,6 +115,10 @@ bool Http(const char* method, const std::string& path, const std::string& body, 
   }
   if (out) *out = data;
   return status == 200;
+}
+
+bool Http(const char* method, const std::string& path, const std::string& body, std::string* out, int timeout_ms) {
+  return HttpTo(method, path, body, out, timeout_ms, std::string(), 0);
 }
 
 // ---- JSON, as little as is needed -----------------------------------------------
@@ -284,7 +291,11 @@ struct Job {
   int kind;                      // (the training run's record)
   float x, z;
   std::vector<std::array<float, 2>> places_at;  // place k + 1 at
+  std::string chat, name;  // (instead: a chat line to answer)
 };
+std::string g_chat_host;      // a separate, small chat model (bot_llm.ini)
+int g_chat_port = 0;
+
 struct BotState {
   bool busy = false, answered = false;
   int place = 0;
@@ -296,7 +307,6 @@ std::condition_variable g_cv;
 std::deque<Job> g_jobs;
 std::map<int, BotState> g_bots;
 std::string g_map;  // (under g_mutex)
-
 // ---- what was learned: per map, cases that worked or didn't ------------------------
 struct Learned {
   int kind;
@@ -519,6 +529,84 @@ const char* kSystem =
     "cover, a place no enemy can see and away from them (dark grey between it and the enemies); never towards an "
     "enemy in the open; to get unstuck, a place round what blocks the way that leads on towards the objective.";
 
+// The advisor's answers, kept on disk by the exact question (the map image, the
+// eye view, the prompt and the number of places): the same situation then comes
+// back at once, without the vision model. <user>/bot_advice/llm_cache.tsv.
+uint64_t Fnv1a(const void* data, size_t size, uint64_t h = 1469598103934665603ull) {
+  const uint8_t* p = static_cast<const uint8_t*>(data);
+  for (size_t i = 0; i < size; ++i) h = (h ^ p[i]) * 1099511628211ull;
+  return h;
+}
+uint64_t QuestionKey(const Job& job) {
+  uint64_t k = Fnv1a(job.png.data(), job.png.size());
+  k = Fnv1a(job.eye_png.data(), job.eye_png.size(), k);
+  k = Fnv1a(job.prompt.data(), job.prompt.size(), k);
+  return Fnv1a(&job.places, sizeof(job.places), k);
+}
+std::unordered_map<uint64_t, std::pair<int, std::string>>& AnswerCache() {
+  static std::unordered_map<uint64_t, std::pair<int, std::string>> cache = [] {
+    std::unordered_map<uint64_t, std::pair<int, std::string>> m;
+    std::ifstream in(AdviceDir() / "llm_cache.tsv", std::ios::binary);
+    for (std::string line; std::getline(in, line);) {
+      size_t a = line.find('\t'), b = a == std::string::npos ? a : line.find('\t', a + 1);
+      if (a == std::string::npos) continue;
+      m[strtoull(line.c_str(), nullptr, 16)] = {std::atoi(line.c_str() + a + 1),
+                                                b == std::string::npos ? std::string() : line.substr(b + 1)};
+    }
+    return m;
+  }();
+  return cache;
+}
+void RememberAnswer(uint64_t key, int place, std::string why) {
+  for (char& c : why)
+    if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+  AnswerCache()[key] = {place, why};
+  std::error_code ec;
+  std::filesystem::create_directories(AdviceDir(), ec);
+  char line[24];
+  snprintf(line, sizeof(line), "%016llx", (unsigned long long)key);
+  std::ofstream(AdviceDir() / "llm_cache.tsv", std::ios::app) << line << '\t' << place << '\t' << why << '\n';
+}
+
+// A chat line answered by the model: one short line, in character, and
+// nothing we won't say in chat (code or anything sexual).
+void ChatJob(Job& job) {
+  std::string msg = job.chat;
+  for (char& c : msg)
+    if (c == '\n' || c == '\r') c = ' ';
+  if (msg.size() > 300) msg.resize(300);
+  static const char* kSys =
+      "You are a soldier in a World War II squad. Answer the other soldier's chat in one short line, at most 20 "
+      "words, in character. No code, no links, nothing sexual, offensive or political.";
+  std::string body = "{\"model\":\"bot\",\"temperature\":0.8,\"max_tokens\":80,"
+                     "\"chat_template_kwargs\":{\"enable_thinking\":false},"
+                     "\"messages\":[{\"role\":\"system\",\"content\":\"" + Esc(kSys) +
+                     "\"},{\"role\":\"user\",\"content\":\"" + Esc(msg) + "\"}]}";
+  std::string reply, text;
+  bool ok = HttpTo("POST", "/v1/chat/completions", body, &reply, 30000, g_chat_host, g_chat_port);
+  size_t m = reply.find("\"message\"");
+  if (ok && m != std::string::npos) text = JsonString(reply, "content", m);
+  for (char& c : text)
+    if (c == '\n' || c == '\r' || c == '\t') c = ' ';
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  if (text.size() > 160) text.resize(160);
+  std::string low;
+  for (char c : text) low += char(tolower((unsigned char)c));
+  static const char* kBad[] = {"```", "porn", "nsfw", "nude", "sex", "rape", "fuck", "dick", "pussy", "cock"};
+  bool fine = !text.empty();
+  for (const char* b : kBad)
+    if (low.find(b) != std::string::npos) fine = false;
+  int braces = 0;
+  for (char c : text) braces += c == '{' || c == '}';
+  if (braces > 2) fine = false;
+  if (ok && fine) {
+    RT_INFO("bot llm: chat (%s): %s", job.name.c_str(), text.c_str());
+    admin::Say(job.name, text);
+  } else if (ok) {
+    RT_INFO("bot llm: chat reply dropped: %s", text.c_str());
+  }
+}
+
 void Worker() {
   for (;;) {
     Job job;
@@ -528,10 +616,21 @@ void Worker() {
       job = std::move(g_jobs.front());
       g_jobs.pop_front();
     }
+    if (!job.chat.empty()) {  // a chat line, not a place to walk to
+      ChatJob(job);
+      continue;
+    }
     int place = 0;
     std::string why, reply;
     bool ok = false;
     if (Now() - job.at < 20000) {  // (a stale question: its moment is gone)
+      const uint64_t question = QuestionKey(job);
+      bool cached = false;
+      if (auto it = AnswerCache().find(question); it != AnswerCache().end()) {
+        place = it->second.first, why = it->second.second, ok = cached = true;
+        RT_INFO("bot llm: bot %d: place %d (cached)", job.bot, place);
+      }
+      if (!cached) {
       std::string schema = "{\"type\":\"object\",\"properties\":{\"why\":{\"type\":\"string\",\"maxLength\":160},"
                            "\"place\":{\"type\":\"integer\",\"minimum\":0,\"maximum\":" + std::to_string(job.places) +
                            "}},\"required\":[\"why\",\"place\"]}";
@@ -553,6 +652,7 @@ void Worker() {
       if (place < 0 || place > job.places) place = 0;
       if (!ok) RT_WARN("bot llm: bot %d: no answer (%s)", job.bot, reply.substr(0, 200).c_str());
       else RT_INFO("bot llm: bot %d: place %d in %.1f s (%s)", job.bot, place, (Now() - t0) / 1000.0, why.c_str());
+      if (ok) RememberAnswer(question, place, why);
       if (ok && g_cases_saved++ < 20000) {  // (the data set, up to 20000 cases a run)
         std::error_code ec;
         std::filesystem::create_directories(AdviceDir() / "cases", ec);
@@ -567,6 +667,7 @@ void Worker() {
                    (job.eye_png.empty() ? std::string() : "\"eye_image\":\"" + id + "_eye.png\",") + "\"system\":\"" +
                    Esc(kSystem) + "\",\"prompt\":\"" + Esc(job.prompt) + "\",\"place\":" + std::to_string(place) +
                    ",\"why\":\"" + Esc(why) + "\"}");
+      }
       }
     }
     std::lock_guard lock(g_mutex);
@@ -879,6 +980,59 @@ std::string Where(const MapView& m, float x, float z) {
 
 }  // namespace
 
+std::string g_chat_model;
+
+// llama-server for the chat model alone: same server binary, another port, the
+// text model, a small context (it only answers a line).
+bool StartChatServer(const std::filesystem::path& dir, const std::string& model, int port) {
+  std::ifstream ini(dir / "bot_llm.ini");
+  std::filesystem::path server;
+  for (std::string line; std::getline(ini, line);) {
+    size_t eq = line.find('=');
+    if (eq == std::string::npos) continue;
+    if (line.substr(0, eq) == "server") {
+      server = dir / line.substr(eq + 1);
+      while (!server.string().empty() && (server.string().back() == '\r' || server.string().back() == ' ')) server = server.string().substr(0, server.string().size() - 1);
+    }
+  }
+  std::error_code ec;
+  if (server.empty() || !std::filesystem::exists(server, ec)) {
+    RT_WARN("bot llm: no llama-server for the chat model");
+    return false;
+  }
+  int threads = std::max(1, int(std::thread::hardware_concurrency()) / 2 - 1);
+  std::string cmd = "\"" + server.string() + "\" -m \"" + model + "\" --host 127.0.0.1 --port " + std::to_string(port) +
+                    " -c 2048 -np 1 -t " + std::to_string(threads) + " --no-webui";
+  std::string log = (dir / "llama-chat.log").string();
+#ifdef _WIN32
+  SECURITY_ATTRIBUTES sa{sizeof(sa), nullptr, TRUE};
+  HANDLE out = ::CreateFileA(log.c_str(), GENERIC_WRITE, FILE_SHARE_READ, &sa, CREATE_ALWAYS, 0, nullptr);
+  STARTUPINFOA si{sizeof(si)};
+  si.dwFlags = STARTF_USESTDHANDLES;
+  si.hStdOutput = si.hStdError = out;
+  PROCESS_INFORMATION pi{};
+  std::vector<char> line(cmd.begin(), cmd.end());
+  line.push_back(0);
+  bool ok = ::CreateProcessA(nullptr, line.data(), nullptr, nullptr, TRUE,
+                             CREATE_NO_WINDOW | BELOW_NORMAL_PRIORITY_CLASS, nullptr,
+                             server.parent_path().string().c_str(), &si, &pi);
+  if (out != INVALID_HANDLE_VALUE) ::CloseHandle(out);
+  if (!ok) return false;
+  if (g_job) AssignProcessToJobObject(g_job, pi.hProcess);
+  ::CloseHandle(pi.hThread);
+  ::CloseHandle(pi.hProcess);
+#else
+  if (fork() == 0) {
+    int fd = open(log.c_str(), O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) dup2(fd, 1), dup2(fd, 2), close(fd);
+    execl("/bin/sh", "sh", "-c", cmd.c_str(), (char*)nullptr);
+    _exit(1);
+  }
+#endif
+  RT_INFO("bot llm: chat model %s on port %d", model.c_str(), port);
+  return true;
+}
+
 void Configure(const std::string& where) {
   if (g_enabled.exchange(true)) return;
   g_port = kPort + g_port_offset;
@@ -889,6 +1043,28 @@ void Configure(const std::string& where) {
     size_t c = hp.rfind(':');
     g_host = hp.substr(0, c);
     g_port = c == std::string::npos ? 80 : atoi(hp.c_str() + c + 1);
+  }
+  // A small chat-only model beside the tactical one (bot_llm.ini).
+  {
+    std::filesystem::path dir = where.empty() ? std::filesystem::path("llm") : std::filesystem::path(where);
+    std::ifstream ini(dir / "bot_llm.ini");
+    for (std::string line; std::getline(ini, line);) {
+      size_t eq = line.find('=');
+      if (eq == std::string::npos) continue;
+      std::string key = line.substr(0, eq), val = line.substr(eq + 1);
+      while (!val.empty() && (val.back() == '\r' || val.back() == ' ')) val.pop_back();
+      if (key == "chat_port") g_chat_port = atoi(val.c_str());
+      if (key == "chat_host") g_chat_host = val;
+      if (key == "chat_model" && !val.empty()) g_chat_model = (dir / val).string();
+    }
+    if (g_chat_port) {
+      if (g_chat_host.empty()) g_chat_host = "127.0.0.1";
+      if (!g_chat_model.empty()) {
+        std::error_code ec;
+        if (std::filesystem::exists(g_chat_model, ec)) StartChatServer(dir, g_chat_model, g_chat_port);
+        else RT_WARN("bot llm: chat_model %s is not there", g_chat_model.c_str());
+      }
+    }
   }
   std::thread(Worker).detach();
   std::thread([url, where] {
@@ -906,6 +1082,17 @@ void Configure(const std::string& where) {
              nullptr, 120000);
         g_ready = true;
         RT_INFO("bot llm: ready on %s:%d", g_host.c_str(), g_port);
+        // A small model for chat only (bot_llm.ini: chat_model=, chat_port=):
+        // started here too, so the tactical model isn't delayed by chat.
+        if (g_chat_port) {
+          for (int k = 0; k < 120; ++k) {
+            if (HttpTo("GET", "/health", "", nullptr, 2000, g_chat_host, g_chat_port)) {
+              RT_INFO("bot llm: chat model ready on %s:%d", g_chat_host.c_str(), g_chat_port);
+              break;
+            }
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+          }
+        }
         return;
       }
       std::this_thread::sleep_for(std::chrono::seconds(1));
@@ -1178,6 +1365,29 @@ void Learn(int kind, const float at[3], float dir, const float place[3], bool wo
   RT_INFO("bot llm: learned on %s: %s at %.0f,%.0f %s (%d:%d)", g_learn_map.c_str(), kinds[kind >= 1 && kind <= 5 ? kind : 0],
           at[0], at[2], worked ? "worked" : "failed", same->wins, same->losses);
   SaveLearned();
+}
+
+std::atomic<bool> g_chat_enabled{true};
+bool ChatEnabled() { return g_chat_enabled; }
+void SetChatEnabled(bool on) { g_chat_enabled = on; }
+
+void ChatReplyTo(const std::string& message) {
+  if (!Enabled() || !g_chat_enabled || message.empty()) return;
+  static std::atomic<int64_t> next{0};
+  const int64_t now = Now();
+  if (now < next) return;
+  next = now + 10000;  // at most one answer every ten seconds
+  Job job{};
+  job.bot = int(now / 1000) % 16;
+  job.name = "BOT " + std::to_string(job.bot + 1);
+  job.chat = message;
+  job.at = now;
+  {
+    std::lock_guard lock(g_mutex);
+    if (g_jobs.size() >= 4) return;
+    g_jobs.push_back(std::move(job));
+  }
+  g_cv.notify_one();
 }
 
 }  // namespace rt::botllm

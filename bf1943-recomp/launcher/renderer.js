@@ -10,6 +10,7 @@ const rows = [
   ['preset', 'Look', [['Stock', 'stock'], ['Enhanced', 'enhanced'], ['Vivid', 'vivid'], ['Toon', 'toon'], ['Noir', 'noir'], ['WW2', 'ww2']]],
   ['frameRate', 'Frame rate', [['60', '60'], ['120', '120'], ['144', '144'], ['Max', '0']]],
   ['shadowDetail', 'Shadow detail', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra']]],
+  ['fov', 'Field of view', [['Game', '0'], ['90', '90'], ['95', '95'], ['100', '100'], ['105', '105'], ['110', '110']]],
 ];
 
 // The EFFECTS card: the game's PC SETTINGS > EFFECTS, the same values (the
@@ -128,6 +129,19 @@ function showTextures(key) {
   $('texmake').hidden = false;
   $('texmake').disabled = texBusy && !mine;
   $('texmake').textContent = mine ? 'STOP' : g.hasTextures ? 'UPDATE' : 'MAKE';
+  $('texmake2').disabled = texBusy && !mine;
+  $('texmake2').textContent = mine ? 'STOP MAKING' : 'CREATE HD PACK';
+}
+
+// What the game has saved so far for the chosen game (the COLLECT card).
+async function refreshCollect() {
+  const info = await window.launcher.collectInfo(settings.game);
+  $('shaderhint').textContent = info.shaders
+    ? `${info.shaders} shaders collected. The PBR table can be rebuilt from them (tools/pbr_taps.py).`
+    : 'No shaders collected yet: turn this on and play the maps.';
+  $('texmisshint').textContent = info.textures
+    ? `${info.textures} textures the pack has no replacement for.`
+    : 'No textures saved yet: turn this on and play.';
 }
 
 // Shows the chosen game's tab, logo and options.
@@ -144,6 +158,7 @@ function selectGame(key) {
   $('year').textContent = key === 'bfbc1' ? 'BAD COMPANY' : '1943';
   $('year').classList.toggle('long', key === 'bfbc1');
   showTextures(key);
+  refreshCollect();
   document.title = g.title;
   setStatus(g.error || '', !!g.error);
   $('play').disabled = !!g.error;
@@ -269,6 +284,8 @@ async function init() {
   $('name').value = settings.name;
   $('blood').checked = !!settings.blood;
   $('hdr').checked = !!settings.hdr;
+  $('collectShaders').checked = !!settings.collectShaders;
+  $('collectTextures').checked = !!settings.collectTextures;
   for (const tab of document.querySelectorAll('.game')) {
     const g = games[tab.dataset.game];
     const badge = tab.querySelector('.soon');  // not installed yet: its tab opens the setup
@@ -283,6 +300,8 @@ async function init() {
 $('play').onclick = async () => {
   settings.name = $('name').value;
   settings.textures = $('textures').checked;
+  settings.collectShaders = $('collectShaders').checked;
+  settings.collectTextures = $('collectTextures').checked;
   settings.blood = $('blood').checked;
   settings.hdr = $('hdr').checked;
   settings.scale = { ...settings.scale, [settings.game]: settings.resolution };
@@ -293,7 +312,27 @@ $('play').onclick = async () => {
   else setStatus('Running');
 };
 
-window.launcher.onGameExited(() => { setStatus(''); $('play').disabled = false; });
+window.launcher.onGameExited(() => { setStatus(''); $('play').disabled = false; refreshCollect(); });
+
+// The COLLECT card: what the game saves while playing (shaders for the PBR
+// table, the textures the HD pack misses), and the HD pack's MAKE button here.
+$('collectShaders').onchange = () => {
+  settings.collectShaders = $('collectShaders').checked;
+  window.launcher.saveSettings(settings);
+};
+$('collectTextures').onchange = () => {
+  settings.collectTextures = $('collectTextures').checked;
+  window.launcher.saveSettings(settings);
+};
+$('shaderopen').onclick = () => window.launcher.collectOpen(settings.game, 'shaders');
+$('texmissopen').onclick = () => window.launcher.collectOpen(settings.game, 'textures');
+$('texmake2').onclick = () => $('texmake').click();
+$('pbrrebuild').onclick = async () => {
+  $('shaderhint').textContent = 'Rebuilding the PBR table from the collected shaders�';
+  const r = await window.launcher.pbrRebuild(settings.game);
+  $('shaderhint').textContent = r.error ? r.error
+    : `Added ${r.added} shader(s) of ${r.found} found (${r.total} in the table). Restart the game.`;
+};
 
 // The HD texture pack, made here (texpack.py make, through the main process).
 let texBusy = false, texGame = null;  // (the game whose pack is being made)
@@ -350,8 +389,8 @@ const serverMaps = {
     ['mp_monastery_day1', 'End of the Line'], ['mp_monastery_day2', 'Ascension'],
     ['mp_beachhead_day1', 'Harvest Day'], ['mp_beachhead_day2', 'Over and Out']],
 };
-const serverDefaults = (key) => ({ name: 'My Server', maps: serverMaps[key].map(([m]) => m), bots: 8, publish: false,
-  llm: false, train: false, trainMinutes: 30, hardcore: false, exe: '', game: '' });
+const serverDefaults = (key) => ({ name: 'My Server', password: '', tickRate: 75, weather: 'clear', time: 'day',
+  maps: serverMaps[key].map(([m]) => m), bots: 8, publish: false, llm: false, train: false, trainMinutes: 30, hardcore: false, exe: '', game: '' });
 let srv = null;          // the choices on the page: { key, c }
 let srvInfo = {};        // what the main process found: exe, data, advisor
 let srvRunning = null;   // the game whose server runs
@@ -367,6 +406,10 @@ function showServer(key) {
   c.maps = c.maps.filter((m) => serverMaps[key].some(([k]) => k === m));
   $('srvgame').textContent = `${games[key].title} · dedicated server`;
   $('srvname').value = c.name;
+  $('srvpass').value = c.password || '';
+  $('srvtick').textContent = `${c.tickRate || 75} HZ`;
+  $('srvweather').textContent = c.weather === 'rain' ? 'RAIN' : 'CLEAR';
+  $('srvtime').textContent = (c.time || 'day').toUpperCase();
   $('srvmaps').textContent = '';
   for (const [map, label] of serverMaps[key]) {
     const b = document.createElement('button');
@@ -416,7 +459,8 @@ function serverControls() {
   $('publishhint').textContent = c.train ? 'Not with a training run: nobody joins it'
     : 'Your router must pass the game\'s UDP ports (1003, 19430) to this PC';
   $('mapcount').textContent = `${c.maps.length} of ${serverMaps[srv.key].length} in the rotation`;
-  for (const id of ['srvname', 'srvllm', 'srvtrain', 'srvhardcore','srvexepick', 'srvdatapick', 'srvauto']) $(id).disabled = busy;
+  for (const id of ['srvname', 'srvpass', 'srvtick', 'srvllm', 'srvtrain', 'srvhardcore', 'srvexepick', 'srvdatapick', 'srvauto'])
+    $(id).disabled = busy;
   $('srvmaps').querySelectorAll('.chip').forEach((b) => (b.disabled = busy));
   $('srvchoices').classList.toggle('locked', busy);
   $('srvstart').disabled = busy || !srvInfo.exe || !srvInfo.data || !c.maps.length;
@@ -546,6 +590,27 @@ window.launcher.onServerEvent((ev) => {
 
 $('srvname').addEventListener('input', () => { srv.c.name = $('srvname').value; serverChanged(); });
 $('srvname').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !$('srvstart').disabled) $('srvstart').click(); });
+$('srvpass').addEventListener('input', () => { srv.c.password = $('srvpass').value; serverChanged(); });
+$('srvtick').onclick = () => {
+  if (srvRunning) return;
+  const rates = [30, 60, 75, 100];
+  srv.c.tickRate = rates[(rates.indexOf(srv.c.tickRate || 75) + 1) % rates.length];
+  $('srvtick').textContent = `${srv.c.tickRate} HZ`;
+  serverChanged();
+};
+$('srvweather').onclick = () => {
+  if (srvRunning) return;
+  srv.c.weather = srv.c.weather === 'rain' ? 'clear' : 'rain';
+  $('srvweather').textContent = srv.c.weather === 'rain' ? 'RAIN' : 'CLEAR';
+  serverChanged();
+};
+$('srvtime').onclick = () => {
+  if (srvRunning) return;
+  const times = ['dawn', 'day', 'sunset', 'night'];
+  srv.c.time = times[(times.indexOf(srv.c.time || 'day') + 1) % times.length];
+  $('srvtime').textContent = srv.c.time.toUpperCase();
+  serverChanged();
+};
 $('botsdown').onclick = () => { srv.c.bots = Math.max(0, srv.c.bots - 1); serverChanged(); };
 $('botsup').onclick = () => { srv.c.bots = Math.min(16, srv.c.bots + 1); serverChanged(); };
 $('mindown').onclick = () => { srv.c.trainMinutes = Math.max(5, srv.c.trainMinutes - minuteStep(srv.c.trainMinutes, false)); serverChanged(); };
@@ -600,15 +665,25 @@ async function runUpdate(version) {
 window.launcher.onUpdateEvent((ev) => {
   if (ev.progress !== undefined) setStatus(`Downloading the update… ${Math.round(ev.progress * 100)}%`);
 });
-async function checkUpdate() {
+async function checkUpdate(manual = false) {
   const u = await window.launcher.updateCheck();
-  if (!u.available) return;
+  if (!u.available) {
+    if (manual) $('updatehint').textContent = u.error ? u.error : 'You have the newest version.';
+    return;
+  }
   $('updatebtn').textContent = `UPDATE TO ${u.version}`;
   $('updatebtn').title = u.notes || '';
   $('updatebtn').hidden = false;
   $('updatebtn').onclick = () => runUpdate(u.version);
-  if (settings.autoUpdate !== false && !setupBusy) runUpdate(u.version);
+  if (manual) {
+    $('updatehint').textContent = `Version ${u.version} found: downloading and installing${u.notes ? '…' : '.'}`;
+    runUpdate(u.version);
+  } else if (settings.autoUpdate !== false && !setupBusy) runUpdate(u.version);
 }
+$('checkupdate').onclick = () => {
+  $('updatehint').textContent = 'Checking GitHub…';
+  checkUpdate(true);
+};
 $('autoupdate').onchange = () => {
   settings.autoUpdate = $('autoupdate').checked;
   window.launcher.saveSettings(settings);

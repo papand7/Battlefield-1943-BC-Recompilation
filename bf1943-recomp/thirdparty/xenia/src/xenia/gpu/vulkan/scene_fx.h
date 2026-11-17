@@ -1,4 +1,4 @@
-// bf1943 scene effects: volumetric sun light and height fog applied to the HDR
+﻿// bf1943 scene effects: volumetric sun light and height fog applied to the HDR
 // scene colour right before the game resolves it for its own bloom, exposure
 // and HUD passes. Camera, sun and shadow data come from the constants of the
 // game's lit draws (see CaptureDraw).
@@ -114,6 +114,12 @@ struct Settings {
   // bare ground (the traced terrain, not grass), grime on everything, more in
   // corners. Fades out where it would be a few pixels.
   float detail = 1.0f;           // strength, 0 off
+  // Rain: drops in the world, puddles with rings on flat ground, drops on the
+  // view. 0 clear, 1 heavy.
+  float rain = 0.0f;
+  // Time of day, hours (0-24; 12 noon): sun and ambient lower, warmer and
+  // dimmer at dawn and dusk, dark blue at night, and the image graded.
+  float time_of_day = 12.0f;
   // The sky: the sun's disc and its forward-scattered glow (warm, Mie), and
   // the blue deepening overhead (less air there: Rayleigh), over the game's
   // painted sky.
@@ -134,6 +140,8 @@ struct Settings {
 
 // Before the GPU starts: turns the effects on with the given settings.
 void Configure(const char* settings);
+// Host or server weather and time of day, live (the other settings stay).
+void SetWeather(float rain, float time_hours);
 bool Enabled();
 const Settings& GetSettings();
 // The eye (world position) of the main view, from the last lit draw; false
@@ -167,3 +175,4 @@ bool FsrInputs(VkImage& depth, VkImage& motion, uint32_t& width, uint32_t& heigh
 }  // namespace xe
 
 #endif  // XENIA_GPU_VULKAN_SCENE_FX_H_
+

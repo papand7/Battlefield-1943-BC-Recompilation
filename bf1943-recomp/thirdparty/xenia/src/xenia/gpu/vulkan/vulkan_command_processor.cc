@@ -4551,6 +4551,23 @@ void VulkanCommandProcessor::PumpQueryResolves() {
   }
 }
 
+void VulkanCommandProcessor::PrewarmPipelines(uint32_t timeout_ms) {
+  if (!pipeline_cache_) {
+    return;
+  }
+  const uint64_t frequency = xe::Clock::QueryHostTickFrequency();
+  const uint64_t deadline =
+      xe::Clock::QueryHostTickCount() +
+      (frequency * uint64_t(timeout_ms ? timeout_ms : 1)) / 1000;
+  // The creation threads may be busy with the startup batch: give them time,
+  // then wait for the rest (AwaitPipelineCompletion has no timeout).
+  while (pipeline_cache_->IsCreatingPipelines() &&
+         xe::Clock::QueryHostTickCount() < deadline) {
+    xe::threading::Sleep(std::chrono::milliseconds(2));
+  }
+  pipeline_cache_->AwaitPipelineCompletion();
+}
+
 bool VulkanCommandProcessor::AwaitQueryResolve(ReportHandle report_handle,
                                                uint64_t wait_for_submission) {
   assert_not_zero(wait_for_submission);

@@ -12,6 +12,7 @@ struct Server {
   uint16_t port;
   int ping_ms;
   bool online = false;  // from the master server's list (not this network)
+  bool locked = false;  // needs a password (this network's beacon says so)
   int players = 0;
   bool hardcore = false;  // the host's hardcore mode (its beacon says)
 };
@@ -41,9 +42,17 @@ bool Publish();
 // publishing is on).
 void StartPublishing();
 // --join: everything for joining but starting it (that follows the title).
-bool PrepareJoin(const std::string& address, const std::string& map);
+bool PrepareJoin(const std::string& address, const std::string& map, const std::string& password = std::string());
 // Joins the host at the address (IPv4), which is on the map.
-// False if the address is not one (nothing happens then).
-bool Join(const std::string& address, const std::string& map);
+// False if the address is not one (nothing happens then), or if the host
+// turned the password down (JoinError says why).
+bool Join(const std::string& address, const std::string& map, const std::string& password = std::string());
+// Why the last Join did not go ahead (wrong password, no answer).
+const std::wstring& JoinError();
+// A password-protected host (net.cpp): whether this address may send it game
+// packets (it typed the password on the beacon's port), with an access refreshed
+// by traffic.
+bool GuestAllowed(uint32_t ip);
+void AllowGuest(uint32_t ip);
 
 }  // namespace rt::lan

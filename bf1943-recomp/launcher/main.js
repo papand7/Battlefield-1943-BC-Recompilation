@@ -4,7 +4,7 @@ const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 // (Linux: its own first-run setup, build_linux.sh; the game files found as on Windows.)
 const setup = require(process.platform === 'linux' ? './setup_linux' : './setup');
 const update = require('./update');
-const { spawn, execFileSync } = require('child_process');
+const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
 const readline = require('readline');
 const fs = require('fs');
@@ -21,7 +21,10 @@ const defaults = {
   upscaleQuality: 'off',  // --upscale-quality (with FSR 3 / DLSS / auto)
   frameGen: 'off',      // --frame-gen (AMD FSR 3.1 frame generation, with FSR 3 / DLSS / auto)
   shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
+  fov: '0',             // --fov (0: the game's own)
   textures: true,
+  collectShaders: false,  // --dump-shaders: the shaders the game draws, for the PBR table
+  collectTextures: false, // --log-textures: textures the pack has no replacement for
   preset: 'enhanced',   // --preset stock|enhanced|vivid|toon|noir|ww2
   blood: false,         // --blood (blood on hits, bodies torn apart by explosions)
   hdr: false,           // --hdr (HDR10 output when Windows HDR is on)
@@ -195,14 +198,84 @@ function createWindow() {
   });
 }
 
-ipcMain.handle('state', () => (games = scanGames(), {
-  settings: load(),
+ipcMain.handle('state', () => (games = scanGames(), {  settings: load(),
   games: Object.fromEntries(Object.entries(games).map(([k, g]) =>
     [k, { title: g.title, error: problem(g), outdated: outdated(g.exe), hasTextures: !!g.textures }])),
   // (--server: server_gui.bat / .sh; --page settings|server|home)
   page: process.argv.includes('--server') ? 'server'
     : process.argv.includes('--page') ? process.argv[process.argv.indexOf('--page') + 1] || 'home' : 'home',
 }));
+
+// ---- Collecting what the game draws (the COLLECT card in Settings) -----------
+// The game saves every shader it uses with --dump-shaders (the PBR table is
+// rebuilt from it: tools/pbr_taps.py) and every texture the HD pack has no
+// replacement for with --log-textures. Both go to the folder the game runs in.
+function gameWorkDir(game) {
+  const g = games[game];
+  if (!g || !g.exe) return null;
+  const exeDir = path.dirname(g.exe);
+  const run = path.join(path.dirname(exeDir), 'run');
+  return fs.existsSync(run) ? run : exeDir;
+}
+function collectDirs(game) {
+  const dir = gameWorkDir(game);
+  return dir ? { shader: path.join(dir, 'shader_dump'), textures: path.join(dir, 'textures_missing') } : null;
+}
+ipcMain.handle('collect-info', (_, game) => {
+  games = scanGames();
+  const d = collectDirs(game);
+  const out = { shaders: 0, textures: 0, shaderDir: '', textureDir: '' };
+  if (!d) return out;
+  out.shaderDir = d.shader, out.textureDir = d.textures;
+  try { out.shaders = fs.readdirSync(d.shader).filter((n) => /^shader_[0-9A-F]{16}\.ucode\.frag$/i.test(n)).length; } catch { /* none */ }
+  try { out.textures = fs.readdirSync(d.textures).filter((n) => n.endsWith('.bin')).length; } catch { /* none */ }
+  return out;
+});
+ipcMain.handle('collect-open', async (_, game, kind) => {
+  const d = collectDirs(game);
+  if (!d) return { error: 'The game is not installed yet.' };
+  const dir = kind === 'textures' ? d.textures : d.shader;
+  fs.mkdirSync(dir, { recursive: true });
+  const err = await shell.openPath(dir);
+  return err ? { error: err } : {};
+});
+
+// REBUILD PBR TABLE (the COLLECT card): tools/pbr_taps.py on the collected
+// shader dump finds the lit shaders and adds the ones the game's table beside
+// the exe does not have yet (existing, hand-tuned lines are kept as they are).
+ipcMain.handle('pbr-rebuild', async (_, game) => {
+  games = scanGames();
+  const g = games[game];
+  if (!g || !g.exe) return { error: 'The game is not installed yet.' };
+  const d = collectDirs(game);
+  if (!d) return { error: 'The game is not installed yet.' };
+  const script = releaseRoot ? path.join(releaseRoot, 'src', 'tools', 'pbr_taps.py')
+    : path.resolve(__dirname, '..', 'tools', 'pbr_taps.py');
+  if (!isFile(script)) return { error: 'tools/pbr_taps.py was not found in this install.' };
+  let shaders = 0;
+  try { shaders = fs.readdirSync(d.shader).filter((n) => /^shader_[0-9A-F]{16}\.ucode\.frag$/i.test(n)).length; } catch { /* none */ }
+  if (!shaders) return { error: 'No shaders collected yet: turn on Save shaders while playing and play some maps.' };
+  const python = pythonExe();
+  if (!python) return { error: 'Python is needed: set up a game first (that installs it).' };
+  const run = await new Promise((resolve) => {
+    execFile(python, ['-I', script, d.shader], { maxBuffer: 64 << 20, windowsHide: true }, (err, stdout) => {
+      resolve({ error: err ? (err.message || String(err.code)) : '', stdout: stdout || '' });
+    });
+  });
+  if (run.error) return { error: 'pbr_taps.py failed: ' + run.error };
+  const active = run.stdout.split(/\r?\n/).filter((l) => /^[0-9A-Fa-f]{16}\s+\S/.test(l));
+  if (!active.length) return { error: 'The collected shaders have no lit ones pbr_taps.py can follow.' };
+  const table = path.join(path.dirname(g.exe), 'pbr_shaders.txt');
+  let existing = '';
+  try { existing = fs.readFileSync(table, 'utf8'); } catch { /* (the first build copies it here) */ }
+  const have = new Set((existing.match(/^[0-9A-Fa-f]{16}/gm) || []).map((h) => h.toUpperCase()));
+  const add = active.filter((l) => !have.has(l.slice(0, 16).toUpperCase()));
+  if (add.length) {
+    const merged = (existing.trimEnd() ? existing.trimEnd() + '\n' : '') + add.join('\n') + '\n';
+    fs.writeFileSync(table, merged);
+  }
+  return { found: active.length, added: add.length, total: have.size + add.length };
+});
 
 // ---- The dedicated server (the SERVER page) ---------------------------------
 // Run from the game's build tree (bf1943-recomp / bfbc1-recomp, a release's src
@@ -286,7 +359,10 @@ function runStep(job, cmd, args, cwd, onLine = () => {}) {
 async function serve(job, o) {
   const phase = (name) => { job.phase = name; serverSend({ phase: name }); };
   let args = ['--game', o.data, '--user', 'server_data', '--dedicated', '--name', o.name,
+    '--servername', o.servername || o.name, '--tickrate', String(o.tickRate || 75),
+    '--weather', o.weather === 'rain' ? 'rain' : 'clear', '--time', o.time || 'day',
     '--maps', o.maps.join(','), '--bots', String(o.bots)];
+  if (o.password) args.push('--password', o.password);
   if (o.train) args.push('--train', '--speed', '2', '--train-minutes', String(o.trainMinutes));
   else if (o.publish) args.push('--publish');
   if (o.llm) args.push('--bot-llm', 'llm');
@@ -368,12 +444,19 @@ ipcMain.handle('server-start', (_, game, c) => {
   if (!p.data) return { error: `${games[game].title}: the game files (a folder with default.xex) were not found. Choose them below.` };
   const o = {
     ...p, maps, name: String(c.name || '').trim() || 'My Server',
+    servername: String(c.servername || c.name || '').trim() || 'My Server',
+    password: String(c.password || '').slice(0, 24),
+    tickRate: [30, 60, 75, 100].includes(+c.tickRate) ? +c.tickRate : 75,
+    weather: c.weather === 'rain' ? 'rain' : 'clear',
+    time: ['dawn', 'day', 'sunset', 'night'].includes(c.time) ? c.time : 'day',
     bots: Math.max(0, Math.min(16, Math.round(+c.bots) || 0)),
     trainMinutes: Math.max(5, Math.min(1440, Math.round(+c.trainMinutes) || 30)),
     publish: !!c.publish, llm: !!c.llm, train: !!c.train, hardcore: game === 'bf1943' && !!c.hardcore,
   };
   const s = load();
-  save({ ...s, server: { ...s.server, [game]: { ...c, name: o.name, bots: o.bots, trainMinutes: o.trainMinutes } } });
+  save({ ...s, server: { ...s.server, [game]: { ...c, name: o.name, servername: o.servername,
+    password: o.password, tickRate: o.tickRate, bots: o.bots, trainMinutes: o.trainMinutes,
+    weather: o.weather, time: o.time } } });
   fs.mkdirSync(path.join(o.tree, 'server_data'), { recursive: true });
   const job = server = { game, child: null, stopping: false };
   serverLog.length = 0;
@@ -433,6 +516,10 @@ ipcMain.handle('play', async (_, s) => {
   const run = path.join(path.dirname(exeDir), 'run');
   const workDir = fs.existsSync(run) ? run : exeDir;
   fs.mkdirSync(path.join(workDir, 'userdata'), { recursive: true });
+  // COLLECT: the shaders the game draws (for the PBR table) and the textures the
+  // HD pack has no replacement for. Off by default; they only make the game write.
+  const shaderDump = path.join(workDir, 'shader_dump');
+  if (s.collectShaders) fs.mkdirSync(shaderDump, { recursive: true });
   // Bad Company: its main menu's PC SETTINGS row (made once; the game runs
   // without it, with the stock menu, if it cannot be made).
   if (s.game === 'bfbc1') {
@@ -446,6 +533,9 @@ ipcMain.handle('play', async (_, s) => {
     '--display', s.display || 'windowed', '--upscale-quality', s.upscaleQuality || 'off'];
   if (s.textures) args.push('--textures', texturePack);
   if (s.frameGen === 'on') args.push('--frame-gen');
+  if (s.collectShaders) args.push('--dump-shaders', shaderDump);
+  if (s.collectTextures) args.push('--log-textures');
+  if (s.fov && s.fov !== '0') args.push('--fov', s.fov);
   if (s.blood) args.push('--blood');
   if (s.hdr) args.push('--hdr');
   // The sun's shadows: the map's size (1600 at most: the EDRAM) and reach.

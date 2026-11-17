@@ -1,6 +1,8 @@
 // bf1943: native host for the recompiled Battlefield 1943 code.
 // Usage: bf1943 [--game <dir with default.xex>] [--user <writable dir>] [--trace]
 #include "kernel.h"
+#include "admin.h"
+#include "admin_server.h"
 #include "lan.h"
 #include "pc_settings.h"
 #include "texture_replacement.h"  // xenia_shims
@@ -216,6 +218,11 @@ int main(int argc, char** argv) {
       g_lan_host = true;
     }
     else if (a == "--join" && i + 1 < argc) join_address = argv[++i];
+    else if (a == "--password" && i + 1 < argc) rt::g_server_password = argv[++i];
+    else if (a == "--join-password" && i + 1 < argc) rt::g_join_password = argv[++i];
+    else if (a == "--admin-password" && i + 1 < argc) rt::g_admin_password = argv[++i];  // remote admins' (/login)
+    else if (a == "--console") rt::g_admin_console = true;  // admin commands on stdin (a windowed host too)
+    else if ((a == "--servername" || a == "--server-name") && i + 1 < argc) rt::g_server_name = argv[++i];
     else if (a == "--name" && i + 1 < argc) g_gamertag = std::string(argv[++i]).substr(0, 15);
     else if (a == "--maps" && i + 1 < argc) {
       std::string list = argv[++i];
@@ -237,8 +244,22 @@ int main(int argc, char** argv) {
     else if (a == "--wind" && i + 1 < argc) g_wind_cli = float(atof(argv[++i])), xgpu::SetWind(g_wind_cli);  // gust metres (0 off)
     else if (a == "--grade" && i + 1 < argc) xgpu::SetGrade(float(atof(argv[++i])));  // 0 off, 1 default
     else if (a == "--blood") g_blood = true;
+    else if (a == "--weather" && i + 1 < argc) g_weather = !strcmp(argv[++i], "rain");
+    else if (a == "--time" && i + 1 < argc) {
+      const char* t = argv[++i];
+      if (!strcmp(t, "day") || !strcmp(t, "noon")) g_time_of_day = 12.0f;
+      else if (!strcmp(t, "dawn") || !strcmp(t, "sunrise")) g_time_of_day = 6.5f;
+      else if (!strcmp(t, "dusk") || !strcmp(t, "sunset")) g_time_of_day = 18.0f;
+      else if (!strcmp(t, "night")) g_time_of_day = 23.0f;
+      else g_time_of_day = std::clamp(float(atof(t)), 0.0f, 24.0f);
+    }
     else if (a == "--vblank-hz" && i + 1 < argc) g_vblank_hz = std::max(1, atoi(argv[++i]));
     else if (a == "--max-fps" && i + 1 < argc) g_max_fps = uint32_t(std::max(0, atoi(argv[++i])));
+    else if (a == "--tickrate" && i + 1 < argc) g_tick_rate = uint32_t(std::clamp(atoi(argv[++i]), 30, 120));
+    else if (a == "--video-mode" && i + 1 < argc) {
+      unsigned w = 0, h = 0;
+      if (sscanf(argv[++i], "%ux%u", &w, &h) == 2 && w >= 320 && h >= 240) g_video_width = w, g_video_height = h;
+    }
     else if (a == "--vsync") g_vsync = true;
     else if (a == "--gamertag" && i + 1 < argc) g_gamertag = std::string(argv[++i]).substr(0, 15);
     else if (a == "--dump-threads" && i + 1 < argc) {
@@ -406,8 +427,9 @@ int main(int argc, char** argv) {
   xgpu::SetDisplayOptions(res_scale, present_effect, window_w, window_h, shadowmap ? shadowmap : 1024);
   g_shadow_size = uint32_t(shadowmap);
   g_auto_start = g_dedicated;
-  if (!join_address.empty() && !rt::lan::PrepareJoin(join_address, g_host_map.empty() ? "Wake_island_s" : g_host_map))
-    RT_WARN("--join: not an IPv4 address: %s", join_address.c_str());
+  if (!join_address.empty() &&
+      !rt::lan::PrepareJoin(join_address, g_host_map.empty() ? "Wake_island_s" : g_host_map, rt::g_join_password))
+    RT_WARN("--join: %s", join_address.c_str());
   // A run of tools/make_navs.py (reading the level's collision): in nobody's server browser either.
   const bool nav_run = getenv("BF_MAKE_NAVS_CHILD") != nullptr;
   if (g_dedicated) {
@@ -427,6 +449,7 @@ int main(int argc, char** argv) {
     RT_INFO("hardcore: no HUD or crosshair, soldier damage x%.2f", g_hardcore_damage);
   }
   // --publish: on the master server's list once the level runs.
+  rt::admin::Start();  // chat on T (fps_overlay.cpp); a dedicated server's console too
   if ((g_dedicated || g_lan_host) && join_address.empty() && !g_training && !nav_run) rt::lan::StartPublishing();
   // A dedicated server plays no sound: the game's sound system off (its mixer
   // still runs, silent). At --speed the sound kept real time and crashed.
