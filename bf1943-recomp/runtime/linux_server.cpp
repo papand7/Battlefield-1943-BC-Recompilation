@@ -27,7 +27,7 @@ float Grade() { return 0.0f; }
 void SetWind(float) {}
 void SetRtFoliage(bool) {}
 void SetSharpness(float) {}
-void SetHideUi(bool) {}
+void SetHideUi(bool, bool) {}
 void SetWide(bool, int) {}
 void SetUiMenu(bool) {}
 float ViewAspect() { return 16.0f / 9.0f; }

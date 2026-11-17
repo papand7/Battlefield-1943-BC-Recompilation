@@ -454,7 +454,7 @@ ipcMain.handle('server-start', (_, game, c) => {
     time: ['dawn', 'day', 'sunset', 'night'].includes(c.time) ? c.time : 'day',
     bots: Math.max(0, Math.min(16, Math.round(+c.bots) || 0)),
     trainMinutes: Math.max(5, Math.min(1440, Math.round(+c.trainMinutes) || 30)),
-    publish: !!c.publish, llm: !!c.llm, train: !!c.train, hardcore: game === 'bf1943' && !!c.hardcore,
+    publish: !!c.publish, llm: !!c.llm, train: !!c.train, hardcore: !!c.hardcore,
   };
   const s = load();
   save({ ...s, server: { ...s.server, [game]: { ...c, name: o.name, servername: o.servername,

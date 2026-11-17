@@ -32,6 +32,7 @@ struct Icon {
 
 // Hardcore mode (runtime xgpu::SetHideUi): the game's 2D UI draws skipped.
 inline std::atomic<bool> g_hide_ui{false};
+inline std::atomic<bool> g_hide_ui_screen{false};  // (with it: Bad Company's screen-space UI shaders too)
 
 // Ultrawide (runtime xgpu::SetWide; a window wider than 16:9). The game still
 // renders its 16:9-sized frame, but its 3D views are built at the window's

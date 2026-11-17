@@ -1551,6 +1551,24 @@ static int BfMenuShaderKind(const Shader& vs) {
   return it->second;
 }
 
+// Bad Company's 2D UI vertex shaders (HUD, crosshair, text, menus): 2D positions
+// from vf0 (FMT_32_32_FLOAT) put on the screen by dp2add rows (c0-c3, not
+// bf1943's c3.yxxx pattern above) or by "mad oPos.x011 ... c255" (scaled by c0);
+// no dp4 (its 3D draws use it).
+static bool BfScreenSpaceUi(const Shader& vs) {
+  static std::mutex mutex;
+  static std::unordered_map<uint64_t, bool> kinds;
+  std::lock_guard lock(mutex);
+  auto [it, added] = kinds.try_emplace(vs.ucode_data_hash(), false);
+  if (added) {
+    const std::string& d = vs.ucode_disassembly();
+    it->second = d.find("FMT_32_32_FLOAT") != std::string::npos && d.find("vf0,") != std::string::npos &&
+                 (d.find("mad oPos.x011") != std::string::npos || d.find("dp2add") != std::string::npos) &&
+                 d.find("dp4") == std::string::npos;
+  }
+  return it->second;
+}
+
 // The screen box (0-1 of the frame, y down) of a 2D UI draw's vertices, as
 // the game placed them on its 16:9 frame; false if they can't be read.
 static bool BfUiDrawSpan(const Shader& vs, int kind, const RegisterFile& regs, Memory& memory,
@@ -2718,7 +2736,9 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
   // bf1943 hardcore (bf_menu.h g_hide_ui): the game's 2D UI draws (the HUD
   // and crosshair, in a level with no menu up) are not drawn.
-  if (bfmenu::g_hide_ui.load(std::memory_order_relaxed) && BfMenuShaderKind(*vertex_shader)) {
+  if (bfmenu::g_hide_ui.load(std::memory_order_relaxed) &&
+      (BfMenuShaderKind(*vertex_shader) ||
+       (bfmenu::g_hide_ui_screen.load(std::memory_order_relaxed) && BfScreenSpaceUi(*vertex_shader)))) {
     return true;
   }
   // TODO(Triang3l): If the shader uses memory export, but

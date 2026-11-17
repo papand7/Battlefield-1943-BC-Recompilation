@@ -24,7 +24,9 @@ void SetFrameGeneration(bool on);
 void SetLook(int look);
 // Hardcore mode: the game's 2D UI draws (its menu/HUD movies: the HUD and
 // crosshair) skipped while on (live).
-void SetHideUi(bool on);
+// screen_space: also the UI draws of Bad Company's own 2D shaders (pixel positions
+// scaled by one constant, no matrices): its HUD.
+void SetHideUi(bool on, bool screen_space = false);
 // BRIGHTNESS (-0.3...0.3) and GAMMA (0.7...1.3) of the final frame (live).
 void SetPicture(float brightness, float gamma);
 void SetGrade(float strength);
