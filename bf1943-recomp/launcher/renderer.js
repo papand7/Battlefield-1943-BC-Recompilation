@@ -47,8 +47,10 @@ const fxRows = [
   ['fx_soft_particles', 'Soft particles', offOn, '1'],
   ['fx_explosion_smoke', 'Explosion smoke', offOn, '0'],
   ['fx_flash', 'Muzzle flash light', offOn, '1'],
-  ['fx_wind', 'Plant wind', [['Off', '0'], ['Light', '0.2'], ['Normal', '0.4'], ['Strong', '0.8']], '0.4'],
+  ['fx_wind', 'Plant wind', [['Off', '0'], ['Light', '0.2'], ['Normal', '0.4'], ['Strong', '0.8']], '0.4', ['bf1943']],
 ];
+// (A fifth item: the games the row is for; Bad Company's plants have no wind,
+// as its PC SETTINGS page leaves the row out too: bfbc1_game.cpp g_setting_hidden.)
 // The quality presets' effect values (pc_settings.cpp kPresets: low, medium, high, ultra).
 const fxPresets = {
   rt: ['0', '0', '1', '1'], shadows: ['0', '1', '1', '1'], gi: ['0', '0', '1', '1'], ao: ['0', '0.5', '1', '1'],
@@ -61,7 +63,8 @@ const fxPresets = {
 function buildFxRows() {
   $('fxrows').textContent = '';
   const value = (key, def) => (settings[key] !== undefined ? String(settings[key]) : def);
-  for (const [key, label, options, def] of fxRows) {
+  for (const [key, label, options, def, only] of fxRows) {
+    if (only && !only.includes(settings.game)) continue;
     const row = document.createElement('div');
     row.className = 'row';
     row.innerHTML = `<div class="label">${label}</div><div class="seg"></div>`;

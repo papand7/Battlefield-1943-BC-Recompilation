@@ -41,6 +41,8 @@
 
 using namespace rt;
 
+bool (*rt::g_setting_hidden)(const char* key) = nullptr;
+
 namespace rt::pcset {
 namespace {
 
@@ -380,6 +382,9 @@ void Build() {
     s.text = g_gamertag;
     v.push_back(s);
   }
+  // Rows the running game has no use for (kernel.h g_setting_hidden).
+  if (g_setting_hidden)
+    std::erase_if(v, [](const Setting& s) { return s.kind == Kind::kChoice && g_setting_hidden(s.key); });
 }
 
 Setting* Find(const char* key) {

@@ -110,6 +110,12 @@ bool AddBotInput(XINPUT_GAMEPAD& pad) {
   return false;
 }
 bool CustomMenus() { return false; }
+// PC settings rows that do nothing here (pc_settings.cpp hides them): PLANT
+// WIND sways BF1943's plant vertex shaders (a vec4 mad with c213.w, see
+// spirv_shader_translator.h IsWindConstant); none of Bad Company's has it.
+static const bool g_bc_settings_hidden = (g_setting_hidden = [](const char* key) {
+  return !std::strcmp(key, "wind");
+}, true);
 // The PC settings page in Bad Company's menu look (pc_menu.cpp).
 #if defined(_WIN32) || defined(BF1943_CLIENT)  // (the server has no PC menus)
 static const bool g_bc_menu_look = (pcmenu::SetBadCompanyLook(), true);

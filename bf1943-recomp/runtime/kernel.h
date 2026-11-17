@@ -139,6 +139,9 @@ bool TakeVehicleMouse(double& dx, double& dy, double& idle);
 // The right stick the turret aiming wants (-1...1 as the game reads it), or
 // false (game_patches.cpp sets it; null in Bad Company).
 extern bool (*g_vehicle_mouse_stick)(float* x, float* y);
+// PC settings rows this game has no use for (pc_settings.cpp hides them;
+// null: every row). Bad Company sets it (bfbc1_game.cpp).
+extern bool (*g_setting_hidden)(const char* key);
 extern bool g_plane_mouse_invert;        // PC settings: mouse forward pulls up in planes
 // The local player's vehicle (bots.cpp; none in games without the probe).
 enum LocalVehicleKind { kOnFoot = 0, kDriving = 1, kFlying = 2, kGunner = 3 };
