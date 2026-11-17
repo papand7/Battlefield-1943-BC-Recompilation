@@ -19,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <queue>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -457,6 +458,193 @@ int Route(const float a[3], const float b[3], float* corners, int max, Memory* m
             dtVdist(a, b));
   }
   return k;
+}
+
+// ---- learnt trails (as Bad Company's RecordTrails and RouteNav, bc_bots.cpp) ----
+// <user>/nav/<map>.txt: "x y z" a line, a point a metre along a real
+// player's way on foot, "-" starting a new trail (a respawn, a vehicle, a
+// jump of over 5 m). Loaded as a graph: points linked along each trail and
+// to other trails' points within 2.5 m (height within 1.5 m).
+namespace {
+std::mutex g_trail_mutex;
+struct Trails {
+  std::string map;
+  std::vector<std::array<float, 3>> p;
+  std::vector<std::vector<int>> next;
+  uintmax_t file_size = 0;
+  std::chrono::steady_clock::time_point checked{};
+};
+Trails g_trails;
+std::string g_trail_map;
+
+std::filesystem::path TrailPath(const std::string& map) { return g_user_root / "nav" / (map + ".txt"); }
+
+// (Again when the file has grown, at most every 30 s.)
+void LoadTrails(const std::string& map) {
+  auto now = std::chrono::steady_clock::now();
+  if (map == g_trails.map && now < g_trails.checked) return;
+  std::error_code ec;
+  std::filesystem::path path = TrailPath(map);
+  uintmax_t size = std::filesystem::file_size(path, ec);
+  if (ec) size = 0;
+  if (map == g_trails.map && size == g_trails.file_size) {
+    g_trails.checked = now + std::chrono::seconds(30);
+    return;
+  }
+  Trails t;
+  t.map = map, t.file_size = size, t.checked = now + std::chrono::seconds(30);
+  if (FILE* f = size ? Open(path, "r") : nullptr) {
+    char line[96];
+    int prev = -1;
+    while (fgets(line, sizeof(line), f)) {
+      if (line[0] == '-' && (line[1] == '\n' || line[1] == '\r' || line[1] == 0)) {  // a lone "-" (not -12.3)
+        prev = -1;
+        continue;
+      }
+      std::array<float, 3> q;
+      if (sscanf(line, "%f %f %f", &q[0], &q[1], &q[2]) != 3) continue;
+      t.p.push_back(q);
+      t.next.emplace_back();
+      int i = int(t.p.size()) - 1;
+      if (prev >= 0) t.next[size_t(i)].push_back(prev), t.next[size_t(prev)].push_back(i);
+      prev = i;
+    }
+    fclose(f);
+    // Trails joined where they pass close (a grid of 4 m cells).
+    std::map<std::pair<int, int>, std::vector<int>> cells;
+    auto cell = [&](int i) {
+      return std::make_pair(int(std::floor(t.p[size_t(i)][0] / 4)), int(std::floor(t.p[size_t(i)][2] / 4)));
+    };
+    for (int i = 0; i < int(t.p.size()); ++i) cells[cell(i)].push_back(i);
+    for (int i = 0; i < int(t.p.size()); ++i) {
+      auto [cx, cz] = cell(i);
+      for (int ox = -1; ox <= 1; ++ox)
+        for (int oz = -1; oz <= 1; ++oz) {
+          auto it = cells.find({cx + ox, cz + oz});
+          if (it == cells.end()) continue;
+          for (int j : it->second) {
+            const auto &a = t.p[size_t(i)], &b = t.p[size_t(j)];
+            if (j > i && std::hypot(a[0] - b[0], a[2] - b[2]) < 2.5f && std::fabs(a[1] - b[1]) < 1.5f)
+              t.next[size_t(i)].push_back(j), t.next[size_t(j)].push_back(i);
+          }
+        }
+    }
+    if (!t.p.empty()) RT_INFO("bot nav: %zu trail points learnt on %s (%s)", t.p.size(), map.c_str(), Utf8(path).c_str());
+  }
+  g_trails = std::move(t);
+}
+
+int NearestTrail(const float at[3], float within) {
+  int best = -1;
+  float bd = within;
+  for (int i = 0; i < int(g_trails.p.size()); ++i) {
+    const auto& q = g_trails.p[size_t(i)];
+    float d = std::hypot(q[0] - at[0], q[2] - at[2]);
+    if (d < bd && std::fabs(q[1] - at[1]) < 6.0f) bd = d, best = i;
+  }
+  return best;
+}
+}  // namespace
+
+// Each soldier's trail is kept here and written out whole ("-", then its
+// points) when it ends or has 8 points (the next part starts at its last
+// point; little is lost when the server stops): several soldiers' points
+// written as they come would interleave.
+static std::map<uint32_t, std::vector<std::array<float, 3>>> g_trail_open;
+static void FlushTrail(FILE* f, std::vector<std::array<float, 3>>& t, bool keep_last) {
+  if (t.size() >= 2) {
+    fprintf(f, "-\n");
+    for (const auto& q : t) fprintf(f, "%.2f %.2f %.2f\n", q[0], q[1], q[2]);
+  }
+  if (keep_last && !t.empty()) t.erase(t.begin(), t.end() - 1);
+  else t.clear();
+}
+
+void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos, int count) {
+  std::lock_guard lock(g_trail_mutex);
+  if (map != g_trail_map) g_trail_open.clear(), g_trail_map = map;
+  FILE* f = nullptr;
+  auto file = [&]() {
+    if (!f) {
+      std::error_code ec;
+      std::filesystem::create_directories(TrailPath(map).parent_path(), ec);
+      f = Open(TrailPath(map), "a");
+    }
+    return f;
+  };
+  std::map<uint32_t, bool> here;
+  for (int k = 0; k < count; ++k) {
+    float x = pos[3 * k], y = pos[3 * k + 1], z = pos[3 * k + 2];
+    if (!std::isfinite(x) || !std::isfinite(y) || !std::isfinite(z)) continue;
+    here[ids[k]] = true;
+    auto& t = g_trail_open[ids[k]];
+    if (!t.empty()) {
+      float d = std::hypot(x - t.back()[0], z - t.back()[2]);
+      if (d < 1.0f) continue;
+      if (d > 5.0f && file()) FlushTrail(f, t, false);  // a jump (a respawn, a teleport): a new trail
+    }
+    t.push_back({x, y, z});
+    if (t.size() >= 8 && file()) FlushTrail(f, t, true);
+  }
+  // One not here this time (dead, in a vehicle): its trail ends.
+  for (auto it = g_trail_open.begin(); it != g_trail_open.end();) {
+    if (here.count(it->first)) {
+      ++it;
+      continue;
+    }
+    if (file()) FlushTrail(f, it->second, false);
+    it = g_trail_open.erase(it);
+  }
+  if (f) fclose(f);
+}
+
+int RouteTrails(const std::string& map, const float a[3], const float b[3], float* corners, int max) {
+  std::lock_guard lock(g_trail_mutex);
+  LoadTrails(map);
+  if (g_trails.p.empty() || max <= 0) return 0;
+  int from = NearestTrail(a, 15.0f), to = NearestTrail(b, 30.0f);
+  if (from < 0 || to < 0) return 0;
+  const auto& P = g_trails.p;
+  std::vector<float> cost(P.size(), 1e30f);
+  std::vector<int> came(P.size(), -1);
+  using Item = std::pair<float, int>;
+  std::priority_queue<Item, std::vector<Item>, std::greater<Item>> open;
+  auto h = [&](int i) { return std::hypot(P[size_t(i)][0] - P[size_t(to)][0], P[size_t(i)][2] - P[size_t(to)][2]); };
+  cost[size_t(from)] = 0;
+  open.push({h(from), from});
+  while (!open.empty()) {
+    auto [f, i] = open.top();
+    open.pop();
+    if (i == to) break;
+    if (f - h(i) > cost[size_t(i)] + 1e-3f) continue;  // (a stale entry)
+    for (int j : g_trails.next[size_t(i)]) {
+      float c = cost[size_t(i)] + std::hypot(P[size_t(i)][0] - P[size_t(j)][0], P[size_t(i)][2] - P[size_t(j)][2]);
+      if (c < cost[size_t(j)]) cost[size_t(j)] = c, came[size_t(j)] = i, open.push({c + h(j), j});
+    }
+  }
+  if (came[size_t(to)] < 0 && from != to) return 0;
+  std::vector<int> route;
+  for (int i = to; i >= 0; i = came[size_t(i)]) route.push_back(i);
+  std::reverse(route.begin(), route.end());
+  // Every fourth point (about 4 m apart) and the last, as corners.
+  int k = 0;
+  for (size_t r = 0; r < route.size() && k < max; ++r) {
+    if (r % 4 != 0 && r + 1 != route.size()) continue;
+    memcpy(corners + 3 * k++, P[size_t(route[r])].data(), 12);
+  }
+  static std::string routed;
+  if (k > 0 && routed != map) {
+    routed = map;
+    RT_INFO("bot nav: routing on the trails learnt on %s (the first route: %zu points, %.0f m straight)", map.c_str(),
+            route.size(), dtVdist(a, b));
+  }
+  return k;
+}
+
+bool HaveTrails(const std::string& map) {
+  std::lock_guard lock(g_trail_mutex);
+  LoadTrails(map);
+  return !g_trails.p.empty();
 }
 
 // Whether a soldier can stand there: on the main piece, within 1 m (near height y).

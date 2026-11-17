@@ -1,6 +1,7 @@
 // The bots' navigation mesh: nav/<map>.nav (tools/navgen), routed with Detour.
 // See nav.cpp.
 #pragma once
+#include <cstdint>
 #include <string>
 
 namespace rt::nav {
@@ -18,6 +19,13 @@ int Route(const float a[3], const float b[3], float* corners, int max, Memory* m
 // and up to max corners of a vehicle's route from a to b (0: no mesh, no way).
 bool VehiclesReady(const std::string& map);
 int RouteVehicle(const float a[3], const float b[3], float* corners, int max);
+// Learnt trails (<user>/nav/<map>.txt, as Bad Company's): the soldiers' places
+// on foot (ids and x y z each) appended, a point a metre; a route along them
+// from a to b (up to max corners; 0: no trail near both ends), for when the
+// mesh gives none; whether the map has any.
+void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos, int count);
+int RouteTrails(const std::string& map, const float a[3], const float b[3], float* corners, int max);
+bool HaveTrails(const std::string& map);
 void Block(const float at[3]);  // a polygon a bot can't get onto: off for routes, remembered
 // The main piece: the one most of these places (the flags) are on, not the
 // biggest (on an island map that is the sea floor). Once per map.

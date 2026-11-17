@@ -150,6 +150,10 @@ bot's pad on. Testing switches (environment variables, on the hosting game):
   only that and the result is logged as `scenario: PASS ...` or `FAIL ...` (time limit
   `BF_BOT_SCENARIO_TIME`, default 180 s; `BF_BOT_RESULT=<file>` writes it to a file;
   `BF_BOT_SCENARIO_EXIT=1` ends the run once judged, exit code 0 or 3).
+- Learnt trails (as Bad Company's): a hosting game writes where real players walk to
+  `<user>/nav/<map>.txt` (a point a metre, `-` between trails; `BF_BOT_NAV_RECORD=0`
+  off, `BF_BOT_LEARN_FROM_BOTS=1` counts the bots too, for tests). Where the mesh gives
+  a bot no route (none made yet, or no way on it), it routes along these.
 - `BF_BOT_LOG=<file.csv>`: every bot's position, vehicle and state twice a second, with
   the flags and vehicles; `python bf1943-recomp/tools/bot_paths.py <file.csv>` draws it.
 

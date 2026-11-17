@@ -203,10 +203,13 @@ void BrainLog(const char* text) { RT_INFO("%s", text); }
 
 // The navigation mesh for the brain (World::route, World::block).
 nav::Memory g_nav_memory[kMaxBots];
+std::string g_route_map;  // the map routed on (the director's thread)
 int BrainRoute(int slot, Vec a, Vec b, Vec* corners, int max) {
   float fa[3] = {a.x, a.y, a.z}, fb[3] = {b.x, b.y, b.z};
   static float buf[256 * 3];
   int n = nav::Route(fa, fb, buf, std::min(max, 256), slot >= 0 && slot < kMaxBots ? &g_nav_memory[slot] : nullptr);
+  // No mesh (not made yet) or no way on it: the trails players left.
+  if (n == 0) n = nav::RouteTrails(g_route_map, fa, fb, buf, std::min(max, 256));
   for (int i = 0; i < n; ++i) corners[i] = Vec{buf[3 * i], buf[3 * i + 1], buf[3 * i + 2]};
   return n;
 }
@@ -712,7 +715,8 @@ void StartBotDirector() {
         for (const Point& p : d.points) flags.insert(flags.end(), {p.pos.x, p.pos.y, p.pos.z});
         nav::ChooseMain(flags.data(), int(d.points.size()));
       }
-      w.route = have_mesh ? BrainRoute : nullptr;
+      g_route_map = map;
+      w.route = have_mesh || nav::HaveTrails(map) ? BrainRoute : nullptr;
       w.block = have_mesh ? BrainBlock : nullptr;
       w.vroute = nav::VehiclesReady(map) ? BrainVehicleRoute : nullptr;
       SightForMap(map);
@@ -766,6 +770,25 @@ void StartBotDirector() {
         }
       }
       if (d.now >= next_save) next_save = d.now + 60.0, knowledge::Save();
+      // The ways real players take on foot, twice a second (nav/<map>.txt, as
+      // Bad Company's): the bots route along them where the mesh has no way.
+      // BF_BOT_NAV_RECORD=0 turns it off.
+      static double next_trail = 0;
+      static const bool record = !getenv("BF_BOT_NAV_RECORD") || strcmp(getenv("BF_BOT_NAV_RECORD"), "0");
+      if (record && d.now >= next_trail) {
+        next_trail = d.now + 0.5;
+        static const bool from_bots = getenv("BF_BOT_LEARN_FROM_BOTS") != nullptr;  // (testing)
+        std::vector<uint32_t> ids;
+        std::vector<float> pos;
+        for (const Soldier& s : d.soldiers) {
+          bool bot = false;
+          for (const botapi::BotIO& b : d.bots) bot |= b.soldier == s.obj;
+          if ((bot && !from_bots) || s.vehicle || s.health <= 0) continue;
+          ids.push_back(s.obj);
+          pos.insert(pos.end(), {s.pos.x, s.pos.y, s.pos.z});
+        }
+        nav::RecordTrails(map, ids.data(), pos.data(), int(ids.size()));
+      }
       brain.think(&w);
       for (botapi::BotIO& b : d.bots) {
         const Pad& pad = b.pad;
