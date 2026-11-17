@@ -349,6 +349,14 @@ bool Blocked(uint32_t ip, uint16_t port) {
   return blocked;
 }
 
+int HumanPlayerCount() {
+  std::lock_guard lock(g_mutex);
+  const auto fresh = Clock::now() - std::chrono::seconds(20);  // (a hello every 5 s)
+  int n = 0;
+  for (const auto& [k, p] : g_players) n += p.seen >= fresh;
+  return n;
+}
+
 bool ChatBlocked(uint32_t ip, uint16_t chat_port) {
   if (!g_any_block.load(std::memory_order_relaxed)) return false;
   if (Blocked(ip, 0)) return true;  // (blocks of the whole address)

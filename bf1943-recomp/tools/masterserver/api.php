@@ -67,7 +67,7 @@ function ask_bf_beacon($ip, $port, $tag, $beacon_port) {
         $players = 0;
         $locked = in_array('lock', array_slice($f, 3), true);
         $hardcore = in_array('hardcore', array_slice($f, 3), true);  // hardcore mode (no HUD, fewer hits to kill)
-        if (count($f) >= 5) {  // the optional players/max run
+        if (count($f) >= 5 && ctype_digit($f[3]) && ctype_digit($f[4])) {  // players|max (games from before: "lock|hardcore")
             $players = max(0, min(64, (int)$f[3]));
         } elseif (isset($f[3]) && ($f[3] === 'lock' || $f[3] === '1')) {
             $locked = true;

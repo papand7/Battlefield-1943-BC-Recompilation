@@ -5,6 +5,8 @@
 // server (0.0.0.0:1003) go to the host's address instead (net.cpp
 // FixAnyDestination). On the same PC the joiner's ports are offset, as for
 // --bots.
+#include "admin_server.h"
+#include "bot_players.h"
 #include "kernel.h"
 #include "http.h"
 #include "lan.h"
@@ -23,6 +25,7 @@
 #include <net/if.h>
 #endif
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -214,8 +217,11 @@ void Beacon() {
     for (char& c : shown)
       if (c == '|' || c == '\n' || c == '\r') c = ' ';  // (the reply is split on '|')
     if (shown.size() > 48) shown.resize(48);
+    // "name|map|port|players|max[|lock][|hardcore]": the joiners and bots in the match, and the
+    // 24 the master lists (an older browser reads the port with atoi, which stops at '|').
+    const int players = admin::HumanPlayerCount() + BotPlayerCount() + (!g_dedicated && !g_in_menus ? 1 : 0);
     std::string reply = std::string(g_tag) + "!" + shown + "|" + host_map + "|" + std::to_string(1003 + g_port_offset) +
-                        (password.empty() ? "" : "|lock");
+                        "|" + std::to_string(std::min(players, 99)) + "|24" + (password.empty() ? "" : "|lock");
     // Hardcore: a further field (older games read the port with atoi, which stops at '|').
     if (g_hardcore) reply += "|hardcore";
     sendto(s, reply.data(), int(reply.size()), 0, (sockaddr*)&from, len);
@@ -321,8 +327,22 @@ void Refresh() {
                 int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
                         .count())};
       sv.hardcore = text.find("|hardcore", b) != std::string::npos;
-      const size_t c = text.find('|', b + 1);
-      sv.locked = c != std::string::npos && (text.compare(c + 1, 4, "lock") == 0 || text[c + 1] == '1');
+      // After the port: "players|max" (numbers), then "lock" and "hardcore". An older host sends
+      // "lock" (or "1") right after the port.
+      std::vector<std::string> rest;
+      for (size_t at = b + 1; at != std::string::npos;) {
+        at = text.find('|', at);
+        if (at == std::string::npos) break;
+        size_t e = text.find('|', at + 1);
+        rest.push_back(text.substr(at + 1, e == std::string::npos ? e : e - at - 1));
+        at = e;
+      }
+      const bool numbers = rest.size() >= 2 && !rest[0].empty() && !rest[1].empty() &&
+                           rest[0].find_first_not_of("0123456789") == std::string::npos &&
+                           rest[1].find_first_not_of("0123456789") == std::string::npos;
+      if (numbers) sv.players = atoi(rest[0].c_str());
+      for (size_t i = numbers ? 2 : 0; i < rest.size(); ++i)
+        if (rest[i] == "lock" || (!numbers && i == 0 && rest[i] == "1")) sv.locked = true;
       bool dup = false;
       for (const Server& o : found) dup |= o.address == sv.address && o.port == sv.port;
       // This PC answers on loopback and its LAN address: one entry.

@@ -34,6 +34,8 @@ bool Blocked(uint32_t ip, uint16_t port);
 // admin.cpp: whether a chat packet from this address (network order) and chat
 // port is a kicked or banned player's (dropped, not registered as a peer).
 bool ChatBlocked(uint32_t ip, uint16_t chat_port);
+// Players in the match for the beacon: joiners heard from lately (their hellos).
+int HumanPlayerCount();
 // The chat's packets (admin.cpp). Host: a joiner's hello ("<game port>|<id>|<name>").
 void OnHello(uint32_t ip, uint16_t chat_port, const std::string& body);
 // Joiner: its hello.

@@ -63,12 +63,6 @@ add_custom_command(TARGET bfbc1 POST_BUILD
 # What the bots learned of each map (runtime/bot_knowledge.h, tools/bot_knowledge.py --to data/bot_knowledge).
 add_custom_command(TARGET bfbc1 POST_BUILD
   COMMAND ${CMAKE_COMMAND} -E copy_directory ${BC}/data/bot_knowledge $<TARGET_FILE_DIR:bfbc1>/bot_knowledge)
-# FSR 3.1 frame generation too (bf_fsr3fg.cc).
-if(EXISTS ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll)
-  add_custom_command(TARGET bfbc1 POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll $<TARGET_FILE_DIR:bfbc1>)
-endif()
 # FSR 3.1 frame generation (bf_fsr3fg.cc; tools/fetch_fsr3fg.py, run by xenia_gpu.cmake).
 if(EXISTS ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll)
   add_custom_command(TARGET bfbc1 POST_BUILD
