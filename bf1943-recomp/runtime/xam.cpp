@@ -801,6 +801,8 @@ GUEST_IMPORT(XamInputGetState) {
       }
     }
     RecordPad(s.Gamepad.wButtons);
+    // The scoreboard (kernel.h g_scoreboard_open): up while Back (Tab) is held.
+    g_scoreboard_open = (s.Gamepad.wButtons & XINPUT_GAMEPAD_BACK) != 0;
     // Like XInput, a new packet number only when the state changes: a held key
     // must not look like repeated presses (the scoreboard toggles on each one).
     static std::mutex m;

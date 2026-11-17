@@ -13,6 +13,7 @@ struct Server {
   int ping_ms;
   bool online = false;  // from the master server's list (not this network)
   int players = 0;
+  bool hardcore = false;  // the host's hardcore mode (its beacon says)
 };
 
 // The game's 4-letter tag in browser packets and the beacon's UDP port

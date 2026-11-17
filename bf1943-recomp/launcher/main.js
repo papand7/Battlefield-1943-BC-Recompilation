@@ -289,6 +289,7 @@ async function serve(job, o) {
   if (o.train) args.push('--train', '--speed', '2', '--train-minutes', String(o.trainMinutes));
   else if (o.publish) args.push('--publish');
   if (o.llm) args.push('--bot-llm', 'llm');
+  if (o.hardcore) args.push('--hardcore');
   const python = pythonExe();
 
   if (o.llm && !isFile(path.join(o.tree, 'llm', 'bot_llm.ini'))) {
@@ -368,7 +369,7 @@ ipcMain.handle('server-start', (_, game, c) => {
     ...p, maps, name: String(c.name || '').trim() || 'My Server',
     bots: Math.max(0, Math.min(16, Math.round(+c.bots) || 0)),
     trainMinutes: Math.max(5, Math.min(1440, Math.round(+c.trainMinutes) || 30)),
-    publish: !!c.publish, llm: !!c.llm, train: !!c.train,
+    publish: !!c.publish, llm: !!c.llm, train: !!c.train, hardcore: game === 'bf1943' && !!c.hardcore,
   };
   const s = load();
   save({ ...s, server: { ...s.server, [game]: { ...c, name: o.name, bots: o.bots, trainMinutes: o.trainMinutes } } });

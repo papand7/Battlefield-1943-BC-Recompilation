@@ -285,6 +285,7 @@ xe::ui::GraphicsProvider* g_graphics_provider() { return g_graphics->provider();
 }  // namespace
 
 void SetLook(int look) { xe::gpu::bflook::look = look; }
+void SetHideUi(bool on) { xe::gpu::bfmenu::g_hide_ui = on; }
 void SetPicture(float brightness, float gamma) {
   xe::gpu::bflook::brightness = std::clamp(brightness, -0.3f, 0.3f);
   xe::gpu::bflook::gamma = std::clamp(gamma, 0.7f, 1.3f);

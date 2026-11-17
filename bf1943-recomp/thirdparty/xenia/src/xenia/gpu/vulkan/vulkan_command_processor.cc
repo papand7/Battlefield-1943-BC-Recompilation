@@ -1532,10 +1532,12 @@ void VulkanCommandProcessor::OnGammaRampPWLValueWritten() {
 // bf1943: a 2D menu draw's screen rectangle and colour (bf_menu.h): vertex
 // shaders that fetch FMT_32_32_FLOAT positions from vf0 and transform them by
 // c0, c1 and c3 (dp2add), plus c9 when they add it first.
-static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory& memory,
-                             uint32_t index_count, uint32_t index_base,
-                             bool index_16) {
-  static std::unordered_map<uint64_t, int> kinds;  // 0 not, 1 plain, 2 adds c9
+// Which 2D UI vertex shader (the game's Flash/APT movies: menus, HUD,
+// crosshair) vs is: 0 none, 1 plain, 2 adds c9.
+static int BfMenuShaderKind(const Shader& vs) {
+  static std::mutex mutex;
+  static std::unordered_map<uint64_t, int> kinds;
+  std::lock_guard lock(mutex);
   auto [it, added] = kinds.try_emplace(vs.ucode_data_hash(), 0);
   if (added) {
     const std::string& d = vs.ucode_disassembly();
@@ -1546,7 +1548,14 @@ static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory&
       it->second = d.find(", c9.xyyy") != std::string::npos ? 2 : 1;
     }
   }
-  if (!it->second || index_count == 0 || index_count > 64) return;
+  return it->second;
+}
+
+static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory& memory,
+                             uint32_t index_count, uint32_t index_base,
+                             bool index_16) {
+  const int kind = BfMenuShaderKind(vs);
+  if (!kind || index_count == 0 || index_count > 64) return;
   const auto* c = reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
   const uint32_t* fetch = &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 95 * 2];
   uint32_t base = (fetch[0] >> 2) & 0x07FFFFFF;
@@ -1570,7 +1579,7 @@ static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory&
     uint32_t bx = xe::byte_swap(w[0]), by = xe::byte_swap(w[1]);
     std::memcpy(&px, &bx, 4);
     std::memcpy(&py, &by, 4);
-    if (it->second == 2) px += c[9 * 4], py += c[9 * 4 + 1];
+    if (kind == 2) px += c[9 * 4], py += c[9 * 4 + 1];
     float cx = px * c[0] + py * c[1] + c[3];
     float cy = px * c[4] + py * c[5] + c[7];
     float cw = px * c[12] + py * c[13] + c[15];
@@ -2625,6 +2634,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
     return false;
   }
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
+  // bf1943 hardcore (bf_menu.h g_hide_ui): the game's 2D UI draws (the HUD
+  // and crosshair, in a level with no menu up) are not drawn.
+  if (bfmenu::g_hide_ui.load(std::memory_order_relaxed) && BfMenuShaderKind(*vertex_shader)) {
+    return true;
+  }
   // TODO(Triang3l): If the shader uses memory export, but
   // vertexPipelineStoresAndAtomics is not supported, convert the vertex shader
   // to a compute shader and dispatch it after the draw if the draw doesn't use

@@ -37,6 +37,11 @@ namespace rt {
 uint32_t g_join_address = 0;  // network order: the host's address while joining (0 none)
 uint16_t g_join_port = 0x0000;  // network order: its server port (set by PrepareJoin)
 extern uint32_t g_lan_ip;     // net.cpp
+bool g_hardcore = false;
+float g_hardcore_damage = 2.0f;
+std::atomic<bool> g_hardcore_hud{false};
+bool g_hardcore_supported = false;
+std::atomic<bool> g_scoreboard_open{false};  // (xam.cpp keeps it)
 }
 
 namespace rt::lan {
@@ -105,6 +110,8 @@ void Beacon() {
     int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
     if (n < 5 || memcmp(buf, g_tag, 4) || buf[4] != '?') continue;
     std::string reply = std::string(g_tag) + "!" + g_gamertag + "|" + g_host_map + "|" + std::to_string(1003 + g_port_offset);
+    // Hardcore: a 4th field (older games read the port with atoi, which stops at '|').
+    if (g_hardcore) reply += "|hardcore";
     sendto(s, reply.data(), int(reply.size()), 0, (sockaddr*)&from, len);
   }
 }
@@ -190,6 +197,7 @@ void Refresh() {
       Server sv{text.substr(0, a), text.substr(a + 1, b - a - 1), ip, uint16_t(atoi(text.c_str() + b + 1)),
                 int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
                         .count())};
+      sv.hardcore = text.find("|hardcore", b) != std::string::npos;
       bool dup = false;
       for (const Server& o : found) dup |= o.address == sv.address && o.port == sv.port;
       // This PC answers on loopback and its LAN address: one entry.
@@ -224,8 +232,9 @@ void Host(const std::string& map, int bots) {
   g_host_map = map;
   g_lan_host = true;
   g_bot_count = bots;
+  g_hardcore_hud = g_hardcore;
   if (!g_beacon.exchange(true)) std::thread(Beacon).detach();
-  RT_INFO("lan: hosting %s with %d bots", map.c_str(), bots);
+  RT_INFO("lan: hosting %s with %d bots%s", map.c_str(), bots, g_hardcore ? ", HARDCORE" : "");
   RequestHost();
   StartPublishing();
 }
@@ -305,6 +314,47 @@ void StartBeacon() {
   if (!g_beacon.exchange(true)) std::thread(Beacon).detach();
 }
 
+// A joiner plays by the host's hardcore setting: its beacon (UDP 19430 at the
+// host's address, as a browser asks it) is asked while the level loads, a few
+// times over 15 s; the HUD goes as soon as it answers "hardcore". No answer
+// (a firewall, an older host): the HUD stays.
+static void AskHardcore(uint32_t address) {
+  g_hardcore_hud = false;
+  static std::atomic<int> generation{0};
+  const int mine = ++generation;
+  std::thread([address, mine] {
+    SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if (s == INVALID_SOCKET) return;
+#ifdef _WIN32
+    DWORD timeout = 500;
+#else
+    timeval timeout{0, 500000};
+#endif
+    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+    sockaddr_in to{};
+    to.sin_family = AF_INET;
+    to.sin_port = htons(kBeaconPort);
+    to.sin_addr.s_addr = address;
+    const std::string query = std::string(g_tag) + "?";
+    bool answered = false;
+    for (int tries = 0; tries < 30 && !answered && generation == mine; ++tries) {
+      sendto(s, query.c_str(), 5, 0, (sockaddr*)&to, sizeof(to));
+      char buf[256];
+      sockaddr_in from{};
+      int len = sizeof(from);
+      int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
+      if (n < 5 || memcmp(buf, g_tag, 4) || buf[4] != '!' || from.sin_addr.s_addr != address) continue;
+      buf[n] = 0;
+      answered = true;
+      bool hardcore = std::strstr(buf + 5, "|hardcore") != nullptr;
+      if (generation == mine) g_hardcore_hud = hardcore;
+      RT_INFO("lan: the host's game is %s", hardcore ? "HARDCORE: no HUD or crosshair" : "not hardcore");
+    }
+    if (!answered) RT_INFO("lan: the host's beacon did not answer: playing with the HUD");
+    closesocket(s);
+  }).detach();
+}
+
 // JOIN GAME: the host's map loaded here, the client sent to the host.
 bool PrepareJoin(const std::string& address_port, const std::string& map) {
   // "<ip>[:<port>]": the port is the host's server port (1003 + its port offset).
@@ -322,6 +372,7 @@ bool PrepareJoin(const std::string& address_port, const std::string& map) {
   if (local && g_port_offset == g_base_port_offset) g_port_offset += 10;
   g_join_address = local ? htonl(INADDR_LOOPBACK) : ip.s_addr;
   RT_INFO("lan: joining %s (%s)%s", address.c_str(), map.c_str(), local ? " on this PC" : "");
+  AskHardcore(g_join_address);
   return true;
 }
 bool Join(const std::string& address, const std::string& map) {
