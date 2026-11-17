@@ -437,7 +437,7 @@ function showServer(key) {
   $('srvllm').checked = !!c.llm;
   $('srvtrain').checked = !!c.train;
   $('srvhardcore').checked = !!c.hardcore;
-  $('hardcorerow').style.display = key === 'bf1943' ? '' : 'none';  // (Battlefield 1943's only, so far)
+  $('hardcorerow').style.display = '';  // (both games)
   serverControls();
   refreshServerInfo();
 }

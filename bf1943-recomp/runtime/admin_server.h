@@ -41,6 +41,11 @@ void OnMapChanging(const std::string& map);
 void OnMapReady(const std::string& map);
 // game_patches.cpp (host): the level of a /map is up; tells the joiners.
 void MapReady(const std::string& map);
+// The game's maps for /map (each game defines them: game_patches.cpp,
+// bfbc1_game.cpp): alias, level, alias, level... ending in nullptr (aliases in
+// lower case), and the list the help line shows.
+const char* const* MapAliases();
+const char* MapChoices();
 // game_patches.cpp: a /map by starting the game again on the map (Windows;
 // false if it couldn't: the level is left in this run then).
 bool RestartOnMap(const std::string& map);

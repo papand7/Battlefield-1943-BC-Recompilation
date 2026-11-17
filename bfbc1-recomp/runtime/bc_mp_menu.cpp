@@ -538,8 +538,13 @@ Page g_page = kMain, g_busy_back = kMain;
 int g_sel = 0, g_page_id = 0, g_map = 0;
 std::string g_address;
 int g_weather_sel = 0, g_time_sel = 1;  // host: clear/rain, dawn/day/sunset/night
+int g_bots_sel = 0;       // host: bots to play against (0-16, in steps of 2 from 2)
+int g_hardcore_sel = 0;   // host: 0 off, 1 x2 damage, 2 x3 damage (kernel.h g_hardcore)
+bool g_online_sel = false;  // host: list the game on the master server's list
 const wchar_t* const kTimeNames[] = {L"DAWN", L"DAY", L"SUNSET", L"NIGHT"};
 const char* const kTimeHours[] = {"6.5", "12", "18", "23"};
+const wchar_t* const kHardcoreNames[] = {L"OFF", L"ON (2X DAMAGE)", L"ON (3X DAMAGE)"};
+constexpr int kMaxBots = 16;
 std::string g_name, g_password;  // the game's name and the password players need
 std::wstring Masked(const std::string& s) { return std::wstring(s.size(), L'*'); }
 std::wstring g_note;  // a line for the panel (an error)
@@ -586,12 +591,17 @@ View Build() {
                  {L"PASSWORD", Masked(g_password), false, g_sel == 2},
                  {L"WEATHER", g_weather_sel ? L"RAIN" : L"CLEAR", true, g_sel == 3},
                  {L"TIME OF DAY", kTimeNames[g_time_sel], true, g_sel == 4},
+                 {L"BOTS", g_bots_sel ? std::to_wstring(g_bots_sel) : std::wstring(L"NONE"), true},
+                 {L"HARDCORE", kHardcoreNames[g_hardcore_sel], true},
+                 {L"LIST ON THE INTERNET", g_online_sel ? L"YES" : L"NO", true},
                  {L"START GAME"},
                  {L"BACK"}};
       v.head = kMaps[g_map].name, v.sub = L"GOLD RUSH";
       if (*kMaps[g_map].desc) v.lines = {kMaps[g_map].desc, L""};
       v.lines.push_back(L"Players on your network will see this game in their SERVER BROWSER.");
       v.lines.push_back(L"SERVER NAME is what it is listed as. With a PASSWORD, only players who type it can join.");
+      v.lines.push_back(L"BOTS are computer players, half on each team. HARDCORE: no HUD or crosshair for anyone in "
+                        L"your game, and soldiers die in fewer hits.");
       v.lines.push_back(L"");
       v.lines.push_back(player);
       break;
@@ -655,6 +665,16 @@ void StartBusy(const std::wstring& text, Page back) {
   Go(kBusy);
 }
 
+// The bots row: none, then 2, 4... up to the most (half on each team).
+int StepBots(int dir) {
+  int n = g_bots_sel + dir * 2;
+  if (g_bots_sel == 0 && dir < 0) n = kMaxBots;
+  if (n > kMaxBots) n = 0;
+  if (n < 0) n = 0;
+  if (n == 0 && dir > 0 && g_bots_sel == 0) n = 2;
+  return n;
+}
+
 void HostGame() {
   const Map& m = kMaps[g_map];
   RT_INFO("mp menu: hosting %s as '%s'%s", m.level, g_name.c_str(), g_password.empty() ? "" : " with a password");
@@ -662,9 +682,12 @@ void HostGame() {
   g_server_password = g_password;
   g_weather = g_weather_sel;
   g_time_of_day = float(atof(kTimeHours[g_time_sel]));
+  g_hardcore = g_hardcore_sel > 0;
+  if (g_hardcore) g_hardcore_damage = float(g_hardcore_sel + 1);
+  lan::SetPublish(g_online_sel);
   xgpu::SetWeather(float(g_weather), g_time_of_day);
   RT_INFO("mp menu: weather %s, time %.1f h for everyone joining", g_weather ? "rain" : "clear", g_time_of_day);
-  lan::Host(m.level, 0);
+  lan::Host(m.level, g_bots_sel);
   StartBusy(L"STARTING GAME", kHost);
 }
 
@@ -692,8 +715,11 @@ void Accept() {
       if (g_sel == 0) g_map = (g_map + 1) % kMapCount;
       else if (g_sel == 3) g_weather_sel = (g_weather_sel + 1) % 2;
       else if (g_sel == 4) g_time_sel = (g_time_sel + 1) % 4;
-      else if (g_sel == 5) HostGame();
-      else if (g_sel == 6) Go(kMain, 0);
+      else if (g_sel == 5) g_bots_sel = StepBots(1);
+      else if (g_sel == 6) g_hardcore_sel = (g_hardcore_sel + 1) % 3;
+      else if (g_sel == 7) g_online_sel = !g_online_sel;
+      else if (g_sel == 8) HostGame();
+      else if (g_sel == 9) Go(kMain, 0);
       break;
     case kBrowser: {
       int ns = int(g_servers.size());
@@ -739,7 +765,7 @@ void Back() {
 int ItemCount() {
   switch (g_page) {
     case kMain: return 4;
-    case kHost: return 7;
+    case kHost: return 10;
     case kBrowser: return int(g_servers.size()) + 2;
     case kAddress: return 4;
     default: return 0;
@@ -901,6 +927,9 @@ bool Update(const XINPUT_GAMEPAD& pad) {
   if (dh && g_page == kHost && g_sel == 0) g_map = (g_map + dh + kMapCount) % kMapCount;
   if (dh && g_page == kHost && g_sel == 3) g_weather_sel = (g_weather_sel + dh + 2) % 2;
   if (dh && g_page == kHost && g_sel == 4) g_time_sel = (g_time_sel + dh + 4) % 4;
+  if (dh && g_page == kHost && g_sel == 5) g_bots_sel = StepBots(dh);
+  if (dh && g_page == kHost && g_sel == 6) g_hardcore_sel = (g_hardcore_sel + dh + 3) % 3;
+  if (dh && g_page == kHost && g_sel == 7) g_online_sel = !g_online_sel;
   if (accept) Accept();
   else if (back) Back();
   if (g_open) Show(Build());

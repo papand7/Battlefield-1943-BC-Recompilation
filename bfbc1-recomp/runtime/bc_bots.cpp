@@ -32,6 +32,13 @@
 #include "bot_knowledge.h"
 #include "bot_llm.h"
 #include "bot_tuning.h"
+namespace rt {  // (bot_players.h has them, but also names of its own that clash here)
+int BotPlayerCount();
+uint32_t BotPlayerSoldier(int i);
+void SetBotBenched(int i, bool benched);
+bool BotBenched(int i);
+int SetActiveBots(int n);
+}  // namespace rt
 #include "bots/bot_api.h"
 #include "nav_autogen.h"
 #include "DetourNavMesh.h"
@@ -1685,6 +1692,9 @@ struct Bot {
   // time its fire hurt someone (822D1AA0) and where (the chest).
   int64_t shot_at = 0, hit_at = 0;
   float hit_pos[3] = {0, 0, 0};
+  // The host's /kick BOT n and /bots n (admin_server.cpp): it stays joined but
+  // its soldier is killed and it is not deployed again.
+  bool benched = false;
 };
 static std::deque<Bot> g_bots;
 // Self-play tuning (bot_tuning.h): bf1943's settings (bots/bot_api.h's Tune)
@@ -1726,6 +1736,24 @@ static Bot* BotWithSpawner(uint32_t sp) {
   for (Bot& b : g_bots)
     if (b.spawner && b.spawner == sp) return &b;
   return nullptr;
+}
+// The players the bots are, for the host's admin commands (admin_server.cpp),
+// the replay's camera (replay.cpp) and the bots' count: the first one joined is
+// BOT 1 (index 0). Benched: killed and not deployed again (the deploy update).
+int rt::BotPlayerCount() { return int(g_bots.size()); }
+uint32_t rt::BotPlayerSoldier(int i) {
+  if (i < 0 || i >= int(g_bots.size())) return 0;
+  uint32_t so = g_bots[i].soldier;
+  return so && IsCommitted(so + 0x400) && Ld32(so) == 0x820118D0 && LdF(so + 0x3C) > 0 ? so : 0;
+}
+void rt::SetBotBenched(int i, bool benched) {
+  if (i >= 0 && i < int(g_bots.size())) g_bots[i].benched = benched;
+}
+bool rt::BotBenched(int i) { return i >= 0 && i < int(g_bots.size()) && g_bots[i].benched; }
+int rt::SetActiveBots(int n) {
+  int playing = 0;
+  for (int i = 0; i < int(g_bots.size()); ++i) playing += !(g_bots[i].benched = i >= n);
+  return playing;
 }
 // A bot's soldier's input state: looked for once a second until found.
 static void FindBotInputs() {
@@ -4568,6 +4596,42 @@ struct DamageNote {
     botllm::Killed(pos[0], pos[2], int(team), by && enemy ? by->index : -1);
   }
 };
+// Hardcore (kernel.h g_hardcore, --hardcore-damage): 822D1AA0(soldier, record,
+// giver) with the record's amount (+28) times the multiplier for that call, then
+// put back (the caller may use its record again). Only a live soldier's hit.
+extern "C" PPC_FUNC(__imp__sub_822D1AA0);
+static void HardcoreHit(PPCContext& ctx, uint8_t* base) {
+  const uint32_t soldier = ctx.r3.u32, record = ctx.r4.u32;
+  const bool scale = g_hardcore && g_hardcore_damage != 1.0f && Ptr(soldier) && IsCommitted(soldier + 0x400) &&
+                     Ld32(soldier) == 0x820118D0 && LdF(soldier + 0x3C) > 0 && Ptr(record) && IsCommitted(record + 0x2C);
+  const float hp_before = scale ? LdF(soldier + 0x3C) : 0.0f;
+  const uint32_t word = scale ? Ld32(record + 0x28) : 0;
+  if (scale) {
+    float amount;
+    memcpy(&amount, &word, 4);
+    amount *= g_hardcore_damage;
+    uint32_t u;
+    memcpy(&u, &amount, 4);
+    St32(record + 0x28, u);
+  }
+  __imp__sub_822D1AA0(ctx, base);
+  if (!scale) return;
+  St32(record + 0x28, word);
+  // The first 40 kills: how many hits each soldier took (the evidence for the multiplier).
+  static std::map<uint32_t, int> hits;
+  static int kills = 0;
+  int n = ++hits[soldier];
+  if (LdF(soldier + 0x3C) > hp_before + 0.01f) hits[soldier] = n = 1;  // (healed since: counted anew)
+  if (LdF(soldier + 0x3C) <= 0) {
+    hits.erase(soldier);
+    if (kills++ < 40) {
+      float d;
+      memcpy(&d, &word, 4);
+      RT_INFO("damage: soldier %08X killed after %d hit%s (damage %.1f x%.2f a hit)", soldier, n, n == 1 ? "" : "s", d,
+              g_hardcore_damage);
+    }
+  }
+}
 static void DamageSoldier(PPCContext& ctx, uint8_t* base, uint32_t soldier, float amount, uint32_t attacker,
                           bool shot) {
   if (!IsCommitted(soldier + 0x400) || Ld32(soldier) != 0x820118D0 || LdF(soldier + 0x3C) <= 0) return;
@@ -4586,7 +4650,7 @@ static void DamageSoldier(PPCContext& ctx, uint8_t* base, uint32_t soldier, floa
   PPCContext c = ctx;
   c.r3.u64 = soldier, c.r4.u64 = record, c.r5.u64 = giver;
   DamageNote note(soldier, giver, shot);
-  __imp__sub_822D1AA0(c, base);
+  HardcoreHit(c, base);  // (a bot's hit is a hit like any other: hardcore scales it)
   note.Done();
   if (!was.empty()) {
     std::string d;
@@ -4704,6 +4768,13 @@ PPC_FUNC(sub_823D1DD0) {
     if (!b.spawner) continue;
     uint32_t so = b.soldier;
     bool alive = so && IsCommitted(so + 0x400) && Ld32(so) == 0x820118D0 && LdF(so + 0x3C) > 0;
+    if (b.benched) {  // (/kick BOT n, /bots n: its soldier killed; it is not deployed again)
+      if (alive) {
+        DamageSoldier(ctx, base, so, 10000.0f, 0, false);
+        RT_INFO("bot %d: benched, its soldier %08X killed", b.index, so);
+      }
+      continue;
+    }
     if (alive) continue;
     // A soldier is made here, on the thread running this update: one without
     // an allocator of its own (a dedicated server's worker) crashed in it.
@@ -5187,7 +5258,7 @@ PPC_FUNC(sub_822D1AA0) {
     }
   }
   DamageNote note(ctx.r3.u32, ctx.r5.u32, true);
-  __imp__sub_822D1AA0(ctx, base);
+  HardcoreHit(ctx, base);
   note.Done();
 }
 
