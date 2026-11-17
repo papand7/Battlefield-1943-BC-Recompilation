@@ -1013,6 +1013,7 @@ void Activate(Setting& s) {
           g_status = lan::JoinError();
           g_dirty = true;
         } else {
+          RT_INFO("menus: join: '%s' is not an address", PageText("address").c_str());
           g_status = L"That is not an address: type one like 192.168.1.20 (or 192.168.1.20:1003).";
           g_dirty = true;
         }
@@ -1160,6 +1161,16 @@ int Key(Action action, int slot) {
 
 bool IsOpen() { return g_open; }
 bool WaitRelease() { return g_wait_release; }
+const char* Screen() {
+  if (!g_open) return "";
+  switch (g_mode) {
+    case kModeMain: return "main";
+    case kModeHost: return "host";
+    case kModeJoin: return "join";
+    case kModePause: return "pause";
+    default: return "settings";
+  }
+}
 
 namespace {
 // The join page: the games found, then refresh and an address to type.
@@ -1190,7 +1201,9 @@ void BuildJoinRows() {
     s.label = labels[k].c_str();
     s.desc = descs[k].c_str();
     s.names = {MapName(sv.map)};
-    s.address = sv.address, s.map = sv.map, s.locked = sv.locked;
+    // With its port: a host with another port offset (a second copy on its PC,
+    // a server's --port-offset) listens elsewhere than the usual 1003.
+    s.address = sv.port ? sv.address + ":" + std::to_string(sv.port) : sv.address, s.map = sv.map, s.locked = sv.locked;
     g_join_rows.push_back(s);
     ++k;
   }
@@ -1571,13 +1584,14 @@ bool Update(HWND__* window, bool title_passed) {
       } else if (vk == VK_BACK) {
         if (!s->text.empty()) s->text.pop_back();
         s->touched = true;
-      } else if (s->text.size() < 15) {
+      } else if (s->text.size() < (std::strcmp(s->key, "address") ? 15u : 21u)) {  // (an address: a.b.c.d:port)
         char c = 0;
         if (vk >= 'A' && vk <= 'Z') c = char(shift ? vk : vk + 32);
         else if (vk >= '0' && vk <= '9') c = char(vk);
         else if (vk == VK_SPACE) c = ' ';
         else if (vk == VK_OEM_MINUS) c = shift ? '_' : '-';
         else if (vk == VK_OEM_PERIOD) c = '.';
+        else if (vk == VK_OEM_1 && shift) c = ':';  // (the address's port)
         if (c) s->text += c, s->touched = true;
       }
       changed = true;

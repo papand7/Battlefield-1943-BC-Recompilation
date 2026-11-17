@@ -113,6 +113,9 @@ struct World {
   // --train: a server only bots play on; asking about medium situations too
   // (kind 5: where to fight a new enemy from).
   bool training;
+  // The jeeps' and tanks' mesh (nav/<map>.vnav; null without one): up to max
+  // corners of a vehicle's route from a to b (0: no way).
+  int (*vroute)(Vec a, Vec b, Vec* corners, int max);
 };
 
 using ThinkFn = void (*)(World*);

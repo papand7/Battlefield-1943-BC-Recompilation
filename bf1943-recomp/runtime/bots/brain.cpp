@@ -113,7 +113,8 @@ struct Bot {
   int route_n = 0, route_i = 0;
   double route_t = 0;
   Vec route_goal;
-  Vec nav_stuck_at;  // where it last got stuck on a route
+  bool route_vehicle = false;  // the route is on the vehicles' mesh (World::vroute), not the soldiers'
+  Vec nav_stuck_at; // where it last got stuck on a route
   int exit_phase = 0;  // 1: to the exit's spot in the water, 2: up it
   Vec land_exit;          // a way up worked out from the terrain (LandExit), and when
   double land_exit_t = -100, land_try_t = -100;
@@ -451,13 +452,30 @@ struct Brain {
   // goal itself without a mesh or a way.
   Vec NextOnRoute(BotIO& io, Bot& b, const Soldier& me, Vec goal) {
     if (!w.route) return goal;
-    if (b.route_t == 0 || w.now - b.route_t > 5.0 || Dist2D(goal, b.route_goal) > 3.0f) {
+    if (b.route_t == 0 || b.route_vehicle || w.now - b.route_t > 5.0 || Dist2D(goal, b.route_goal) > 3.0f) {
       b.route_n = w.route(io.slot, me.pos, goal, b.route, Bot::kCorners);
       b.route_i = 0;
       b.route_t = w.now;
       b.route_goal = goal;
+      b.route_vehicle = false;
     }
     while (b.route_i < b.route_n && Dist2D(me.pos, b.route[b.route_i]) < 1.5f) ++b.route_i;
+    return b.route_i < b.route_n ? b.route[b.route_i] : goal;
+  }
+
+  // The same for a jeep or tank on the vehicles' mesh (as Bad Company's
+  // RouteVehicle): planned again every 8 s or when the goal moves, a corner
+  // passed within 6 m. The goal itself without the mesh or a way.
+  Vec NextOnVehicleRoute(Bot& b, Vec pos, Vec goal) {
+    if (!w.vroute) return goal;
+    if (!b.route_vehicle || b.route_t == 0 || w.now - b.route_t > 8.0 || Dist2D(goal, b.route_goal) > 3.0f) {
+      b.route_n = w.vroute(pos, goal, b.route, Bot::kCorners);
+      b.route_i = 0;
+      b.route_t = w.now;
+      b.route_goal = goal;
+      b.route_vehicle = true;
+    }
+    while (b.route_i < b.route_n && Dist2D(pos, b.route[b.route_i]) < 6.0f) ++b.route_i;
     return b.route_i < b.route_n ? b.route[b.route_i] : goal;
   }
 
@@ -864,9 +882,18 @@ struct Brain {
         // in the bot's state, to read off the log which one moves the vehicle.
         static const bool probe = getenv("BF_BOT_INPUT_PROBE") != nullptr;
         if (probe) {
-          static const char* kTry[] = {"lt", "rt", "ly+", "ly-", "ry+", "ry-", "lb", "rb", "x", "y"};
-          int k = int((w.now - b.drive_since) / 4.0) % 10;
+          // (lt+...: the throttle with a stick, which way it steers)
+          // (the throttle let go first: one held while getting in isn't taken)
+          static const char* kTry[] = {"ry+", "lt", "lt+lx+", "lt+lx-", "lt+rx+", "lt+rx-", "rt", "ly+",
+                                       "ly-", "ry-", "lb", "rb", "x", "y"};
+          constexpr int kTries = int(sizeof(kTry) / sizeof(kTry[0]));
+          int k = int((w.now - b.drive_since) / 4.0) % kTries;
           std::string x = kTry[k];
+          if (x.rfind("lt+", 0) == 0) {
+            cmd.triggers = 255u;
+            float s = x.back() == '+' ? 1.0f : -1.0f;
+            (x[3] == 'l' ? cmd.lx : cmd.rx) = s;
+          }
           if (x == "lt") cmd.triggers = 255u;
           if (x == "rt") cmd.triggers = 255u << 8;
           if (x == "ly+") cmd.ly = 1;
@@ -897,6 +924,7 @@ struct Brain {
           b.reverse_until = w.now + 2.5;
           b.veer_until = w.now + 9.0;
           b.boat_moved = w.now + 2.5;
+          b.route_t = 0;  // (a new route from where it backs off to)
           return true;
         }
         if ((b.boat_travel > (b.ride_land ? 15.0f : 30.0f) && stalled) || Dist2D(pos, goal) < arrive ||
@@ -919,7 +947,10 @@ struct Brain {
           cmd.buttons |= kA;
           return true;
         }
-        float want = std::atan2(goal.x - pos.x, goal.z - pos.z) + (w.now < b.veer_until ? b.veer : 0.0f);
+        // A jeep or tank: along its route on the vehicles' mesh (round water,
+        // cliffs and buildings), when there is one; a landing craft straight.
+        Vec toward = b.ride_land ? NextOnVehicleRoute(b, pos, goal) : goal;
+        float want = std::atan2(toward.x - pos.x, toward.z - pos.z) + (w.now < b.veer_until ? b.veer : 0.0f);
         float e = Wrap(want - b.boat_heading);
         // The controls (the game's default vehicle layout): LT throttle, LB
         // brake, the left stick steers. A landing craft on a carrier first

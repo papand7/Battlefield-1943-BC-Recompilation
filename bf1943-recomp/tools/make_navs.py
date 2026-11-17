@@ -9,6 +9,8 @@ each PC makes its own, once per map.
 
 Per map, only the files missing in --nav-dir are made (--force: all of them):
   bf1943  <map>.nav    the soldiers' mesh (runtime/bots/nav.cpp)
+          <map>.vnav   the jeeps' and tanks' mesh (cells 0.5 m, radius 2 m, climb 0.6 m, slopes 35 degrees;
+                       no .hf: its bots read the terrain's heights from the level's collision)
   bfbc1   <map>.nav    the soldiers' mesh (cells 0.2 m, radius 0.4 m)
           <map>.vnav   the vehicles' mesh (cells 0.4 m, radius 2 m, climb 0.6 m, slopes 35 degrees)
           <map>.hf     the terrain's heights (the bots' line of sight)
@@ -48,7 +50,7 @@ EXE_SUFFIX = '.exe' if WINDOWS else ''
 TITLES = {
     'bf1943': {
         'maps': ['Wake_island_s', 'Iwo_Jima_s', 'Guadal_Canal'],
-        'files': ['.nav'],
+        'files': ['.nav', '.vnav'],
         # Coral Sea: air only (no flags, nothing to walk on): no mesh to make.
         'no_mesh': {'coral_sea'},
     },
@@ -411,9 +413,17 @@ def make_map(a, m, navgen, scratch, job):
             if title == 'bf1943':
                 # As tools/make_navmesh.py --live: the terrain in 2 m steps, navgen's soldier.
                 ground(hf, area, 2.0, ground_obj)
-                tmp = os.path.join(work, m + '.nav')
-                run_navgen(navgen, tmp, [ground_obj, live], area, [])
-                put(tmp, '.nav')
+                if '.nav' in meshes:
+                    tmp = os.path.join(work, m + '.nav')
+                    run_navgen(navgen, tmp, [ground_obj, live], area, [])
+                    put(tmp, '.nav')
+                if '.vnav' in meshes:
+                    # The jeeps' and tanks' mesh, as Bad Company's (a vehicle's size), in
+                    # 0.5 m cells: the islands are bigger than Bad Company's maps.
+                    tmp = os.path.join(work, m + '.vnav')
+                    run_navgen(navgen, tmp, [ground_obj, live], area,
+                               ['--cell', '0.5', '--radius', '2.0', '--climb', '0.6', '--slope', '35'])
+                    put(tmp, '.vnav')
             else:
                 # Bad Company: the terrain at its own resolution. The vehicles' mesh over
                 # the same play area (the crates' extent and 350 m: tools' "+150" on the

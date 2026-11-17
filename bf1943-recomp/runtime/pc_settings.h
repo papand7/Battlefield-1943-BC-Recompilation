@@ -25,6 +25,9 @@ int Key(Action action, int slot);
 bool IsOpen();
 // A key closed the page and is still held: the game gets nothing yet.
 bool WaitRelease();
+// The page up now: "main", "host", "join", "settings", "pause", or "" (none);
+// for the test automation (BF_AUTO_MP, xam.cpp).
+const char* Screen();
 void Open();
 // The main menu's HOST GAME and JOIN GAME pages (lan.cpp).
 void OpenHost();

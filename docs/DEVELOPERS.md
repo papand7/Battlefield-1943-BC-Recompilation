@@ -155,6 +155,10 @@ bot's pad on. Testing switches (environment variables, on the hosting game):
   only that and the result is logged as `scenario: PASS ...` or `FAIL ...` (time limit
   `BF_BOT_SCENARIO_TIME`, default 180 s; `BF_BOT_RESULT=<file>` writes it to a file;
   `BF_BOT_SCENARIO_EXIT=1` ends the run once judged, exit code 0 or 3).
+- Learnt trails (as Bad Company's): a hosting game writes where real players walk to
+  `<user>/nav/<map>.txt` (a point a metre, `-` between trails; `BF_BOT_NAV_RECORD=0`
+  off, `BF_BOT_LEARN_FROM_BOTS=1` counts the bots too, for tests). Where the mesh gives
+  a bot no route (none made yet, or no way on it), it routes along these.
 - `BF_BOT_LOG=<file.csv>`: every bot's position, vehicle and state twice a second, with
   the flags and vehicles; `python bf1943-recomp/tools/bot_paths.py <file.csv>` draws it.
 - `BF_BOT_NO_SQUADS=1`: turn squads off (the bots of a team go in fours, the first
@@ -171,6 +175,31 @@ set BF_BOT_LOG=board.csv
 build/game/bf1943.exe --dedicated --bots 1 --host-map Wake_island_s --user userdata_test
 python tools/bot_paths.py board.csv
 ```
+
+The menus, unattended (`BF_AUTO_MP=1`, as Bad Company's): the title and the game's first
+notices are passed, then each line of `BF_AUTO_MP_FILE` (default `auto_steps.txt`, read as
+it grows) is one step, run when the last is done: keys (`up`, `down`, `left`, `right`,
+`enter`, `back`, `esc`), `type:<text>`, `key:<vk>[:<ms>]`, `wait[:<s>]`, and waits for a
+state instead of a time: `screen:<main|host|join|settings|pause|none>[:<s>]`, `level[:<s>]`,
+`menus[:<s>]`; each is logged as `auto mp: ...` (`timed out` if its state never came).
+Hosting Wake Island and spawning (Enter at the loading screen, else it autokicks; the
+last two lines repeated a few times, as the load takes a while):
+
+```
+enter
+screen:host
+down
+down
+down
+enter
+level
+wait:6
+enter
+```
+
+Joining by address: `down`, `enter`, `screen:join`, `wait:6`, `up` three times (the
+address row, counted from the bottom), `enter`, `type:192.168.1.20:1003`, `enter`,
+`down`, `down`, `enter`, `level`.
 
 Vehicles (`BF_BOT_NO_VEHICLES` turns them off):
 - Controls, as the game's default layout: LT throttle (it also lets a landing craft down
@@ -209,7 +238,8 @@ found through their RTTI with `BF_FIND_VTABLE=hkRigidBody,hkWorld`).
 briefly as a dedicated server (`BF_BOT_DUMP_COLLISION`, a temporary `--user`, no bots,
 `BF_MAKE_NAVS_CHILD=1`), stops that process when the play area is logged, adds the
 terrain and runs `navgen` (built by the launcher's setup and `build_linux.sh`, next to
-the exe and in `build/navgen`). It makes only the files missing (Bad Company: `.nav`,
+the exe and in `build/navgen`). It makes only the files missing (BF1943: `.nav` and
+`.vnav`, the jeeps' and tanks' mesh, routed with `World::vroute`; Bad Company: `.nav`,
 `.vnav`, `.hf`), about a minute and a half per map:
 
 ```
