@@ -1617,7 +1617,7 @@ struct Bot {
   // 0 none) at gadget_target (a soldier, who had gadget_health), then the next
   // one not before gadget_next.
   int64_t gadget_at = 0, gadget_next = 0, gadget_checked = 0;
-  uint32_t gadget_target = 0;
+  uint32_t gadget_target = 0, gadget_soldier = 0;  // (gadget_soldier: the bot's soldier that throws)
   bool gadget_counted = false;
   float gadget_health = 0, gadget_pos[3] = {0, 0, 0};
   uint32_t use_entity = 0;  // an interaction to use (arm, defuse), from the input copy hook
@@ -1697,6 +1697,9 @@ struct Bot {
   bool benched = false;
 };
 static std::deque<Bot> g_bots;
+// Taken where the game thread adds to g_bots and where other threads (the
+// admin's commands, the replay) read it: rt::BotPlayerCount and the rest.
+static std::mutex g_bots_mutex;
 // Self-play tuning (bot_tuning.h): bf1943's settings (bots/bot_api.h's Tune)
 // where this brain has the same number, with its own numbers as the defaults:
 // engage_range 70 (enemies within), close_in 30 (farther: it walks at them;
@@ -1740,17 +1743,30 @@ static Bot* BotWithSpawner(uint32_t sp) {
 // The players the bots are, for the host's admin commands (admin_server.cpp),
 // the replay's camera (replay.cpp) and the bots' count: the first one joined is
 // BOT 1 (index 0). Benched: killed and not deployed again (the deploy update).
-int rt::BotPlayerCount() { return int(g_bots.size()); }
+// (Called from other threads: g_bots_mutex keeps the list from growing under them.)
+int rt::BotPlayerCount() {
+  std::lock_guard lock(g_bots_mutex);
+  return int(g_bots.size());
+}
 uint32_t rt::BotPlayerSoldier(int i) {
-  if (i < 0 || i >= int(g_bots.size())) return 0;
-  uint32_t so = g_bots[i].soldier;
+  uint32_t so;
+  {
+    std::lock_guard lock(g_bots_mutex);
+    if (i < 0 || i >= int(g_bots.size())) return 0;
+    so = g_bots[i].soldier;
+  }
   return so && IsCommitted(so + 0x400) && Ld32(so) == 0x820118D0 && LdF(so + 0x3C) > 0 ? so : 0;
 }
 void rt::SetBotBenched(int i, bool benched) {
+  std::lock_guard lock(g_bots_mutex);
   if (i >= 0 && i < int(g_bots.size())) g_bots[i].benched = benched;
 }
-bool rt::BotBenched(int i) { return i >= 0 && i < int(g_bots.size()) && g_bots[i].benched; }
+bool rt::BotBenched(int i) {
+  std::lock_guard lock(g_bots_mutex);
+  return i >= 0 && i < int(g_bots.size()) && g_bots[i].benched;
+}
 int rt::SetActiveBots(int n) {
+  std::lock_guard lock(g_bots_mutex);
   int playing = 0;
   for (int i = 0; i < int(g_bots.size()); ++i) playing += !(g_bots[i].benched = i >= n);
   return playing;
@@ -2900,6 +2916,7 @@ static void VehicleUpdate(PPCContext& ctx, uint8_t* base, Bot& b) {
   if (b.enter_vehicle) {
     uint32_t v = b.enter_vehicle;
     b.enter_vehicle = 0;
+    b.gadget_at = 0, b.gadget_target = 0, b.gadget_counted = false;  // (a medkit throw: dropped)
     enter(b.spawner, v, b.enter_seat);
     RT_INFO("bot %d: into %s %08X, seat %d", b.index, VehicleKind(v).c_str(), v, b.enter_seat);
   }
@@ -3690,6 +3707,9 @@ static void BotBrain(Bot& b, uint32_t in) {
   bool gadget_on = false;
   float gadget_yaw = 0, gadget_pitch = 0;
   static const bool no_gadgets = getenv("BF_BOT_NO_GADGETS") != nullptr;
+  // Dead, respawned (another soldier) or in a vehicle: a throw in progress is dropped.
+  if (b.gadget_at && (b.in_vehicle || so != b.gadget_soldier || LdF(so + 0x3C) <= 0))
+    b.gadget_at = 0, b.gadget_target = 0, b.gadget_counted = false;
   if (!no_gadgets && b.kit_class && !strcmp(b.kit_class, "Support") && !b.in_vehicle) {
     if (!b.gadget_at && !b.enemy && now >= b.gadget_next && now - b.gadget_checked > 700 && LdF(so + 0x3C) > 0) {
       b.gadget_checked = now;
@@ -3704,7 +3724,7 @@ static void BotBrain(Bot& b, uint32_t in) {
         if (o == so ? h < limit - 20.0f : d < 9.0f) pick = o, worst = h;
       }
       if (pick) {
-        b.gadget_at = now, b.gadget_target = pick, b.gadget_health = worst;
+        b.gadget_at = now, b.gadget_target = pick, b.gadget_health = worst, b.gadget_soldier = so;
         for (int i = 0; i < 3; ++i) b.gadget_pos[i] = LdF(pick + 0x200 + 4 * i);
         RT_INFO("bot %d: medkit for %s %08X (health %.0f, %.1f m)", b.index, pick == so ? "itself" : "a teammate", pick,
                 worst, std::hypot(b.gadget_pos[0] - x, b.gadget_pos[2] - z));
@@ -3728,9 +3748,11 @@ static void BotBrain(Bot& b, uint32_t in) {
         set(0x94, gadget_pitch);
       } else if (t > 3000 && !b.gadget_counted) {
         // How many bags there are now (the class's vtable is found from an instance in the heaps).
+        // BF_BOT_GADGET_SCAN=1 only (testing): the scan reads the whole heap.
         b.gadget_counted = true;
+        static const bool scan = getenv("BF_BOT_GADGET_SCAN") && atoi(getenv("BF_BOT_GADGET_SCAN")) == 1;
         static uint32_t bag_vt = 0;
-        if (!bag_vt) {
+        if (scan && !bag_vt) {
           std::set<uint32_t> seen;
           for (uint64_t page = 0x40000000; page < 0xC0000000 && !bag_vt; page += 0x1000) {
             if (page >= 0x80000000 && page < 0xA0000000) continue;
@@ -3742,8 +3764,9 @@ static void BotBrain(Bot& b, uint32_t in) {
             }
           }
         }
-        RT_INFO("bot %d: medkit: %zu bag(s) in the world (ServerMedicBagEntity %08X)", b.index,
-                bag_vt ? Scan(bag_vt).size() : size_t(0), bag_vt);
+        if (scan)
+          RT_INFO("bot %d: medkit: %zu bag(s) in the world (ServerMedicBagEntity %08X)", b.index,
+                  bag_vt ? Scan(bag_vt).size() : size_t(0), bag_vt);
       } else if (t > 3000 + 4000) {
         // 4 s after it: did the health rise?
         uint32_t tgt = b.gadget_target;
@@ -4618,8 +4641,11 @@ static void HardcoreHit(PPCContext& ctx, uint8_t* base) {
   if (!scale) return;
   St32(record + 0x28, word);
   // The first 40 kills: how many hits each soldier took (the evidence for the multiplier).
+  // (Hits come from more than one game thread: the counts under a lock.)
+  static std::mutex hits_mutex;
   static std::map<uint32_t, int> hits;
   static int kills = 0;
+  std::lock_guard lock(hits_mutex);
   int n = ++hits[soldier];
   if (LdF(soldier + 0x3C) > hp_before + 0.01f) hits[soldier] = n = 1;  // (healed since: counted anew)
   if (LdF(soldier + 0x3C) <= 0) {
@@ -4867,7 +4893,12 @@ PPC_FUNC(sub_82364C78) {
     std::vector<uint8_t> snap(0x800);
     memcpy(snap.data(), G<uint8_t>(ctx.r5.u32), snap.size());
     for (int i = 0; i < fake_count; ++i) {
-      Bot& b = g_bots.emplace_back();
+      Bot* added;
+      {
+        std::lock_guard lock(g_bots_mutex);  // (the admin's and the replay's threads read the list)
+        added = &g_bots.emplace_back();
+      }
+      Bot& b = *added;
       b.index = i;
       b.team = one_team == 1 || one_team == 2 ? uint32_t(one_team) : uint32_t(i % 2 + 1);
       uint32_t conn = g_system_heap->Alloc(0x60, 16);
