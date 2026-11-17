@@ -1,11 +1,14 @@
 @echo off
+setlocal EnableDelayedExpansion
 rem Battlefield 1943 dedicated server: hosts on your network (UDP 1003, browsers on UDP 19430).
+rem Values are set as set "NAME=value" and read with delayed expansion, so & | < > ^ in a name or
+rem password are fine; a double quote, % or ! in a value is not (avoid those characters).
 rem Edit the name, maps and bots below. Maps: Wake_island_s Iwo_Jima_s Guadal_Canal Coral_sea
-set GAME=original\v106
-set NAME=My Server
+set "GAME=original\v106"
+set "NAME=My Server"
 rem SERVERNAME: what server browsers show (default: the name above).
-set SERVERNAME=%NAME%
-set MAPS=Wake_island_s,Iwo_Jima_s,Guadal_Canal,Coral_sea
+set "SERVERNAME=!NAME!"
+set "MAPS=Wake_island_s,Iwo_Jima_s,Guadal_Canal,Coral_sea"
 set BOTS=0
 rem TICKRATE: 75 (the default), 60, 30 (the original game's rate) or 100.
 set TICKRATE=75
@@ -13,7 +16,12 @@ rem WEATHER: clear or rain. TIME: dawn, day, sunset or night (or hours, 12 noon)
 set WEATHER=clear
 set TIME=day
 rem PASSWORD: a word players must type to join. Empty: anyone may join.
-set PASSWORD=
+set "PASSWORD="
+rem HARDCORE=1: no HUD or crosshair for the players, soldiers take twice the damage.
+set HARDCORE=0
+rem ADMINPASSWORD: lets an admin who joined type /login <password> and then /kick, /ban, /map...
+rem (the console of this window takes them without it: kick Bob, ban Bob, unban Bob, map oasis, bots 8, players).
+set "ADMINPASSWORD="
 rem PUBLISH=1: also listed on the internet (the master server), not only on your network;
 rem your router must pass UDP ports 1003 and 19430 to this PC.
 set PUBLISH=0
@@ -29,7 +37,9 @@ rem (tracks, shots, kills, questions): open server_data\bot_advice\runs\<map>_<d
 set TRAIN=0
 set TRAIN_MINUTES=30
 set EXTRA=--tickrate %TICKRATE% --weather %WEATHER% --time %TIME%
-if not "%PASSWORD%"=="" set EXTRA=%EXTRA% --password "%PASSWORD%"
+if not "!PASSWORD!"=="" set "EXTRA=!EXTRA! --password "!PASSWORD!""
+if not "!ADMINPASSWORD!"=="" set "EXTRA=!EXTRA! --admin-password "!ADMINPASSWORD!""
+if "%HARDCORE%"=="1" set EXTRA=%EXTRA% --hardcore
 if "%PUBLISH%"=="1" set EXTRA=%EXTRA% --publish
 if "%TRAIN%"=="1" set EXTRA=--train --speed 2 --train-minutes %TRAIN_MINUTES%
 cd /d "%~dp0"
@@ -37,6 +47,6 @@ if not "%BOT_LLM%"=="1" goto run
 if exist llm\bot_llm.ini goto llm
 python tools\setup_bot_llm.py --dir llm || py -3 tools\setup_bot_llm.py --dir llm || goto run
 :llm
-set EXTRA=%EXTRA% --bot-llm llm
+set EXTRA=!EXTRA! --bot-llm llm
 :run
-build\game\bf1943.exe --game "%GAME%" --user server_data --dedicated --name "%NAME%" --servername "%SERVERNAME%" --maps %MAPS% --bots %BOTS% %EXTRA%
+build\game\bf1943.exe --game "!GAME!" --user server_data --dedicated --name "!NAME!" --servername "!SERVERNAME!" --maps "!MAPS!" --bots %BOTS% !EXTRA!
