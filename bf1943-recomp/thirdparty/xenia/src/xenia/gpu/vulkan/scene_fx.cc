@@ -610,12 +610,27 @@ bool CreatePipeline(const ui::vulkan::VulkanDevice* device) {
 }
 }  // namespace
 
+namespace {
+// The host's / server's weather and time (SetWeather): kept apart from the
+// settings text so re-applying the settings page does not wipe them, and so a
+// SetWeather before the scene effects are on still counts.
+struct {
+  bool set = false;
+  float rain = 0.0f, time_of_day = 12.0f;
+} weather;
+}  // namespace
+
 void Configure(const char* text) {
   enabled = true;
   // Tests: BF_SCENE_FX_EXTRA ("debug=13,...") wins over the settings page's.
   std::string all = text ? text : "";
-  if (const char* extra = std::getenv("BF_SCENE_FX_EXTRA")) all += std::string(",") + extra;
+  const char* extra = std::getenv("BF_SCENE_FX_EXTRA");
+  if (extra) all += std::string(",") + extra;
   settings = ParseSettings(all.c_str());
+  if (weather.set) {
+    if (!extra || !std::strstr(extra, "rain=")) settings.rain = weather.rain;
+    if (!extra || !std::strstr(extra, "time=")) settings.time_of_day = weather.time_of_day;
+  }
   pbr::SetGameShadowsOff(settings.shadows > 0.0f);
 }
 
@@ -623,8 +638,11 @@ bool Enabled() { return enabled; }
 
 // Host or server weather and time of day: live, the other settings stay.
 void SetWeather(float rain, float time_hours) {
-  settings.rain = std::clamp(rain, 0.0f, 1.0f);
-  settings.time_of_day = std::clamp(time_hours, 0.0f, 24.0f);
+  weather.rain = std::clamp(rain, 0.0f, 1.0f);
+  weather.time_of_day = std::clamp(time_hours, 0.0f, 24.0f);
+  weather.set = true;
+  settings.rain = weather.rain;
+  settings.time_of_day = weather.time_of_day;
 }
 
 namespace {
@@ -1082,12 +1100,15 @@ void VulkanRenderTargetCache::ApplySceneFx(
     p.gi[3] = float(vk.frame);
     p.gi2[0] = s.gi_distance;
     p.gi2[1] = s.gi_frames;
-    static const auto start = std::chrono::steady_clock::now();
     p.refl[0] = s.reflect;
     // Other surfaces only with their materials.
     p.refl[1] = command_processor_.bf_material_buffer() ? s.gloss : 0.0f;
-    p.refl[2] = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     p.refl[3] = s.waves;
+  }
+  {
+    // Seconds: rain, puddles, lens drops and water drift move without ray tracing too.
+    static const auto start = std::chrono::steady_clock::now();
+    p.refl[2] = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
   }
   if (!save_pass) {
     std::memcpy(vk.prev_view_proj, p.view_proj, sizeof(vk.prev_view_proj));
@@ -1171,7 +1192,11 @@ void VulkanRenderTargetCache::ApplySceneFx(
   p.sky2[3] = s.leaves;
   // Time of day: the sun's height, its and the sky's light, and a grade for the
   // whole image (warm low sun, dark blue night). Blended between the keys.
-  {
+  // Exactly 12 (the default) is the game's own light: its sun untouched.
+  if (s.time_of_day == 12.0f) {
+    p.tod[0] = p.tod[1] = p.tod[2] = 1.0f;
+    p.tod[3] = 0.0f;
+  } else {
     struct Key { float h, sun, amb, grade, r, g, b; };
     static const Key k[] = {
         {0.0f, 0.04f, 0.16f, 0.92f, 0.30f, 0.40f, 0.66f},

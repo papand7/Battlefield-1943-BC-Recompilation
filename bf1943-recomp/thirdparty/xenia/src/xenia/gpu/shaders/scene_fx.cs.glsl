@@ -2716,7 +2716,7 @@ void main() {
     color.rgb += vec3(0.58, 0.64, 0.74) * (sum * rain_amount * 0.16);
     // Drops on the view (the screen is the lens): beads with a bright rim,
     // sliding down slowly, more in the corners.
-    vec2 lens = uv * vec2(screen.x / screen.y, 1.0) * 7.0;
+    vec2 lens = uv * vec2(screen.w / screen.z, 1.0) * 7.0;  // width / height
     lens.y += refl.z * 0.28;
     vec2 lc = floor(lens), lf = fract(lens) - 0.5;
     float lh = fract(sin(dot(lc, vec2(27.61, 57.13))) * 4137.13);

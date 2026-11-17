@@ -415,7 +415,8 @@ void ApplySceneFx(const char* settings) {
 void SetMotionBlurHold(bool hold) { xe::gpu::scenefx::SetMotionBlurHold(hold); }
 
 void SetWeather(float rain, float time_hours) {
-  if (xe::gpu::scenefx::Enabled()) xe::gpu::scenefx::SetWeather(rain, time_hours);
+  // Kept even before the scene effects are on: Configure applies it then.
+  xe::gpu::scenefx::SetWeather(rain, time_hours);
 }
 
 bool CameraEye(float out[3]) { return xe::gpu::scenefx::Eye(out); }
