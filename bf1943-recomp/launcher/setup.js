@@ -351,7 +351,7 @@ async function setup(launcherDir, game, gamePath, send) {
     if (module.exports.version) fs.writeFileSync(path.join(p.gameDir, '.built-version'), module.exports.version);
     // FSR 3 (AMD's signed DLLs, loaded at run time) and DLSS (NVIDIA's).
     for (const f of ['pbr_shaders.txt', 'amd_fidelityfx_loader_vk.dll', 'amd_fidelityfx_upscaler_vk.dll',
-                     'nvngx_dlss.dll']) {
+                     'amd_fidelityfx_framegeneration_vk.dll', 'nvngx_dlss.dll']) {
       if (fs.existsSync(path.join(built, f))) fs.copyFileSync(path.join(built, f), path.join(p.gameDir, f));
     }
     if (fs.existsSync(path.join(built, 'fonts'))) fs.cpSync(path.join(built, 'fonts'), path.join(p.gameDir, 'fonts'), { recursive: true });

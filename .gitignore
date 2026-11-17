@@ -40,3 +40,6 @@ node_modules/
 __pycache__/
 # Bad Company's nav notes written while it plays (where routes failed): play data
 bfbc1-recomp/nav/
+# AMD FSR 3.1 frame generation SDK (tools/fetch_fsr3fg.py): fetched, not kept (36 MB DLL)
+bf1943-recomp/thirdparty/fidelityfx_fg/
+_dl_fsr3fg/

@@ -13,6 +13,7 @@
 #include "xenia/gpu/vulkan/bf_dlss.h"
 #include "xenia/gpu/vulkan/scene_fx.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
+#include "xenia/ui/vulkan/bf_fsr3fg.h"
 #include "xenia/ui/vulkan/vulkan_device.h"
 #include "xenia/ui/vulkan/vulkan_instance.h"
 #include "xenia/ui/vulkan/vulkan_util.h"
@@ -179,6 +180,16 @@ struct Glue {
   VkImageView pre_hud_view = VK_NULL_HANDLE, out_view = VK_NULL_HANDLE;
   uint32_t render_w = 0, render_h = 0, display_w = 0, display_h = 0;
   uint32_t frame = 0;
+  // Frame generation (bf_fsr3fg.h): a ring of each game frame's depth, motion
+  // vectors and pre-HUD upscaled frame, for the presenter.
+  static constexpr uint32_t kFgSlots = 4;
+  struct FgImage {
+    VkImage image = VK_NULL_HANDLE;
+    VkDeviceMemory memory = VK_NULL_HANDLE;
+  };
+  FgImage fg_depth[kFgSlots], fg_motion[kFgSlots], fg_hudless[kFgSlots];
+  bool fg_ready = false;
+  uint64_t fg_seq = 0;
   Frame frames[kSlots];
   std::pair<const ui::vulkan::VulkanDevice*, Frame*> run_args[kSlots];
   std::chrono::steady_clock::time_point last;
@@ -206,7 +217,8 @@ bool MakeImage(const ui::vulkan::VulkanDevice* device, uint32_t w, uint32_t h, V
   info.arrayLayers = 1;
   info.samples = VK_SAMPLE_COUNT_1_BIT;
   info.tiling = VK_IMAGE_TILING_OPTIMAL;
-  info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
+  // (Transfer source: the frame generation copy of the pre-HUD frame.)
+  info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
   info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
   if (!ui::vulkan::util::CreateDedicatedAllocationImage(
           device, info, ui::vulkan::util::MemoryPurpose::kDeviceLocal, image, memory)) {
@@ -228,6 +240,89 @@ void FreeImage(const ui::vulkan::VulkanDevice* device, VkImage& image, VkDeviceM
   if (image) dfn.vkDestroyImage(device->device(), image, nullptr);
   if (memory) dfn.vkFreeMemory(device->device(), memory, nullptr);
   view = VK_NULL_HANDLE, image = VK_NULL_HANDLE, memory = VK_NULL_HANDLE;
+}
+
+// A frame generation ring image: a copy target the presenter reads in
+// VK_IMAGE_LAYOUT_GENERAL.
+bool MakeFgImage(const ui::vulkan::VulkanDevice* device, VkFormat format, uint32_t w, uint32_t h,
+                 Glue::FgImage& out) {
+  VkImageCreateInfo info = {VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO};
+  info.imageType = VK_IMAGE_TYPE_2D;
+  info.format = format;
+  info.extent = {w, h, 1};
+  info.mipLevels = 1;
+  info.arrayLayers = 1;
+  info.samples = VK_SAMPLE_COUNT_1_BIT;
+  info.tiling = VK_IMAGE_TILING_OPTIMAL;
+  info.usage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
+  info.initialLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+  return ui::vulkan::util::CreateDedicatedAllocationImage(
+      device, info, ui::vulkan::util::MemoryPurpose::kDeviceLocal, out.image, out.memory);
+}
+
+void FreeFgImages() {
+  for (auto* ring : {glue.fg_depth, glue.fg_motion, glue.fg_hudless}) {
+    for (uint32_t i = 0; i < Glue::kFgSlots; ++i) {
+      if (ring[i].image) glue.old.push_back({ring[i].image, ring[i].memory, VK_NULL_HANDLE, 8});
+      ring[i] = {};
+    }
+  }
+  glue.fg_ready = false;
+}
+
+// One frame's copies for the presenter, when the commands run.
+struct FgCopy {
+  const ui::vulkan::VulkanDevice* device;
+  VkImage src_depth, src_motion, src_color, dst_depth, dst_motion, dst_hudless;
+  uint32_t render_w, render_h, display_w, display_h;
+};
+
+void RunFgCopy(VkCommandBuffer cb, void* data) {
+  auto* c = static_cast<FgCopy*>(data);
+  const auto& dfn = c->device->functions();
+  // (Not in Xenia's function table.)
+  static PFN_vkCmdCopyImage cmd_copy_image = reinterpret_cast<PFN_vkCmdCopyImage>(
+      c->device->vulkan_instance()->functions().vkGetDeviceProcAddr(c->device->device(), "vkCmdCopyImage"));
+  const VkImageSubresourceRange range = ui::vulkan::util::InitializeSubresourceRange();
+  // The upscale's and the scene effects' writes visible to the copies.
+  VkMemoryBarrier before = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                            VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT};
+  VkImageMemoryBarrier to_dst[3] = {};
+  VkImage dsts[3] = {c->dst_depth, c->dst_motion, c->dst_hudless};
+  for (int i = 0; i < 3; ++i) {
+    to_dst[i].sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
+    to_dst[i].srcAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_TRANSFER_READ_BIT;
+    to_dst[i].dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_dst[i].oldLayout = VK_IMAGE_LAYOUT_UNDEFINED;
+    to_dst[i].newLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_dst[i].srcQueueFamilyIndex = to_dst[i].dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
+    to_dst[i].image = dsts[i];
+    to_dst[i].subresourceRange = range;
+  }
+  dfn.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT, 0, 1, &before,
+                           0, nullptr, 3, to_dst);
+  VkImageCopy copy = {};
+  copy.srcSubresource = copy.dstSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
+  copy.extent = {c->render_w, c->render_h, 1};
+  cmd_copy_image(cb, c->src_depth, VK_IMAGE_LAYOUT_GENERAL, c->dst_depth, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1,
+                     &copy);
+  cmd_copy_image(cb, c->src_motion, VK_IMAGE_LAYOUT_GENERAL, c->dst_motion,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+  copy.extent = {c->display_w, c->display_h, 1};
+  cmd_copy_image(cb, c->src_color, VK_IMAGE_LAYOUT_GENERAL, c->dst_hudless,
+                     VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &copy);
+  VkImageMemoryBarrier to_general[3] = {};
+  for (int i = 0; i < 3; ++i) {
+    to_general[i] = to_dst[i];
+    to_general[i].srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+    to_general[i].dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT;
+    to_general[i].oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
+    to_general[i].newLayout = VK_IMAGE_LAYOUT_GENERAL;
+  }
+  VkMemoryBarrier after = {VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr, VK_ACCESS_TRANSFER_READ_BIT,
+                           VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+  dfn.vkCmdPipelineBarrier(cb, VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, 1, &after, 0,
+                           nullptr, 3, to_general);
 }
 
 bool EnsureGlue(const ui::vulkan::VulkanDevice* device) {
@@ -334,6 +429,7 @@ VkImageView Record(vulkan::VulkanCommandProcessor& cp, VkImageView final_view,
     glue.pre_hud_memory = glue.out_memory = VK_NULL_HANDLE;
     glue.pre_hud_view = glue.out_view = VK_NULL_HANDLE;
     glue.render_w = 0;
+    FreeFgImages();
     if (!MakeImage(device, render_width, render_height, glue.pre_hud, glue.pre_hud_memory,
                    glue.pre_hud_view) ||
         !MakeImage(device, display_w, display_h, glue.out, glue.out_memory, glue.out_view)) {
@@ -343,6 +439,23 @@ VkImageView Record(vulkan::VulkanCommandProcessor& cp, VkImageView final_view,
     glue.render_w = render_width, glue.render_h = render_height;
     glue.display_w = display_w, glue.display_h = display_h;
     glue.frame = 0;
+  }
+  // Frame generation (the option on): the ring for the presenter.
+  const bool fg = ui::vulkan::bffg::requested;
+  if (fg && !glue.fg_ready) {
+    bool ok = true;
+    for (uint32_t i = 0; i < Glue::kFgSlots && ok; ++i) {
+      ok = MakeFgImage(device, VK_FORMAT_R32_SFLOAT, render_width, render_height, glue.fg_depth[i]) &&
+           MakeFgImage(device, VK_FORMAT_R16G16_SFLOAT, render_width, render_height, glue.fg_motion[i]) &&
+           MakeFgImage(device, VK_FORMAT_R8G8B8A8_UNORM, display_w, display_h, glue.fg_hudless[i]);
+    }
+    if (ok) {
+      glue.fg_ready = true;
+    } else {
+      XELOGE("fsr3: no frame generation images for {}x{} -> {}x{}", render_width, render_height, display_w,
+             display_h);
+      FreeFgImages();
+    }
   }
   for (size_t i = 0; i < glue.old.size();) {
     if (--glue.old[i].swaps_left) {
@@ -417,6 +530,37 @@ VkImageView Record(vulkan::VulkanCommandProcessor& cp, VkImageView final_view,
   // FSR bound its own pipelines and descriptors.
   cp.ForgetExternalComputePipeline();
   cb.CmdVkPipelineBarrier(cs, cs, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+
+  // Frame generation: this frame's depth, motion vectors and upscaled frame
+  // without the HUD, copied for the presenter (which interpolates from them).
+  if (fg && glue.fg_ready) {
+    static FgCopy copies[Glue::kFgSlots];
+    const uint32_t fg_slot = uint32_t(glue.fg_seq % Glue::kFgSlots);
+    copies[fg_slot] = {device,
+                       depth,
+                       motion,
+                       glue.out,
+                       glue.fg_depth[fg_slot].image,
+                       glue.fg_motion[fg_slot].image,
+                       glue.fg_hudless[fg_slot].image,
+                       render_width,
+                       render_height,
+                       display_w,
+                       display_h};
+    cb.CmdBfCallback(RunFgCopy, &copies[fg_slot]);
+    ui::vulkan::bffg::Snapshot snapshot;
+    snapshot.seq = ++glue.fg_seq;
+    snapshot.depth = glue.fg_depth[fg_slot].image;
+    snapshot.motion = glue.fg_motion[fg_slot].image;
+    snapshot.hudless = glue.fg_hudless[fg_slot].image;
+    snapshot.render_width = render_width, snapshot.render_height = render_height;
+    snapshot.display_width = display_w, snapshot.display_height = display_h;
+    snapshot.jitter_x = f.jitter_x, snapshot.jitter_y = f.jitter_y;
+    snapshot.frame_ms = f.frame_ms;
+    snapshot.near_plane = f.near_plane, snapshot.far_plane = f.far_plane, snapshot.fov_y = f.fov_y;
+    snapshot.reset = f.reset;
+    ui::vulkan::bffg::Publish(snapshot);
+  }
 
   // The HUD back on top.
   p.mode = 1;

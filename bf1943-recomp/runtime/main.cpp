@@ -338,6 +338,7 @@ int main(int argc, char** argv) {
     else if (a == "--upscale-quality" && i + 1 < argc) upscale_quality = argv[++i];
     else if (a == "--master" && i + 1 < argc) rt::lan::SetMaster(argv[++i]);  // "" for none
     else if (a == "--publish") rt::lan::SetPublish(true);  // a host: on the master server's list
+    else if (a == "--frame-gen") xgpu::SetFrameGeneration(true);  // AMD FSR 3.1 frame generation (with FSR 3 / DLSS)
     else if (a == "--present-vsync") g_present_vsync = true;  // the swapchain waits for the refresh
     else if (a == "--trace-texture" && i + 1 < argc) xe::gpu::texrep::SetTrace(argv[++i]);
     else if (a == "--log-textures") xe::gpu::texrep::SetLogMisses(true);

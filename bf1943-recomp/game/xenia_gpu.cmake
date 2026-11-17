@@ -9,6 +9,15 @@ if(NOT EXISTS ${ROOT}/thirdparty/dlss/lib/nvsdk_ngx_d.lib OR NOT EXISTS ${ROOT}/
   find_package(Python3 REQUIRED COMPONENTS Interpreter)
   execute_process(COMMAND ${Python3_EXECUTABLE} ${ROOT}/tools/fetch_dlss.py COMMAND_ERROR_IS_FATAL ANY)
 endif()
+# FSR 3.1 frame generation (bf_fsr3fg.cc): AMD's SDK is fetched, checked, the same way (tools/fetch_fsr3fg.py).
+# Without it (offline) the build goes on and the option is off.
+if(NOT EXISTS ${ROOT}/thirdparty/fidelityfx_fg/bin/amd_fidelityfx_framegeneration_vk.dll)
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  execute_process(COMMAND ${Python3_EXECUTABLE} -I ${ROOT}/tools/fetch_fsr3fg.py RESULT_VARIABLE FSR3FG_FETCH)
+  if(NOT FSR3FG_FETCH EQUAL 0)
+    message(WARNING "FSR 3.1 frame generation SDK not fetched: the option will be off")
+  endif()
+endif()
 file(GLOB XENIA_GPU_SOURCES CONFIGURE_DEPENDS
   ${XE}/src/xenia/base/*.cc
   ${XE}/src/xenia/gpu/*.cc
@@ -29,6 +38,7 @@ target_include_directories(xenia_gpu PUBLIC
   $ENV{VULKAN_SDK}/Include
   ${ROOT}/thirdparty/VulkanMemoryAllocator/include
   ${ROOT}/thirdparty/fidelityfx/include  # FSR 3 (bf_fsr3.cc)
+  ${ROOT}/thirdparty/fidelityfx_fg       # FSR 3.1 frame generation (bf_fsr3fg.cc)
   ${ROOT}/thirdparty/dlss/include)       # DLSS (bf_dlss.cc)
 target_compile_definitions(xenia_gpu PUBLIC
   NOMINMAX WIN32_LEAN_AND_MEAN UNICODE _UNICODE _CRT_SECURE_NO_WARNINGS
