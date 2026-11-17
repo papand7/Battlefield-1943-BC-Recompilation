@@ -915,6 +915,15 @@ void rt::RequestRejoin(const std::string& map) {
                               std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
 }
 void rt::RejoinReady() { g_rejoin_ready = true; }
+const char* const* rt::admin::MapAliases() {
+  static const char* const kAliases[] = {
+      "wake_island_s", "Wake_island_s", "wake", "Wake_island_s", "wakeisland", "Wake_island_s",
+      "iwo_jima_s", "Iwo_Jima_s", "iwo", "Iwo_Jima_s", "iwojima", "Iwo_Jima_s",
+      "guadal_canal", "Guadal_Canal", "guadalcanal", "Guadal_Canal", "guadal", "Guadal_Canal",
+      "coral_sea", "Coral_sea", "coral", "Coral_sea", "coralsea", "Coral_sea", nullptr};
+  return kAliases;
+}
+const char* rt::admin::MapChoices() { return "wake|iwo|guadal|coral"; }
 
 static void FireUi(PPCContext& ctx, uint8_t* base, const char* name, const char* arg) {
   uint32_t strs = g_system_heap->Alloc(512, 16);

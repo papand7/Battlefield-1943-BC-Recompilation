@@ -17,6 +17,7 @@
 #include "admin.h"
 #include "bot_players.h"
 #include "kernel.h"
+#include "lan.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -198,15 +199,9 @@ Target FindLocked(const std::string& what_raw) {
 
 // The maps (any case; short names too).
 std::string MapName(const std::string& raw) {
-  static const std::pair<const char*, const char*> kMaps[] = {
-      {"wake_island_s", "Wake_island_s"}, {"wake", "Wake_island_s"},       {"wakeisland", "Wake_island_s"},
-      {"iwo_jima_s", "Iwo_Jima_s"},       {"iwo", "Iwo_Jima_s"},           {"iwojima", "Iwo_Jima_s"},
-      {"guadal_canal", "Guadal_Canal"},   {"guadalcanal", "Guadal_Canal"}, {"guadal", "Guadal_Canal"},
-      {"coral_sea", "Coral_sea"},         {"coral", "Coral_sea"},          {"coralsea", "Coral_sea"},
-  };
   std::string m = Lower(Trim(raw));
-  for (auto& [k, v] : kMaps)
-    if (m == k) return v;
+  for (const char* const* a = MapAliases(); a[0] && a[1]; a += 2)
+    if (m == a[0]) return a[1];
   return "";
 }
 
@@ -232,7 +227,9 @@ std::string PlayersText() {
 }  // namespace
 
 const char* ServerHelp() {
-  return "/players  /kick <name>  /ban <name>  /unban <name|id|address>  /map <wake|iwo|guadal|coral>  /bots <n>";
+  static const std::string help = std::string("/players  /kick <name>  /ban <name>  /unban <name|id|address>  /map <") +
+                                  MapChoices() + ">  /bots <n>";
+  return help.c_str();
 }
 
 bool ServerCommand(const std::string& cmd, const std::string& arg, bool console, std::string& reply) {
@@ -301,7 +298,7 @@ bool ServerCommand(const std::string& cmd, const std::string& arg, bool console,
   if (cmd == "map") {
     std::string map = MapName(arg);
     if (map.empty()) {
-      reply = "map: Wake_island_s, Iwo_Jima_s, Guadal_Canal or Coral_sea";
+      reply = std::string("map: ") + MapChoices();
       return true;
     }
     // The joiners leave too, and join again once it is up.
@@ -418,6 +415,22 @@ bool RestartOnMap(const std::string& map) {
     line += " " + quote(a);
   }
   line += " --host-map " + map + " --bots " + std::to_string(g_bot_count);
+  // What a host chose in its menu (not on its command line) goes on to the new
+  // run: its server settings, so a /map keeps them.
+  auto given = [&](std::initializer_list<const char*> names) {
+    for (int i = 1; i < __argc; ++i)
+      for (const char* n : names)
+        if (__argv[i] == std::string(n)) return true;
+    return false;
+  };
+  if (g_lan_host && !g_join_address && !g_dedicated && !given({"--host"})) line += " --host";
+  if (g_hardcore && !given({"--hardcore", "--hardcore-damage"}))
+    line += " --hardcore-damage " + std::to_string(g_hardcore_damage);
+  if (!g_server_name.empty() && !given({"--servername", "--server-name"})) line += " --servername " + quote(g_server_name);
+  if (!g_server_password.empty() && !given({"--password"})) line += " --password " + quote(g_server_password);
+  if (g_weather && !given({"--weather"})) line += " --weather rain";
+  if (!given({"--time"})) line += " --time " + std::to_string(g_time_of_day);
+  if (lan::Publish() && !given({"--publish"})) line += " --publish";
   // Only the console / pipe handles are passed on: the sockets (inheritable
   // by default) would keep this run's ports taken in the new one.
   STARTUPINFOEXA si{};

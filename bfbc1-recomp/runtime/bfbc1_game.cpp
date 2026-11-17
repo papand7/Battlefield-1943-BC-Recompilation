@@ -2,6 +2,8 @@
 // (bf1943-recomp/runtime/game_patches.cpp and bots.cpp there). No guest patches
 // yet; the settings keep their defaults and bots are not supported.
 #include "kernel.h"
+#include "admin_server.h"
+#include "lan.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -52,6 +54,9 @@ std::string g_worldrender;
 std::string g_overgrowth;
 float g_lod = 1.0f;
 bool g_auto_start = false;  // set by main.cpp for dedicated/bot copies (bf1943)
+std::string g_aspect_override, g_wide_hud_override;  // --aspect / --wide-hud (bf1943's ULTRAWIDE: not here yet)
+std::mutex g_host_map_mutex;  // (taken to change g_host_map in a level's run: the replay and the bots read it)
+std::atomic<int> g_server_generation{0};
 
 std::atomic<bool> g_host_request{false};  // HostFromMainLoop starts hosting g_host_map
 void RequestHost() { g_host_request = true; }
@@ -198,7 +203,128 @@ static void CallMenu(PPCContext& ctx, uint8_t* base, const std::string& cb, cons
 // opening the Multiplayer menu does) and hosts once the Theater login answered.
 // RequestHost (our Multiplayer menu, lan.cpp) starts it again later.
 static std::atomic<bool> g_internal_call{false};  // CallMenu from here, not the player
+// The host's /map (admin_server.cpp) and a joiner sent along with it, or one
+// kicked: the level is left (the menu's doExitLevel callback, as the pause
+// menu's exit does), then, back in the main menu, the map is hosted (or the
+// host joined again once it says the map is up). A host with bots, a
+// dedicated server and any Windows host starts the game again on the map
+// instead (admin::RestartOnMap): the bots' made-up connections do not go down
+// with a level, and a second level in one run has no bots.
+static std::mutex g_admin_mutex;
+static std::string g_admin_map;           // the map to host (or join) after leaving; empty: stay in the menus
+static std::atomic<int> g_admin_exit{0};  // 1 leave the level now, 2 left: waiting for the main menu
+static bool g_rejoin = false;             // a joiner: join the host again on g_admin_map
+static std::atomic<bool> g_rejoin_ready{false};
+static double g_rejoin_since = 0;         // (seconds; it joins anyway after 90 s without the host's word)
+static bool g_admin_map_up = false;       // host: tell the joiners once the new level is up
+static std::atomic<bool> g_host_called{false};  // the host callback has run (a level is being made)
+static double SteadySeconds() {
+  return double(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
+                    .count()) / 1000.0;
+}
+void rt::RequestMapChange(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = false, g_admin_exit = 1;
+}
+void rt::RequestRejoin(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = true, g_rejoin_ready = false, g_admin_exit = 1;
+  g_rejoin_since = SteadySeconds();
+}
+void rt::RejoinReady() { g_rejoin_ready = true; }
+// The maps /map takes: a short name or the level's own.
+const char* const* rt::admin::MapAliases() {
+  static const char* const kAliases[] = {
+      "valley", "mp_harbour_day1",    "valleyrun", "mp_harbour_day1", "harbour1", "mp_harbour_day1",
+      "decon", "mp_harbour_day2",     "deconstruction", "mp_harbour_day2", "harbour2", "mp_harbour_day2",
+      "oasis", "mp_ignition_day1",    "ignition1", "mp_ignition_day1",
+      "ignition", "mp_ignition_day2", "finalignition", "mp_ignition_day2", "ignition2", "mp_ignition_day2",
+      "endoftheline", "mp_monastery_day1", "monastery", "mp_monastery_day1", "monastery1", "mp_monastery_day1",
+      "ascension", "mp_monastery_day2", "monastery2", "mp_monastery_day2",
+      "harvest", "mp_beachhead_day1", "harvestday", "mp_beachhead_day1", "beachhead", "mp_beachhead_day1",
+      "beachhead1", "mp_beachhead_day1",
+      "overandout", "mp_beachhead_day2", "over", "mp_beachhead_day2", "beachhead2", "mp_beachhead_day2",
+      "mp_harbour_day1", "mp_harbour_day1", "mp_harbour_day2", "mp_harbour_day2",
+      "mp_ignition_day1", "mp_ignition_day1", "mp_ignition_day2", "mp_ignition_day2",
+      "mp_monastery_day1", "mp_monastery_day1", "mp_monastery_day2", "mp_monastery_day2",
+      "mp_beachhead_day1", "mp_beachhead_day1", "mp_beachhead_day2", "mp_beachhead_day2",
+      nullptr};
+  return kAliases;
+}
+const char* rt::admin::MapChoices() { return "valley|decon|oasis|ignition|monastery|ascension|harvest|over"; }
+
+static void AdminFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  if (g_admin_exit == 1 && g_menu_manager) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (!rejoin && !map.empty() && rt::admin::RestartOnMap(map)) return;
+    if (!g_in_menus) {
+      g_leaving_level = true;
+      RT_INFO("admin: leaving the level (doExitLevel)");
+      CallMenu(ctx, base, "doExitLevel", "");
+    }
+    g_admin_exit = 2;
+  }
+  // Back in the main menu, and settled there (no notice up) for 4 s: hosting
+  // at once, while the game still went through its exit, was dropped.
+  static double settled_since = 0;
+  const double now_s = SteadySeconds();
+  if (g_admin_exit != 2 || !g_in_menus || g_game_dialogs.load() > 0) settled_since = 0;
+  else if (!settled_since) settled_since = now_s;
+  if (g_admin_exit == 2 && settled_since && now_s - settled_since >= 4.0) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (rejoin) {
+      // A joiner: once the host says its map is up (or after 90 s), join it.
+      if (!g_rejoin_ready && now_s - g_rejoin_since < 90) return;
+      g_admin_exit = 0;
+      // (both in network order: the address's bytes as they are)
+      const uint8_t* ip = reinterpret_cast<const uint8_t*>(&g_join_address);
+      const uint8_t* port = reinterpret_cast<const uint8_t*>(&g_join_port);
+      char target_text[64];
+      snprintf(target_text, sizeof(target_text), "%u.%u.%u.%u:%u", ip[0], ip[1], ip[2], ip[3], unsigned(port[0] << 8 | port[1]));
+      RT_INFO("admin: joining the host again (%s, %s)", target_text, map.c_str());
+      if (!g_join_address || !rt::lan::Join(target_text, map, g_join_password)) RT_WARN("admin: could not join the host again");
+      return;
+    }
+    g_admin_exit = 0;
+    if (map.empty()) return;
+    {
+      std::lock_guard lock(g_host_map_mutex);
+      g_host_map = map;
+    }
+    RT_INFO("admin: hosting %s", map.c_str());
+    g_admin_map_up = true;
+    g_host_called = false;
+    g_host_request = true;
+  }
+  // The new level is up: the joiners sent away by /map come back.
+  if (g_admin_map_up && g_host_called && !g_in_menus) {
+    g_admin_map_up = false;
+    std::string map;
+    {
+      std::lock_guard lock(g_host_map_mutex);
+      map = g_host_map;
+    }
+    std::thread([map] {
+      for (int i = 0; i < 3; ++i) {  // (UDP: said three times; a joiner acts on the first)
+        std::this_thread::sleep_for(std::chrono::seconds(i ? 5 : 3));
+        rt::admin::MapReady(map);
+      }
+    }).detach();
+  }
+}
+
 static void HostFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  if (g_menu_up_ms && GetCurrentThreadId() == g_menu_thread) AdminFromMainLoop(ctx, base);
   static int state = -1;  // -1 idle, 0 waiting for the menu, 1 logging in
   static bool startup = !g_host_map.empty() || !g_ui_call.empty();  // --host-map, --ui-call
   if (!g_menu_up_ms || GetCurrentThreadId() != g_menu_thread) return;
@@ -221,6 +347,7 @@ static void HostFromMainLoop(PPCContext& ctx, uint8_t* base) {
     arg = colon == std::string::npos ? "" : g_ui_call.substr(colon + 1);
   }
   RT_INFO("host: %s(%s)", cb.c_str(), arg.c_str());
+  g_host_called = true;
   CallMenu(ctx, base, cb, arg);
 }
 
@@ -615,12 +742,36 @@ GAME_PATCH(82812AB8) {
   if (rt::g_motion_blur) __imp__sub_82812AB8(ctx, base);
 }
 
+// Hardcore (kernel.h g_hardcore_hud; bf1943's game_patches.cpp has the same): the
+// HUD and crosshair are the game's 2D UI movie draws, as its menus are; they are
+// skipped on the GPU (xgpu::SetHideUi) while in a level with no menu over it
+// (the spawn screen and pause menu: g_level_menu) and the scoreboard key not
+// held (xam.cpp g_scoreboard_open), so the menus and scoreboard still show.
+// Called from the UI's per-frame step below.
+namespace {
+struct HardcoreSupported {
+  HardcoreSupported() { rt::g_hardcore_supported = true; }
+} g_hardcore_supported_install;
+void HardcoreHud() {
+  static int last = -1;
+  // BF_HIDE_UI_TEST=1 (testing): hidden everywhere, menus too (to see what the draw detection catches).
+  static const bool test = getenv("BF_HIDE_UI_TEST") != nullptr;
+  const bool hide = test || (rt::g_hardcore_hud && !rt::g_in_menus && !rt::g_level_menu && !rt::g_scoreboard_open);
+  if (int(hide) == last) return;
+  last = int(hide);
+  xgpu::SetHideUi(hide, true);
+  static int said = 0;
+  if (rt::g_hardcore_hud && said++ < 20) RT_INFO("hardcore: the HUD %s", hide ? "hidden" : "shown (a menu or the scoreboard)");
+}
+}  // namespace
+
 // HUD and menu animations above 30 fps (bf1943's 82954388): the UI's update
 // (sub_826C54F8) steps its Flash player one movie frame a call,
 // sub_8278ED20(player, 33, 1), once a game frame, and the movies are made for
 // 30 frames a second: the player is stepped as many times as a 30 Hz clock has
 // ticked since the last step (none on most frames, two at most after a hitch).
 GAME_PATCH(8278ED20) {
+  HardcoreHud();
   if (ctx.r4.u32 != 33 || rt::g_max_fps == 30) {
     __imp__sub_8278ED20(ctx, base);
     return;
