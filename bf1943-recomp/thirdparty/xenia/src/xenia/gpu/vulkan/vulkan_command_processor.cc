@@ -2751,11 +2751,20 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   }
   pipeline_cache_->AnalyzeShaderUcode(*vertex_shader);
   // bf1943 hardcore (bf_menu.h g_hide_ui): the game's 2D UI draws (the HUD
-  // and crosshair, in a level with no menu up) are not drawn.
-  if (bfmenu::g_hide_ui.load(std::memory_order_relaxed) &&
-      (BfMenuShaderKind(*vertex_shader) ||
-       (bfmenu::g_hide_ui_screen.load(std::memory_order_relaxed) && BfScreenSpaceUi(*vertex_shader)))) {
-    return true;
+  // and crosshair, in a level with no menu up) are not drawn. Bad Company's
+  // screen-space shaders also draw its post passes (bloom, the tone map):
+  // only those blended over the main frame are its UI (premultiplied
+  // ONE / ONE_MINUS_SRC_ALPHA; the post passes write ONE / ZERO, or go to
+  // smaller targets).
+  if (bfmenu::g_hide_ui.load(std::memory_order_relaxed)) {
+    bool hide = BfMenuShaderKind(*vertex_shader) != 0;
+    if (!hide && bfmenu::g_hide_ui_screen.load(std::memory_order_relaxed) &&
+        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch >= 1280 &&
+        regs.Get<reg::RB_BLENDCONTROL>(XE_GPU_REG_RB_BLENDCONTROL0).color_destblend !=
+            xenos::BlendFactor::kZero) {
+      hide = BfScreenSpaceUi(*vertex_shader);
+    }
+    if (hide) return true;
   }
   // TODO(Triang3l): If the shader uses memory export, but
   // vertexPipelineStoresAndAtomics is not supported, convert the vertex shader
