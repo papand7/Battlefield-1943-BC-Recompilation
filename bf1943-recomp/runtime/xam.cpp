@@ -359,12 +359,20 @@ const bool g_auto_mp_started = [] {
     size_t done = 0;
     for (;;) {
       std::this_thread::sleep_for(milliseconds(300));
-      std::ifstream in(path);
+      std::ifstream in(path, std::ios::binary);
+      std::string text((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+      if (text.compare(0, 3, "\xEF\xBB\xBF") == 0) text.erase(0, 3);  // (a UTF-8 byte order mark)
+      // Only whole lines: the last one is run once its newline is there (the file is read as it grows).
+      text.resize(text.rfind('\n') == std::string::npos ? 0 : text.rfind('\n') + 1);
       std::vector<std::string> lines;
-      for (std::string line; std::getline(in, line);) {
-        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
-        lines.push_back(line);
+      for (size_t at = 0; at < text.size();) {
+        size_t e = text.find('\n', at);
+        std::string line = text.substr(at, e - at);
+        at = e + 1;
+        const size_t a = line.find_first_not_of(" \t\r"), b = line.find_last_not_of(" \t\r");
+        lines.push_back(a == std::string::npos ? "" : line.substr(a, b - a + 1));
       }
+      if (lines.size() < done) done = 0;  // (the file was rewritten shorter: from the top again)
       while (done < lines.size()) {
         const std::string step = lines[done++];
         if (step.empty() || step[0] == '#') continue;

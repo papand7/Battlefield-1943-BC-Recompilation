@@ -680,12 +680,15 @@ void GovernorFrame() {
     g_gov_avg = 0.0;
     return;
   }
+  if (ms > 250.0) return;  // (a load screen, an alt-tab, a menu stall: not the game's speed)
   g_gov_avg = g_gov_avg == 0.0 ? ms : g_gov_avg * 0.95 + ms * 0.05;
   if (g_gov_cooldown > 0) {
     --g_gov_cooldown;
     return;
   }
-  double budget = 1000.0 / g_governor_fps;
+  // (a target above the frame cap cannot be met: the cap's frame is the budget)
+  const uint32_t target_fps = g_max_fps && g_max_fps < g_governor_fps ? g_max_fps : g_governor_fps;
+  double budget = 1000.0 / target_fps;
   int next = g_gov_level;
   if (g_gov_avg > budget * 1.12 && g_gov_level < 3) {
     next = g_gov_level + 1;

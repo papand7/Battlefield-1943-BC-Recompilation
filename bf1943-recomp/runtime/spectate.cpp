@@ -442,7 +442,10 @@ void DeathLogic() {
   float eye[3];
   const bool have_eye = xgpu::CameraEye(eye);
   std::lock_guard l(g_mu);
-  if (have_eye) {
+  const auto mine = g_players.find(g_mine);
+  if (g_mine && mine != g_players.end() && Alive(mine->second)) {
+    g_mine_seen = Now();  // (kept: no other soldier near the camera takes its place)
+  } else if (have_eye && !g_mine) {
     uint32_t best_key = 0;
     float best = 8.0f;
     for (auto& [k, p] : g_players) {
@@ -517,6 +520,7 @@ void Run() {
         Stop(true);
       } else if (g_pending) {
         g_pending = false;
+        g_level_menu = g_real_menu.load();  // (the spawn screen's input is the game's again)
       } else {
         g_pending = true;  // (as soon as someone is there to follow)
       }
@@ -524,7 +528,11 @@ void Run() {
     f4_was = f4;
     if (!host) continue;
     if (now - last_sample >= std::chrono::milliseconds(100)) {
-      const bool rescan = now - last_scan > std::chrono::seconds(2);
+      // Spectating (or about to): the whole guest memory is scanned every 2 s for new
+      // players; only waiting for a death it is every 15 s (a known player's soldier
+      // is read through its spawner at every sample, so a death is seen all the same).
+      const bool busy = g_pending || g_user || g_death;
+      const bool rescan = now - last_scan > (busy ? std::chrono::seconds(2) : std::chrono::seconds(15));
       if (rescan) last_scan = now;
       last_sample = now;
       if (g_pending || g_user || g_death || g_on_death) SampleServer(rescan);

@@ -17,6 +17,7 @@
 //     Company: 0 any spawn point, 800, 20)
 //   input: r3 the soldier's input state 82012320 / 82010C98, r4 the received
 //     input record 8200E48C / 8200DC48 (the client's: r3 vt 82005914)
+#include <mutex>
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -284,6 +285,7 @@ uint8_t g_move_template[0x100];
 bool g_have_template = false;
 uint32_t g_real_mover = 0;  // a real player's move receiver (to clone for the bots)
 std::deque<BotPlayer> g_players;
+std::mutex g_players_mutex;  // (growing it, and the other threads' reads of its size: spectate.cpp, replay.cpp)
 // How many bot players: --bots N, or BF_BOT_FAKE=N. Read once the arguments
 // are (the first join).
 // (g_bot_count as it is: the host's /bots changes it for the next level)
@@ -316,7 +318,10 @@ std::string Around(uint32_t a, int32_t from, int32_t to) {
   return out;
 }
 
-int rt::BotPlayerCount() { return int(g_players.size()); }
+int rt::BotPlayerCount() {
+  std::lock_guard l(g_players_mutex);
+  return int(g_players.size());
+}
 void rt::SetBotBenched(int i, bool benched) {
   if (i < 0 || i >= 16) return;
   if (benched && !g_benched[i].exchange(true)) g_kill_due.fetch_or(1 << i);
@@ -334,12 +339,17 @@ int rt::SetActiveBots(int n) {
   return playing;
 }
 uint32_t rt::BotPlayerSoldier(int i) {
-  if (i < 0 || i >= int(g_players.size())) return 0;
   if (rt::BotBenched(i)) return 0;  // (the director leaves it alone)
-  uint32_t so = g_players[size_t(i)].soldier;
+  uint32_t so;
+  {
+    std::lock_guard l(g_players_mutex);
+    if (i < 0 || i >= int(g_players.size())) return 0;
+    so = g_players[size_t(i)].soldier;
+  }
   return so && IsCommitted(so + 0x400) && Ld32(so) == kSoldier ? so : 0;
 }
 uint32_t rt::BotPlayerVehicle(int i) {
+  std::lock_guard l(g_players_mutex);
   if (i < 0 || i >= int(g_players.size())) return 0;
   return g_players[size_t(i)].vehicle;
 }
@@ -405,7 +415,10 @@ GAME_PATCH(823B59E0) {  // the player manager's join
     std::vector<uint8_t> snap(0x800);
     memcpy(snap.data(), G<uint8_t>(ctx.r5.u32), snap.size());
     for (int i = 0; i < g_fake_count; ++i) {
-      BotPlayer& b = size_t(i) < g_players.size() ? g_players[size_t(i)] : g_players.emplace_back();
+      BotPlayer& b = [&]() -> BotPlayer& {
+        std::lock_guard pl(g_players_mutex);
+        return size_t(i) < g_players.size() ? g_players[size_t(i)] : g_players.emplace_back();
+      }();
       b.index = i;
       b.team = one_team == 1 || one_team == 2 ? uint32_t(one_team) : uint32_t(i % 2 + 1);
       uint32_t conn = g_system_heap->Alloc(0x60, 16);

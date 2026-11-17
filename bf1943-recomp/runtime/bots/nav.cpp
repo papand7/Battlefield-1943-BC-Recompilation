@@ -19,6 +19,7 @@
 #include <cstring>
 #include <filesystem>
 #include <mutex>
+#include <unordered_set>
 #include <queue>
 #include <string>
 #include <unordered_map>
@@ -479,17 +480,25 @@ std::string g_trail_map;
 
 std::filesystem::path TrailPath(const std::string& map) { return g_user_root / "nav" / (map + ".txt"); }
 
-// (Again when the file has grown, at most every 30 s.)
+constexpr uintmax_t kTrailFileMax = 2u << 20;  // the file stops growing here (about 40000 points)
+constexpr size_t kTrailPointsMax = 40000, kCellPointsMax = 32;
+
+// (Again when the file has grown, at most every 30 s.) Takes the mutex itself,
+// only to look and to publish: the reading and linking run without it.
 void LoadTrails(const std::string& map) {
   auto now = std::chrono::steady_clock::now();
-  if (map == g_trails.map && now < g_trails.checked) return;
   std::error_code ec;
   std::filesystem::path path = TrailPath(map);
-  uintmax_t size = std::filesystem::file_size(path, ec);
-  if (ec) size = 0;
-  if (map == g_trails.map && size == g_trails.file_size) {
-    g_trails.checked = now + std::chrono::seconds(30);
-    return;
+  uintmax_t size;
+  {
+    std::lock_guard lock(g_trail_mutex);
+    if (map == g_trails.map && now < g_trails.checked) return;
+    size = std::filesystem::file_size(path, ec);
+    if (ec) size = 0;
+    if (map == g_trails.map && size == g_trails.file_size) {
+      g_trails.checked = now + std::chrono::seconds(30);
+      return;
+    }
   }
   Trails t;
   t.map = map, t.file_size = size, t.checked = now + std::chrono::seconds(30);
@@ -503,6 +512,8 @@ void LoadTrails(const std::string& map) {
       }
       std::array<float, 3> q;
       if (sscanf(line, "%f %f %f", &q[0], &q[1], &q[2]) != 3) continue;
+      if (!std::isfinite(q[0]) || !std::isfinite(q[1]) || !std::isfinite(q[2])) continue;
+      if (t.p.size() >= kTrailPointsMax) break;
       t.p.push_back(q);
       t.next.emplace_back();
       int i = int(t.p.size()) - 1;
@@ -515,7 +526,8 @@ void LoadTrails(const std::string& map) {
     auto cell = [&](int i) {
       return std::make_pair(int(std::floor(t.p[size_t(i)][0] / 4)), int(std::floor(t.p[size_t(i)][2] / 4)));
     };
-    for (int i = 0; i < int(t.p.size()); ++i) cells[cell(i)].push_back(i);
+    for (int i = 0; i < int(t.p.size()); ++i)
+      if (auto& c = cells[cell(i)]; c.size() < kCellPointsMax) c.push_back(i);  // (a crowded cell: the first ones)
     for (int i = 0; i < int(t.p.size()); ++i) {
       auto [cx, cz] = cell(i);
       for (int ox = -1; ox <= 1; ++ox)
@@ -531,6 +543,7 @@ void LoadTrails(const std::string& map) {
     }
     if (!t.p.empty()) RT_INFO("bot nav: %zu trail points learnt on %s (%s)", t.p.size(), map.c_str(), Utf8(path).c_str());
   }
+  std::lock_guard lock(g_trail_mutex);
   g_trails = std::move(t);
 }
 
@@ -551,10 +564,18 @@ int NearestTrail(const float at[3], float within) {
 // point; little is lost when the server stops): several soldiers' points
 // written as they come would interleave.
 static std::map<uint32_t, std::vector<std::array<float, 3>>> g_trail_open;
+// What is on the file already (a 1.5 m grid, to not write the same way twice) and its size.
+static std::unordered_set<uint64_t> g_trail_seen;
+static uintmax_t g_trail_bytes = 0;
+static uint64_t TrailCell(float x, float y, float z) {
+  return (uint64_t(uint32_t(int32_t(std::floor(x / 1.5f)))) << 40) ^ (uint64_t(uint32_t(int32_t(std::floor(z / 1.5f)))) << 16) ^
+         uint64_t(uint16_t(int16_t(std::floor(y / 3.0f))));
+}
 static void FlushTrail(FILE* f, std::vector<std::array<float, 3>>& t, bool keep_last) {
   if (t.size() >= 2) {
     fprintf(f, "-\n");
-    for (const auto& q : t) fprintf(f, "%.2f %.2f %.2f\n", q[0], q[1], q[2]);
+    g_trail_bytes += 2;
+    for (const auto& q : t) g_trail_bytes += uintmax_t(fprintf(f, "%.2f %.2f %.2f\n", q[0], q[1], q[2]));
   }
   if (keep_last && !t.empty()) t.erase(t.begin(), t.end() - 1);
   else t.clear();
@@ -562,7 +583,16 @@ static void FlushTrail(FILE* f, std::vector<std::array<float, 3>>& t, bool keep_
 
 void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos, int count) {
   std::lock_guard lock(g_trail_mutex);
-  if (map != g_trail_map) g_trail_open.clear(), g_trail_map = map;
+  if (map != g_trail_map) {
+    g_trail_open.clear(), g_trail_map = map;
+    g_trail_seen.clear();
+    std::error_code ec;
+    g_trail_bytes = std::filesystem::file_size(TrailPath(map), ec);
+    if (ec) g_trail_bytes = 0;
+    if (g_trails.map == map)
+      for (const auto& q : g_trails.p) g_trail_seen.insert(TrailCell(q[0], q[1], q[2]));
+  }
+  if (g_trail_bytes >= kTrailFileMax) return;  // (enough learnt: the file is not grown any more)
   FILE* f = nullptr;
   auto file = [&]() {
     if (!f) {
@@ -583,6 +613,7 @@ void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos,
       if (d < 1.0f) continue;
       if (d > 5.0f && file()) FlushTrail(f, t, false);  // a jump (a respawn, a teleport): a new trail
     }
+    if (!g_trail_seen.insert(TrailCell(x, y, z)).second && !t.empty()) continue;  // (a way already written)
     t.push_back({x, y, z});
     if (t.size() >= 8 && file()) FlushTrail(f, t, true);
   }
@@ -599,8 +630,8 @@ void RecordTrails(const std::string& map, const uint32_t* ids, const float* pos,
 }
 
 int RouteTrails(const std::string& map, const float a[3], const float b[3], float* corners, int max) {
-  std::lock_guard lock(g_trail_mutex);
   LoadTrails(map);
+  std::lock_guard lock(g_trail_mutex);
   if (g_trails.p.empty() || max <= 0) return 0;
   int from = NearestTrail(a, 15.0f), to = NearestTrail(b, 30.0f);
   if (from < 0 || to < 0) return 0;
@@ -642,8 +673,8 @@ int RouteTrails(const std::string& map, const float a[3], const float b[3], floa
 }
 
 bool HaveTrails(const std::string& map) {
-  std::lock_guard lock(g_trail_mutex);
   LoadTrails(map);
+  std::lock_guard lock(g_trail_mutex);
   return !g_trails.p.empty();
 }
 

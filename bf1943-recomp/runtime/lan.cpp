@@ -27,6 +27,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <cmath>
 #include <chrono>
 #include <cstdio>
 #include <cstring>
@@ -166,8 +167,10 @@ void AskWeather(uint32_t address) {
   int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
   closesocket(s);
   if (n < 8 || memcmp(buf, g_tag, 4) || buf[4] != 'W' || buf[5] != '!') return;
+  if (from.sin_addr.s_addr != address) return;  // (only the host's own answer)
   float rain = 0.0f, hours = 12.0f;
   if (sscanf(buf + 6, "%f|%f", &rain, &hours) != 2) return;
+  if (!std::isfinite(rain) || !std::isfinite(hours) || rain < 0.0f || rain > 1.0f || hours < 0.0f || hours > 24.0f) return;
   g_weather = rain > 0.5f ? 1 : 0;
   g_time_of_day = std::clamp(hours, 0.0f, 24.0f);
   xgpu::SetWeather(rain, g_time_of_day);
@@ -197,6 +200,14 @@ void Beacon() {
     }
     if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'K' && buf[5] == '!') {
       // A joiner's password for a protected game: let that address in, or not.
+      {  // (guesses: five an address every 10 s)
+        static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> tries;
+        const auto t = std::chrono::steady_clock::now();
+        if (tries.size() > 256) tries.clear();
+        auto& [since, count] = tries[from.sin_addr.s_addr];
+        if (t - since > std::chrono::seconds(10)) since = t, count = 0;
+        if (++count > 5) continue;
+      }
       const std::string given(buf + 6, size_t(n) - 6);
       const bool ok = password.empty() || given == password;
       if (ok) AllowGuest(from.sin_addr.s_addr);
@@ -242,7 +253,12 @@ bool GuestAllowed(uint32_t ip) {
 }
 void AllowGuest(uint32_t ip) {
   std::lock_guard lock(g_guest_mutex);
-  g_guests[ip] = std::chrono::steady_clock::now();
+  const auto now = std::chrono::steady_clock::now();
+  for (auto it = g_guests.begin(); it != g_guests.end();)  // (the old ones go; 256 at most)
+    if (now - it->second > std::chrono::minutes(10)) it = g_guests.erase(it);
+    else ++it;
+  if (g_guests.size() >= 256 && !g_guests.count(ip)) return;
+  g_guests[ip] = now;
 }
 const std::wstring& JoinError() { return g_join_error; }
 
@@ -372,8 +388,12 @@ std::vector<Server> Found() {
   return g_found;
 }
 
+// (a joiner's beacon question runs for 15 s: hosting meanwhile makes it stale)
+static std::atomic<int> g_hardcore_gen{0};
+
 // HOST GAME: the map hosted as a LAN server, with bots joining it.
 void Host(const std::string& map, int bots) {
+  ++g_hardcore_gen;
   {
     std::lock_guard lock(g_host_map_mutex);
     g_host_map = map;
@@ -469,8 +489,7 @@ void StartBeacon() {
 // (a firewall, an older host): the HUD stays.
 static void AskHardcore(uint32_t address) {
   g_hardcore_hud = false;
-  static std::atomic<int> generation{0};
-  const int mine = ++generation;
+  const int mine = ++g_hardcore_gen;
   std::thread([address, mine] {
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (s == INVALID_SOCKET) return;
@@ -486,7 +505,7 @@ static void AskHardcore(uint32_t address) {
     to.sin_addr.s_addr = address;
     const std::string query = std::string(g_tag) + "?";
     bool answered = false;
-    for (int tries = 0; tries < 30 && !answered && generation == mine; ++tries) {
+    for (int tries = 0; tries < 30 && !answered && g_hardcore_gen == mine; ++tries) {
       sendto(s, query.c_str(), 5, 0, (sockaddr*)&to, sizeof(to));
       char buf[256];
       sockaddr_in from{};
@@ -496,7 +515,7 @@ static void AskHardcore(uint32_t address) {
       buf[n] = 0;
       answered = true;
       bool hardcore = std::strstr(buf + 5, "|hardcore") != nullptr;
-      if (generation == mine) g_hardcore_hud = hardcore;
+      if (g_hardcore_gen == mine) g_hardcore_hud = hardcore;
       RT_INFO("lan: the host's game is %s", hardcore ? "HARDCORE: no HUD or crosshair" : "not hardcore");
     }
     if (!answered) RT_INFO("lan: the host's beacon did not answer: playing with the HUD");
@@ -519,6 +538,8 @@ bool PrepareJoin(const std::string& address_port, const std::string& map, const 
   // starts sending (net.cpp drops packets from addresses it has not let in).
   if (!password.empty() && !AskPassword(ip.s_addr, password, g_join_error)) return false;
   g_join_error.clear();
+  g_hardcore = false;  // (the host's setting, not ours: the beacon says)
+  if (&password != &g_join_password) g_join_password = password;  // (kept: the rejoin after a map change uses it)
   g_join_port = htons(uint16_t(port));
   {
     std::lock_guard lock(g_host_map_mutex);
