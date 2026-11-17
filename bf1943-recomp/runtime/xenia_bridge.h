@@ -54,6 +54,15 @@ void SetHdrWhite(float nits);
 void SetFullscreen(bool on);
 // Widescreen ASPECT: fill the window (stretch) or keep 16:9 with bars.
 void SetFillScreen(bool fill);
+// ULTRAWIDE (a window wider than 16:9): the 3D view as wide as the window
+// (more to the sides, not stretched) and the HUD and menus at their own
+// proportions; hud 0: the HUD in a 16:9 area in the centre, 1: its corner
+// elements at the edges of an area up to 21:9 wide. Live.
+void SetWide(bool on, int hud);
+// A menu is up over the level or the front end (its draws kept together).
+void SetUiMenu(bool on);
+// The aspect (width / height) the 3D views are built at: 16:9 or the window's.
+float ViewAspect();
 bool IsFullscreen();
 int FullscreenToggles();  // Alt+Enter presses so far (the setting follows them)
 // Our explosion smoke and debris (PC settings: EXPLOSION SMOKE).

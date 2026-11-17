@@ -294,6 +294,12 @@ int main(int argc, char** argv) {
     else if (a == "--overgrowth" && i + 1 < argc) g_overgrowth = argv[++i];
     else if (a == "--emitter" && i + 1 < argc) g_emitter = argv[++i];
     else if (a == "--fov" && i + 1 < argc) g_fov = float(atof(argv[++i]));
+    else if (a == "--aspect" && i + 1 < argc) {
+      std::string v = argv[++i];
+      g_aspect_override = v == "bars" ? "0" : v == "stretch" ? "1" : "2";
+    } else if (a == "--wide-hud" && i + 1 < argc) {
+      g_wide_hud_override = std::string(argv[++i]) == "centre" ? "0" : "1";
+    }
     else if (a == "--lod" && i + 1 < argc) g_lod = float(atof(argv[++i]));
     else if (a == "--watch-write" && i + 1 < argc) {  // DEBUG: addr,size,seconds
       uint32_t addr = 0, size = 4;

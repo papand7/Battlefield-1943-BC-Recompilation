@@ -230,8 +230,48 @@ GAME_PATCH(82294708) {
   }
 }
 
+// ULTRAWIDE (xgpu::SetWide): a view's update, sub_82583430(view), builds its
+// culling frustum (sub_82623DB8) from its vertical angle (+12) and its aspect
+// (+32, width / height; +16 = +12 * +32, as its setter sub_825832B8 keeps
+// it), and sub_825891E0(view) its projection (+720) and the matrices made
+// from it. Every 16:9 view (the camera, the weapon's, the shadow cascades'
+// split frusta) gets the window's aspect: the same vertical angle, more to
+// the sides; the presenter stretches the 16:9 frame over the window, which
+// undoes the squeeze. Square views (reflections, cube maps) stay. (The game
+// sets +32 to 16:9 again each frame, sub_823C7C58, and its own side, the
+// HUD's world markers included, keeps working at 16:9: a marker lands on its
+// point once the HUD is squeezed about the centre, bf_menu.h.)
+namespace {
+std::mutex g_wide_mutex;
+std::vector<float> g_wide_applied;  // aspects given to views so far (a resize)
+float WideAspect(float a) {
+  const float want = xgpu::ViewAspect();
+  if (std::abs(a - want) < 1e-4f) return a;
+  bool ours = std::abs(a - 16.0f / 9.0f) < 0.002f;
+  std::lock_guard lock(g_wide_mutex);
+  for (float applied : g_wide_applied) ours |= std::abs(a - applied) < 1e-4f;
+  if (!ours) return a;
+  if (std::find(g_wide_applied.begin(), g_wide_applied.end(), want) == g_wide_applied.end() &&
+      g_wide_applied.size() < 64)
+    g_wide_applied.push_back(want);
+  return want;
+}
+}  // namespace
+GAME_PATCH(82583430) {
+  const uint32_t view = ctx.r3.u32;
+  const float a = GuestFloat(view + 32), wide = WideAspect(a);
+  if (wide != a) {
+    SetGuestFloat(view + 32, wide);
+    SetGuestFloat(view + 16, GuestFloat(view + 12) * wide);
+    St32(view, Ld32(view) | 10);
+  }
+  __imp__sub_82583430(ctx, base);
+}
+
 GAME_PATCH(82623DB8) {
   if (t_second_view) ctx.f1.f64 = WiderFov(ctx.f1.f64);
+  // ULTRAWIDE: views built without their update (sub_82294818's) the same.
+  if (float wide = WideAspect(float(ctx.f2.f64)); wide != float(ctx.f2.f64)) ctx.f2.f64 = wide;
   __imp__sub_82623DB8(ctx, base);
 }
 
@@ -256,6 +296,12 @@ struct HardcoreSupported {
   HardcoreSupported() { rt::g_hardcore_supported = true; }
 } g_hardcore_supported_install;
 void HardcoreHud() {
+  // ULTRAWIDE: under a menu (the loading screen too: a level before its first
+  // spawn screen) the UI's draws stay together in the centre.
+  static bool spawn_seen = false;
+  if (rt::g_in_menus) spawn_seen = false;
+  if (rt::g_level_menu) spawn_seen = true;
+  xgpu::SetUiMenu(rt::g_in_menus || rt::g_level_menu || rt::g_scoreboard_open || !spawn_seen);
   static int last = -1;
   const bool hide = rt::g_hardcore_hud && !rt::g_in_menus && !rt::g_level_menu && !rt::g_scoreboard_open;
   if (int(hide) == last) return;
@@ -1104,6 +1150,7 @@ std::string g_worldrender;  // --worldrender "Field=value,..."
 std::string g_overgrowth;   // --overgrowth "Field=value,..."
 std::string g_emitter;      // --emitter "Field=value,..."
 float g_wind_cli = -1.0f;   // --wind (-1: the PLANT WIND setting)
+std::string g_aspect_override, g_wide_hud_override;
 float g_fov = 0.0f;         // --fov, the FIELD OF VIEW setting
 std::atomic<bool> g_aiming{false};
 std::atomic<float> g_fov_now_deg{0}, g_fov_own_deg{0};  // the FOV controller's now and own (82583248)

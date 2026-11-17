@@ -28,6 +28,9 @@ void SetWind(float) {}
 void SetRtFoliage(bool) {}
 void SetSharpness(float) {}
 void SetHideUi(bool) {}
+void SetWide(bool, int) {}
+void SetUiMenu(bool) {}
+float ViewAspect() { return 16.0f / 9.0f; }
 void SetHdr(bool, float, float) {}
 void SetHdrStretch(bool) {}
 void SetOverlay(const uint8_t*, uint32_t, uint32_t) {}

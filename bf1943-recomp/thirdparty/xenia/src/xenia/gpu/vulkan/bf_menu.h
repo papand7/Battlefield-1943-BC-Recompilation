@@ -7,6 +7,7 @@
 #ifndef XENIA_GPU_VULKAN_BF_MENU_H_
 #define XENIA_GPU_VULKAN_BF_MENU_H_
 
+#include <algorithm>
 #include <atomic>
 #include <cstdint>
 #include <mutex>
@@ -31,6 +32,39 @@ struct Icon {
 
 // Hardcore mode (runtime xgpu::SetHideUi): the game's 2D UI draws skipped.
 inline std::atomic<bool> g_hide_ui{false};
+
+// Ultrawide (runtime xgpu::SetWide; a window wider than 16:9). The game still
+// renders its 16:9-sized frame, but its 3D views are built at the window's
+// aspect (game_patches.cpp, the views' update) and the presenter stretches
+// the frame over the whole window, so the 3D picture is undistorted and
+// wider. The 2D UI draws (HUD, menus) are squeezed back to their own
+// proportions by g_ui_scale (16:9 over the window's aspect, about the
+// centre); in the HUD layout "edges" the bottom corners' elements (minimap,
+// ammo) are also moved out by g_ui_shift (NDC) to the edges of a HUD area at
+// most 21:9 wide (vulkan_command_processor.cc BfUiWideTransform).
+inline std::atomic<bool> g_wide{false};      // the mode is on (any window)
+inline std::atomic<int> g_wide_hud{1};       // 0: 16:9 in the centre, 1: edges
+inline std::atomic<float> g_ui_scale{1.0f};  // 1: not wide right now
+inline std::atomic<float> g_ui_shift{0.0f};
+// A menu is up (front end, spawn screen, pause, scoreboard): its draws stay
+// together in the centre.
+inline std::atomic<bool> g_ui_menu{true};
+// The window's aspect for the 3D views (16:9 or wider).
+inline std::atomic<float> g_view_aspect{16.0f / 9.0f};
+inline void UpdateWide(uint32_t width, uint32_t height) {
+  // (A minimised window, 0 x 0, keeps the last size's.)
+  static std::atomic<uint32_t> last_width{0}, last_height{0};
+  if (width && height) last_width = width, last_height = height;
+  width = last_width, height = last_height;
+  float aspect = width && height ? float(width) / float(height) : 16.0f / 9.0f;
+  if (!g_wide || !(aspect > 16.0f / 9.0f + 0.01f)) aspect = 16.0f / 9.0f;
+  g_view_aspect = aspect;
+  const float scale = (16.0f / 9.0f) / aspect;
+  g_ui_scale = scale;
+  // The HUD area: 21:9 (64:27) at most; its edges at +-hud/aspect in NDC.
+  const float hud = std::min(aspect, 64.0f / 27.0f);
+  g_ui_shift = g_wide_hud ? hud / aspect - scale : 0.0f;
+}
 
 inline std::mutex g_mutex;
 inline std::vector<Box> g_building, g_done;

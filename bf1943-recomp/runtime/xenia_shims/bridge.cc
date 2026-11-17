@@ -481,6 +481,13 @@ void SetDisplayOptions(int resolution_scale, int effect, int window_width, int w
 
 // Widescreen ASPECT: fill the window (stretch) or keep 16:9 with bars.
 void SetFillScreen(bool fill) { cvars::present_letterbox = !fill; }
+void SetWide(bool on, int hud) {
+  xe::gpu::bfmenu::g_wide_hud = hud;
+  xe::gpu::bfmenu::g_wide = on;
+  xe::gpu::bfmenu::UpdateWide(xe::gpu::bffsr::display_width, xe::gpu::bffsr::display_height);
+}
+void SetUiMenu(bool on) { xe::gpu::bfmenu::g_ui_menu = on; }
+float ViewAspect() { return xe::gpu::bfmenu::g_view_aspect.load(std::memory_order_relaxed); }
 
 void SetOptions(int anisotropic, uint32_t texture_memory_mb, const char* shader_dump_dir) {
   cvars::anisotropic_override = anisotropic;
@@ -642,6 +649,24 @@ bool CaptureFrame(const char* png_path, FrameStats* stats) {
         }
       }
     }
+  }
+  // ULTRAWIDE: the frame as the window shows it, stretched to its aspect
+  // (linear filtering across x).
+  const float aspect = xe::gpu::bfmenu::g_view_aspect.load(std::memory_order_relaxed);
+  if (xe::gpu::bfmenu::g_ui_scale.load(std::memory_order_relaxed) < 0.999f && aspect > 1.0f) {
+    const uint32_t wide = uint32_t(std::lround(image.height * aspect));
+    std::vector<uint8_t> out(size_t(wide) * image.height * 4);
+    for (uint32_t y = 0; y < image.height; ++y) {
+      const uint8_t* row = image.data.data() + y * image.stride;
+      for (uint32_t x = 0; x < wide; ++x) {
+        float sx = std::clamp((x + 0.5f) * image.width / wide - 0.5f, 0.0f, float(image.width - 1));
+        uint32_t x0 = uint32_t(sx), x1 = std::min(x0 + 1, image.width - 1);
+        float t = sx - float(x0);
+        for (int c = 0; c < 4; ++c)
+          out[(size_t(y) * wide + x) * 4 + c] = uint8_t(row[x0 * 4 + c] * (1.0f - t) + row[x1 * 4 + c] * t + 0.5f);
+      }
+    }
+    return stbi_write_png(png_path, int(wide), int(image.height), 4, out.data(), int(wide * 4)) != 0;
   }
   return stbi_write_png(png_path, int(image.width), int(image.height), 4, image.data.data(),
                         int(image.stride)) != 0;

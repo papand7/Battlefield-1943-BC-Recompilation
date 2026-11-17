@@ -1551,9 +1551,82 @@ static int BfMenuShaderKind(const Shader& vs) {
   return it->second;
 }
 
+// The screen box (0-1 of the frame, y down) of a 2D UI draw's vertices, as
+// the game placed them on its 16:9 frame; false if they can't be read.
+static bool BfUiDrawSpan(const Shader& vs, int kind, const RegisterFile& regs, Memory& memory,
+                         uint32_t index_count, uint32_t index_base, bool index_16, float& x0,
+                         float& x1, float& y0, float& y1) {
+  if (index_count == 0 || index_count > 4096) return false;
+  const auto* c = reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
+  const uint32_t* fetch = &regs.values[XE_GPU_REG_SHADER_CONSTANT_FETCH_00_0 + 95 * 2];
+  const uint32_t base = (fetch[0] >> 2) & 0x07FFFFFF;
+  const uint32_t words = vs.ucode_disassembly().find("Stride=4") != std::string::npos ? 4 : 2;
+  const uint8_t* vertices = memory.TranslatePhysical(base * 4);
+  if (!vertices) return false;
+  const uint8_t* indices = index_base ? memory.TranslatePhysical(index_base) : nullptr;
+  x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+  for (uint32_t i = 0; i < index_count; ++i) {
+    uint32_t v = i;
+    if (indices) {
+      v = index_16 ? xe::byte_swap(reinterpret_cast<const uint16_t*>(indices)[i])
+                   : xe::byte_swap(reinterpret_cast<const uint32_t*>(indices)[i]);
+      if (v > 16384) return false;
+    }
+    const uint32_t* w = reinterpret_cast<const uint32_t*>(vertices) + v * words;
+    float px, py;
+    uint32_t bx = xe::byte_swap(w[0]), by = xe::byte_swap(w[1]);
+    std::memcpy(&px, &bx, 4);
+    std::memcpy(&py, &by, 4);
+    if (kind == 2) px += c[9 * 4], py += c[9 * 4 + 1];
+    float cx = px * c[0] + py * c[1] + c[3];
+    float cy = px * c[4] + py * c[5] + c[7];
+    float cw = px * c[12] + py * c[13] + c[15];
+    if (!(std::abs(cw) > 1e-6f)) return false;
+    float sx = (cx / cw) * 0.5f + 0.5f, sy = 0.5f - (cy / cw) * 0.5f;
+    x0 = std::min(x0, sx), x1 = std::max(x1, sx), y0 = std::min(y0, sy), y1 = std::max(y1, sy);
+  }
+  return x1 >= x0;
+}
+
+// Ultrawide (bf_menu.h g_wide): the NDC x scale and offset of a 2D UI draw on
+// the stretched frame. Under a menu (and the loading screen) the whole UI is
+// kept at 16:9 in the centre, pictures included (a background made of tiles
+// stays whole), except full-width solid fills (fades, dimming), which cover
+// the window. In play full-width draws (overlays) cover the window; the
+// others keep their proportions about the centre, where the world markers
+// (placed on a 16:9 canvas, game_patches.cpp) land on their points. HUD
+// layout "edges": what lies wholly in a bottom corner (the minimap, the
+// ammo and weapon panel) moves out to that edge of the HUD area. Only those
+// corners: a draw is one piece of an element (anchoring by draw elsewhere
+// tore apart text and pictures), and a marker anchored there would leave its
+// point.
+static bool BfUiWideTransform(const Shader& vs, const RegisterFile& regs, Memory& memory,
+                              uint32_t index_count, uint32_t index_base, bool index_16,
+                              bool textured, float& scale, float& offset) {
+  scale = 1.0f, offset = 0.0f;
+  const float s = bfmenu::g_ui_scale.load(std::memory_order_relaxed);
+  if (!(s < 0.999f)) return false;
+  const int kind = BfMenuShaderKind(vs);
+  if (!kind) return false;
+  // The main frame only (not a UI drawn into a smaller texture).
+  if (regs.Get<reg::RB_SURFACE_INFO>().surface_pitch < 1280) return false;
+  float x0 = 0.5f, x1 = 0.5f, y0 = 0.5f, y1 = 0.5f;
+  const bool span =
+      BfUiDrawSpan(vs, kind, regs, memory, index_count, index_base, index_16, x0, x1, y0, y1);
+  const bool menu = bfmenu::g_ui_menu.load(std::memory_order_relaxed);
+  if (span && x0 < 0.02f && x1 > 0.98f && (!menu || !textured)) return false;
+  scale = s;
+  const float shift = bfmenu::g_ui_shift.load(std::memory_order_relaxed);
+  if (span && shift > 0.0f && !menu) {
+    if (y0 > 0.55f && y1 < 1.0f && x0 > 0.0f && x1 < 0.3f) offset = -shift;
+    else if (y0 > 0.55f && y1 < 1.0f && x0 > 0.7f && x1 < 1.0f) offset = shift;
+  }
+  return true;
+}
+
 static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory& memory,
                              uint32_t index_count, uint32_t index_base,
-                             bool index_16) {
+                             bool index_16, float ui_scale = 1.0f, float ui_offset = 0.0f) {
   const int kind = BfMenuShaderKind(vs);
   if (!kind || index_count == 0 || index_count > 64) return;
   const auto* c = reinterpret_cast<const float*>(&regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
@@ -1584,7 +1657,7 @@ static void BfCollectMenuBox(const Shader& vs, const RegisterFile& regs, Memory&
     float cy = px * c[4] + py * c[5] + c[7];
     float cw = px * c[12] + py * c[13] + c[15];
     if (!(std::abs(cw) > 1e-6f)) return;
-    float sx = (cx / cw) * 0.5f + 0.5f, sy = 0.5f - (cy / cw) * 0.5f;
+    float sx = ((cx / cw) * ui_scale + ui_offset) * 0.5f + 0.5f, sy = 0.5f - (cy / cw) * 0.5f;
     x0 = std::min(x0, sx), x1 = std::max(x1, sx), y0 = std::min(y0, sy), y1 = std::max(y1, sy);
   }
   bfmenu::AddBox({x0, y0, x1, y1, c[32], c[33], c[34], c[35]});
@@ -1652,6 +1725,12 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   }
 
   auto aspect = graphics_system_->GetScaledAspectRatio();
+  // bf1943 ultrawide (bf_menu.h): the frame stretched over the whole window
+  // (its 3D views were built at the window's aspect).
+  bfmenu::UpdateWide(bffsr::display_width, bffsr::display_height);
+  if (bfmenu::g_ui_scale.load(std::memory_order_relaxed) < 0.999f) {
+    aspect = {uint32_t(bffsr::display_width), uint32_t(bffsr::display_height)};
+  }
 
   presenter->RefreshGuestOutput(
       frontbuffer_width_scaled, frontbuffer_height_scaled, aspect.first,
@@ -3120,10 +3199,18 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       vertex_shader, pixel_shader, regs,
       render_target_cache_->LastUpdateTarget(0),
       render_target_cache_->LastUpdateTarget(1), *memory_);
+  // bf1943 ultrawide (bf_menu.h g_wide): this 2D UI draw's x transform.
+  float bf_ui_scale = 1.0f, bf_ui_offset = 0.0f;
+  const bool bf_ui_wide = BfUiWideTransform(
+      *vertex_shader, regs, *memory_, index_count,
+      index_buffer_info ? index_buffer_info->guest_base : 0,
+      index_buffer_info && index_buffer_info->format == xenos::IndexFormat::kInt16,
+      used_texture_mask != 0, bf_ui_scale, bf_ui_offset);
   BfCollectMenuBox(*vertex_shader, regs, *memory_, index_count,
                    index_buffer_info ? index_buffer_info->guest_base : 0,
                    index_buffer_info &&
-                       index_buffer_info->format == xenos::IndexFormat::kInt16);
+                       index_buffer_info->format == xenos::IndexFormat::kInt16,
+                   bf_ui_scale, bf_ui_offset);
   // bf1943 --scene-fx: the muzzle flash's light is lit by the scene effects;
   // the world draws get the game's (c7) as zero.
   {
@@ -3325,6 +3412,11 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   gviargs.SetupRegisterValues(regs, window_offset_tiles != 0);
 
   draw_util::GetHostViewportInfo(&gviargs, viewport_info);
+  if (bf_ui_wide) {
+    // x' = s (x ns + no w) + o w.
+    viewport_info.ndc_offset[0] = viewport_info.ndc_offset[0] * bf_ui_scale + bf_ui_offset;
+    viewport_info.ndc_scale[0] *= bf_ui_scale;
+  }
   // Update dynamic graphics pipeline state.
   UpdateDynamicState(viewport_info, primitive_polygonal,
                      normalized_depth_control, draw_resolution_scale_x,

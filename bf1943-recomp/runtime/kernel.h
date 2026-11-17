@@ -221,6 +221,9 @@ extern float g_shadow_distance;          // --shadow-distance (default 300; 0 = 
 extern float g_lod;                      // --lod N: N times the vegetation detail (default 4, 1 = the game's)
 extern std::string g_overgrowth;         // --overgrowth "Field=value,..." (all OvergrowthSettings copies)
 extern float g_wind_cli;                 // --wind: plant gust metres (-1: the PLANT WIND setting)
+// --aspect bars|stretch|ultrawide, --wide-hud edges|centre: ASPECT RATIO and
+// ULTRAWIDE HUD as "0"/"1"/"2" and "1"/"0" (empty: the PC settings').
+extern std::string g_aspect_override, g_wide_hud_override;
 extern float g_fov;                      // --fov: horizontal degrees at 16:9 (0: the game's 85.6)
 extern std::string g_emitter;            // --emitter "Field=value,..." (EmitterSystemSettings)
 void ApplyEmitterNow();                   // g_emitter to the EmitterSystemSettings now (a setting changed)
