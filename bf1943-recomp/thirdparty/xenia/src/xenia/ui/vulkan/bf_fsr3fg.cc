@@ -3,6 +3,7 @@
 #include "xenia/ui/vulkan/bf_fsr3fg.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstring>
 #include <mutex>
 
@@ -60,6 +61,30 @@ struct State {
 } g;
 
 const VulkanDevice* g_device = nullptr;
+
+// Per-second statistics (log line "fsr3fg: stats"), for finding why frames are
+// not doubled.
+struct Stats {
+  uint64_t paints = 0, generated = 0, repaints = 0, unusable = 0, no_hudless = 0, prepare_failed = 0;
+  double acquire_ms = 0, present_ms = 0;
+  uint64_t last_presented = 0;
+  std::chrono::steady_clock::time_point t0 = std::chrono::steady_clock::now();
+} st;
+double MsSince(std::chrono::steady_clock::time_point t) {
+  return std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - t).count();
+}
+void LogStats(uint64_t seq) {
+  const auto now = std::chrono::steady_clock::now();
+  double secs = std::chrono::duration<double>(now - st.t0).count();
+  if (secs < 1.0) return;
+  uint64_t p = presented;
+  XELOGI("fsr3fg: stats {:.1f}s paints={} generated={} repaints={} unusable={} no_hudless={} prepare_failed={} "
+         "presented={} acquire={:.0f}ms present={:.0f}ms seq={}",
+         secs, st.paints, st.generated, st.repaints, st.unusable, st.no_hudless, st.prepare_failed,
+         p - st.last_presented, st.acquire_ms, st.present_ms, seq);
+  st = Stats();
+  st.last_presented = p;
+}
 
 void Message(uint32_t type, const wchar_t* message) {
   char text[512];
@@ -310,8 +335,11 @@ VkResult GetSwapchainImages(const VulkanDevice* device, VkSwapchainKHR swapchain
 VkResult AcquireNextImage(const VulkanDevice* device, VkSwapchainKHR swapchain, uint64_t timeout,
                           VkSemaphore semaphore, uint32_t* image_index) {
   if (swapchain != VK_NULL_HANDLE && swapchain == g.swapchain) {
-    return g.fn.pOutAcquireNextImageKHR(device->device(), swapchain, timeout, semaphore, VK_NULL_HANDLE,
-                                        image_index);
+    const auto ta = std::chrono::steady_clock::now();
+    VkResult r = g.fn.pOutAcquireNextImageKHR(device->device(), swapchain, timeout, semaphore, VK_NULL_HANDLE,
+                                              image_index);
+    st.acquire_ms += MsSince(ta);
+    return r;
   }
   return device->functions().vkAcquireNextImageKHR(device->device(), swapchain, timeout, semaphore,
                                                    VK_NULL_HANDLE, image_index);
@@ -320,7 +348,9 @@ VkResult AcquireNextImage(const VulkanDevice* device, VkSwapchainKHR swapchain, 
 VkResult QueuePresent(const VulkanDevice* device, VkQueue queue, const VkPresentInfoKHR& present_info) {
   if (present_info.swapchainCount == 1 && present_info.pSwapchains[0] != VK_NULL_HANDLE &&
       present_info.pSwapchains[0] == g.swapchain) {
+    const auto tp = std::chrono::steady_clock::now();
     VkResult result = g.fn.pOutQueuePresentKHR(queue, &present_info);
+    st.present_ms += MsSince(tp);
     if (g.fn.pOutGetLastPresentCountFFXAPI) presented = g.fn.pOutGetLastPresentCountFFXAPI(g.swapchain);
     return result;
   }
@@ -343,6 +373,15 @@ void BeginPresent(const VulkanDevice* device, VkSwapchainKHR swapchain, VkComman
   const bool generate = usable && s.seq != g.last_seq;
   const bool hudless = generate && s.hudless && s.display_width == width && s.display_height == height;
   ++g.frame_id;
+  ++st.paints;
+  if (!usable) {
+    ++st.unusable;
+  } else if (!generate) {
+    ++st.repaints;
+  } else if (!hudless) {
+    ++st.no_hudless;
+  }
+  LogStats(s.seq);
 
   ffxConfigureDescFrameGeneration config = {};
   config.header.type = FFX_API_CONFIGURE_DESC_TYPE_FRAMEGENERATION;
@@ -395,6 +434,7 @@ void BeginPresent(const VulkanDevice* device, VkSwapchainKHR swapchain, VkComman
   if (r != FFX_API_RETURN_OK) {
     // Nothing prepared for this frame: it is only presented.
     static int logs = 0;
+    ++st.prepare_failed;
     if (logs++ < 5) XELOGE("fsr3fg: prepare failed ({})", uint32_t(r));
     ffxConfigureDescFrameGeneration off = config;
     off.frameGenerationEnabled = false;
@@ -405,6 +445,7 @@ void BeginPresent(const VulkanDevice* device, VkSwapchainKHR swapchain, VkComman
   g.last_seq = s.seq;
   g.first_after_reset = false;
   ++g.generated_frames;
+  ++st.generated;
 }
 
 void Shutdown() {

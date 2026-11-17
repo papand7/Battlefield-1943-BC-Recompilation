@@ -75,6 +75,7 @@ void SetPomScale(float) {}
 }  // namespace pbr
 namespace scenefx {
 void Configure(const char*) {}
+bool Enabled() { return false; }
 }  // namespace scenefx
 }  // namespace xe::gpu
 

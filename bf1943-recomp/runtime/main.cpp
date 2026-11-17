@@ -11,7 +11,7 @@
 #include "bot_knowledge.h"
 #include "bot_llm.h"
 #include "replay.h"
-namespace xe::gpu::scenefx { void Configure(const char* settings); }  // xenia gpu/vulkan/scene_fx.h
+namespace xe::gpu::scenefx { void Configure(const char* settings); bool Enabled(); }  // xenia gpu/vulkan/scene_fx.h
 
 #include "../tools/msvc_compat/crash_diag.h"  // symbolised stack on crash
 
@@ -164,7 +164,8 @@ int main(int argc, char** argv) {
   std::string shader_dump;  // --dump-shaders <dir>
   int res_scale = 2, present_effect = 5, window_w = 0, window_h = 0;  // --res-scale, --sharpen, --window
   bool fullscreen = false;                                            // --display
-  std::string upscale_quality = "off";                                // --upscale-quality
+  bool frame_gen = false;                                             // --frame-gen
+  std::string upscale_quality = "off";                              // --upscale-quality
   std::string bot_llm;                                                // --bot-llm
   int train_minutes = 0;                                              // --train-minutes
   bool hdr = false;                                                   // --hdr, --hdr-white, --hdr-peak
@@ -372,7 +373,7 @@ int main(int argc, char** argv) {
     else if (a == "--upscale-quality" && i + 1 < argc) upscale_quality = argv[++i];
     else if (a == "--master" && i + 1 < argc) rt::lan::SetMaster(argv[++i]);  // "" for none
     else if (a == "--publish") rt::lan::SetPublish(true);  // a host: on the master server's list
-    else if (a == "--frame-gen") xgpu::SetFrameGeneration(true);  // AMD FSR 3.1 frame generation (with FSR 3 / DLSS)
+    else if (a == "--frame-gen") xgpu::SetFrameGeneration(true), frame_gen = true;  // AMD FSR 3.1 frame generation (with FSR 3 / DLSS)
     else if (a == "--present-vsync") g_present_vsync = true;  // the swapchain waits for the refresh
     else if (a == "--trace-texture" && i + 1 < argc) xe::gpu::texrep::SetTrace(argv[++i]);
     else if (a == "--log-textures") xe::gpu::texrep::SetLogMisses(true);
@@ -386,6 +387,13 @@ int main(int argc, char** argv) {
     else if (a == "--replay" && i + 1 < argc) rt::replay::g_replay_file = argv[++i];  // replay.h
     else if (a == "--train-minutes" && i + 1 < argc) train_minutes = std::max(0, atoi(argv[++i]));
     else if (a == "--speed" && i + 1 < argc) g_time_speed_target = std::clamp(atof(argv[++i]), 0.25, 10.0);
+  }
+  // Frame generation takes the scene's depth and motion vectors from the scene
+  // effects: without them no frame is ever interpolated (the title then shows
+  // as many frames shown as the game makes), so they are turned on with it.
+  if (frame_gen && !xe::gpu::scenefx::Enabled()) {
+    xe::gpu::scenefx::Configure("");
+    RT_INFO("frame generation: scene effects turned on (it needs their depth and motion vectors)");
   }
   if (g_training) {
     g_dedicated = true, g_present = false, g_use_xenia_gpu = false, g_lan_host = true;
