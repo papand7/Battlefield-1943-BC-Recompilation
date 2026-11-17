@@ -189,6 +189,7 @@ struct Glue {
   };
   FgImage fg_depth[kFgSlots], fg_motion[kFgSlots], fg_hudless[kFgSlots];
   bool fg_ready = false;
+  uint64_t fg_failed_sizes = 0;  // the sizes the ring could not be made for (not retried every frame)
   uint64_t fg_seq = 0;
   Frame frames[kSlots];
   std::pair<const ui::vulkan::VulkanDevice*, Frame*> run_args[kSlots];
@@ -442,7 +443,9 @@ VkImageView Record(vulkan::VulkanCommandProcessor& cp, VkImageView final_view,
   }
   // Frame generation (the option on): the ring for the presenter.
   const bool fg = ui::vulkan::bffg::requested;
-  if (fg && !glue.fg_ready) {
+  const uint64_t sizes = (uint64_t(render_width) << 48) ^ (uint64_t(render_height) << 32) ^
+                         (uint64_t(display_w) << 16) ^ uint64_t(display_h);
+  if (fg && !glue.fg_ready && glue.fg_failed_sizes != sizes + 1) {
     bool ok = true;
     for (uint32_t i = 0; i < Glue::kFgSlots && ok; ++i) {
       ok = MakeFgImage(device, VK_FORMAT_R32_SFLOAT, render_width, render_height, glue.fg_depth[i]) &&
@@ -455,6 +458,7 @@ VkImageView Record(vulkan::VulkanCommandProcessor& cp, VkImageView final_view,
       XELOGE("fsr3: no frame generation images for {}x{} -> {}x{}", render_width, render_height, display_w,
              display_h);
       FreeFgImages();
+      glue.fg_failed_sizes = sizes + 1;  // (until the sizes change)
     }
   }
   for (size_t i = 0; i < glue.old.size();) {

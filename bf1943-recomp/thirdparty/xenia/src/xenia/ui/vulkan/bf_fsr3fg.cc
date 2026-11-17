@@ -44,6 +44,7 @@ namespace {
 
 struct State {
   bool tried = false, loaded = false, failed = false;
+  int failures = 0;  // (frame generation swapchains that could not be made: three in a row switch it off)
   HMODULE module = nullptr;
   ffxFunctions ffx = {};
   // The swapchain (its context, the replacement entry points) and the frame
@@ -181,7 +182,8 @@ void Teardown(const VulkanDevice* device) {
 // The frame generation swapchain in place of vkCreateSwapchainKHR. False (and
 // nothing left behind) if it cannot be made.
 bool TryCreate(const VulkanDevice* device, const VkSwapchainCreateInfoKHR& create_info,
-               VkSwapchainKHR old_swapchain, VkSwapchainKHR* out) {
+               VkSwapchainKHR old_swapchain, VkSwapchainKHR* out, bool* old_consumed) {
+  *old_consumed = false;
   const auto& queue_families = device->queue_families();
   const uint32_t family = device->queue_family_graphics_compute();
   if (queue_families[family].queues.size() < 1 + kExtraQueues) {
@@ -223,8 +225,10 @@ bool TryCreate(const VulkanDevice* device, const VkSwapchainCreateInfoKHR& creat
   desc.asyncComputeQueue = {queue_families[family].queues[2]->queue, family, OwnSubmit<2>};
   desc.imageAcquireQueue = {queue_families[family].queues[3]->queue, family, OwnSubmit<3>};
   ffxReturnCode_t r = g.ffx.CreateContext(&g.swapchain_context, &desc.header, nullptr);
+  if (r == FFX_API_RETURN_OK && swapchain != old_swapchain) *old_consumed = old_swapchain != VK_NULL_HANDLE;
   if (r != FFX_API_RETURN_OK || swapchain == VK_NULL_HANDLE) {
     XELOGE("fsr3fg: no frame generation swapchain ({})", uint32_t(r));
+    if (r == FFX_API_RETURN_OK && g.swapchain_context) g.ffx.DestroyContext(&g.swapchain_context, nullptr);
     g.swapchain_context = nullptr;
     return false;
   }
@@ -291,18 +295,32 @@ VkResult CreateSwapchain(const VulkanDevice* device, const VkSwapchainCreateInfo
                          VkSwapchainKHR old_swapchain, VkSwapchainKHR* swapchain_out) {
   if (requested && !g.failed && Load()) {
     VkSwapchainKHR old = old_swapchain;
+    bool gone = false;  // old is destroyed already (the caller's later destroy of it is then a no-op)
     if (old != VK_NULL_HANDLE && old == g.swapchain) {
-      Teardown(device);  // (the caller's later destroy of old is then a no-op)
+      Teardown(device);
       old = VK_NULL_HANDLE;
+      gone = true;
     } else if (g.swapchain != VK_NULL_HANDLE) {
       Teardown(device);
+      g.retired = VK_NULL_HANDLE;  // (a swapchain nobody will destroy again: its handle may be reused)
     }
-    if (TryCreate(device, create_info, old, swapchain_out)) {
+    bool consumed = false;
+    if (TryCreate(device, create_info, old, swapchain_out, &consumed)) {
+      g.failures = 0;
       if (old != VK_NULL_HANDLE) g.retired = old_swapchain;  // the SDK destroyed it
       return VK_SUCCESS;
     }
-    // Not available here (or not working): stay on the plain swapchain.
-    g.failed = true;
+    // Not available here (or not working): the plain swapchain, which must not
+    // be made from an old one the SDK already destroyed.
+    gone |= consumed;
+    g.retired = gone ? old_swapchain : VK_NULL_HANDLE;
+    if (gone) old = VK_NULL_HANDLE;
+    if (++g.failures >= 3) {
+      g.failed = true;
+      XELOGW("fsr3fg: three failures to make the swapchain: frame generation off for this run");
+    } else {
+      XELOGW("fsr3fg: failure {} of 3 (tried again with the next swapchain)", g.failures);
+    }
     old_swapchain = old;
   }
   VkSwapchainCreateInfoKHR info = create_info;

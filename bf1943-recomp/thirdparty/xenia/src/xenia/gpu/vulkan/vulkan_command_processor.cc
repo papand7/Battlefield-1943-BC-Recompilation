@@ -1753,9 +1753,17 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
   auto aspect = graphics_system_->GetScaledAspectRatio();
   // bf1943 ultrawide (bf_menu.h): the frame stretched over the whole window
   // (its 3D views were built at the window's aspect).
-  bfmenu::UpdateWide(bffsr::display_width, bffsr::display_height);
-  if (bfmenu::g_ui_scale.load(std::memory_order_relaxed) < 0.999f) {
-    aspect = {uint32_t(bffsr::display_width), uint32_t(bffsr::display_height)};
+  // (the window's size is 0x0 while it is minimised: the last real one then)
+  static uint32_t last_display_w = 0, last_display_h = 0;
+  if (bffsr::display_width > 0 && bffsr::display_height > 0) {
+    last_display_w = uint32_t(bffsr::display_width);
+    last_display_h = uint32_t(bffsr::display_height);
+  }
+  if (last_display_w && last_display_h) {
+    bfmenu::UpdateWide(last_display_w, last_display_h);
+    if (bfmenu::g_ui_scale.load(std::memory_order_relaxed) < 0.999f) {
+      aspect = {last_display_w, last_display_h};
+    }
   }
 
   presenter->RefreshGuestOutput(
