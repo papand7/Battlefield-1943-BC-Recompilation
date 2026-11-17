@@ -98,10 +98,12 @@ void LoadBansLocked() {
   g_bans_loaded = true;
   std::ifstream f(BansPath());
   std::string line;
+  bool v2 = false;
   while (std::getline(f, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
+    if (line == "#v2") v2 = true;  // (written with ids' leading '#' and '\' escaped; older files are not)
     if (line.empty() || line[0] == '#') continue;
-    if (line[0] == '\\') line.erase(0, 1);  // (an id starting with '#' or '\': SaveBansLocked)
+    if (v2 && line[0] == '\\') line.erase(0, 1);  // (an id starting with '#' or '\': SaveBansLocked)
     Ban b;
     std::stringstream ss(line);
     std::getline(ss, b.id, '\t');
@@ -122,12 +124,17 @@ void SaveBansLocked() {
   std::error_code ec;
   std::filesystem::create_directories(g_user_root, ec);
   std::ofstream f(BansPath(), std::ios::trunc);
-  f << "# Banned players: id <tab> address <tab> name (\"-\": not known). /unban removes them.\n";
+  auto flat = [](std::string s) {  // (a tab or a line end would split the line)
+    for (char& c : s)
+      if (c == '\t' || c == '\n' || c == '\r') c = ' ';
+    return s;
+  };
+  f << "#v2\n# Banned players: id <tab> address <tab> name (\"-\": not known). /unban removes them.\n";
   // The id is the player's own: one starting with '#' would read as a comment,
   // so such a line (and one starting with '\') gets a '\' in front.
   for (const Ban& b : g_bans)
-    f << (!b.id.empty() && (b.id[0] == '#' || b.id[0] == '\\') ? "\\" : "") << b.id << '\t' << b.address << '\t'
-      << b.name << '\n';
+    f << (!b.id.empty() && (b.id[0] == '#' || b.id[0] == '\\') ? "\\" : "") << flat(b.id) << '\t'
+      << flat(b.address) << '\t' << flat(b.name) << '\n';
 }
 bool IsBanned(const Player& p) {
   for (const Ban& b : g_bans) {
