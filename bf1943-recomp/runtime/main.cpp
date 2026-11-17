@@ -2,6 +2,7 @@
 // Usage: bf1943 [--game <dir with default.xex>] [--user <writable dir>] [--trace]
 #include "kernel.h"
 #include "admin.h"
+#include "admin_server.h"
 #include "lan.h"
 #include "pc_settings.h"
 #include "texture_replacement.h"  // xenia_shims
@@ -218,6 +219,8 @@ int main(int argc, char** argv) {
     else if (a == "--join" && i + 1 < argc) join_address = argv[++i];
     else if (a == "--password" && i + 1 < argc) rt::g_server_password = argv[++i];
     else if (a == "--join-password" && i + 1 < argc) rt::g_join_password = argv[++i];
+    else if (a == "--admin-password" && i + 1 < argc) rt::g_admin_password = argv[++i];  // remote admins' (/login)
+    else if (a == "--console") rt::g_admin_console = true;  // admin commands on stdin (a windowed host too)
     else if ((a == "--servername" || a == "--server-name") && i + 1 < argc) rt::g_server_name = argv[++i];
     else if (a == "--name" && i + 1 < argc) g_gamertag = std::string(argv[++i]).substr(0, 15);
     else if (a == "--maps" && i + 1 < argc) {

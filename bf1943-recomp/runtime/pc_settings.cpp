@@ -6,6 +6,7 @@
 // launcher's settings, which it passes on the next start. Everything is
 // also kept in <user>/pc_settings.ini.
 #include "kernel.h"
+#include "admin_server.h"
 #include "pc_settings.h"
 #include "xenia_bridge.h"
 #include "pbr_shaders.h"
@@ -983,6 +984,7 @@ void Activate(Setting& s) {
 }
 
 void StartPuppet(int row) {
+  if (row == kExitGameRow) rt::g_leaving_level = true;  // (a host's bots leave with it: bot_players.cpp)
   g_puppet = Puppet{};
   g_puppet.on = true;
   g_puppet.row = row;
@@ -1237,6 +1239,7 @@ void OpenHost() { OpenMode(kModeHost, kModeSettings); }
 void OpenJoin() { OpenMode(kModeJoin, kModeSettings); }
 
 bool ControlsPad() { return g_open || g_puppet.on || g_wait_release; }
+void QuitToMenu() { StartPuppet(kExitGameRow); }
 uint16_t PuppetButtons() {
   using namespace std::chrono;
   return PuppetStep(duration<double>(steady_clock::now().time_since_epoch()).count());

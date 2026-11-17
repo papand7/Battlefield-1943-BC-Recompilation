@@ -12,6 +12,11 @@ uint32_t BotPlayerSoldier(int i);  // 0 while dead or not deployed
 // The brain's pad: lx, ly -1..1 (ly forward), rx the turn (+ turns right),
 // ry the look up, XInput buttons, triggers lt | rt << 8.
 void SetBotPlayerInput(int i, float lx, float ly, float rx, float ry, uint32_t buttons, uint32_t triggers);
+// The host's /bots and /kick BOT n (admin_server.cpp): a benched bot stays
+// joined but leaves the fight (its soldier killed, no new deploy).
+void SetBotBenched(int i, bool benched);
+bool BotBenched(int i);
+int SetActiveBots(int n);  // the first n of those joined play, the rest are benched; returns how many play
 uint32_t BotPlayerVehicle(int i);  // the vehicle object it sits in, 0 on foot (kept up to date while seated)
 void SetBotPlayerVehicle(int i, uint32_t vehicle);  // the vehicle the director sees it in (0: none found)
 

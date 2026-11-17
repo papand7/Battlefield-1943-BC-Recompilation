@@ -11,6 +11,7 @@
 // game data, as the console's network stack does for UDP peers (the game's
 // server listens on plain UDP), and add the length back on receive.
 #include "kernel.h"
+#include "admin_server.h"
 #include "lan.h"
 
 #include <atomic>
@@ -484,6 +485,12 @@ bool PasswordBlocked(const sockaddr_in& a) {
   if ((ntohl(ip) >> 24) == 127 || ip == 0 || ip == g_lan_ip) return false;  // this PC (host, bots)
   return !rt::lan::GuestAllowed(ip);
 }
+// A kicked or banned player's packets (admin_server.cpp): dropped, so the
+// server lets the player go as one fallen silent.
+bool AdminBlocked(const sockaddr_in& a) {
+  if (rt::g_join_address || (!rt::g_lan_host && !rt::g_dedicated)) return false;  // (hosting only)
+  return rt::admin::Blocked(a.sin_addr.s_addr, a.sin_port);
+}
 GUEST_IMPORT(NetDll_recvfrom) {
   sockaddr_in a{};
   int len = sizeof(a);
@@ -493,7 +500,7 @@ GUEST_IMPORT(NetDll_recvfrom) {
   do {
     len = sizeof(a);
     r = ::recvfrom(Host(ARG32(4)), (char*)buf, int(ARG32(6)) - (vdp ? 2 : 0), int(ARG32(7)), (sockaddr*)&a, &len);
-  } while (r >= 0 && (Foreign(a) || PasswordBlocked(a)));
+  } while (r >= 0 && (Foreign(a) || PasswordBlocked(a) || AdminBlocked(a)));
   if (vdp && r >= 0) {
     St16(ARG32(5), uint16_t(r));  // game data only, no voice
     r += 2;
@@ -524,6 +531,16 @@ GUEST_IMPORT(NetDll_sendto) {
   if (vdp) size = std::min<int>(Ld16(ARG32(5)), size - 2), data += 2;
   int r = ::sendto(Host(ARG32(4)), (const char*)data, size, int(ARG32(7)), (sockaddr*)&a, sizeof(a));
   if (vdp && r >= 0) r = int(ARG32(6));  // the guest sent the whole VDP packet
+  // A joiner's port toward the host (its chat hello tells the host: a kick on
+  // this PC is by port).
+  static std::atomic<uint32_t> port_socket{0xFFFFFFFF};  // (looked up once a socket)
+  if (r >= 0 && rt::g_join_address && a.sin_addr.s_addr == rt::g_join_address && a.sin_port == rt::g_join_port &&
+      port_socket.exchange(ARG32(4)) != ARG32(4)) {
+    sockaddr_in mine{};
+    int mlen = sizeof(mine);
+    if (::getsockname(Host(ARG32(4)), (sockaddr*)&mine, &mlen) == 0 && rt::g_client_game_port != ntohs(mine.sin_port))
+      rt::g_client_game_port = ntohs(mine.sin_port);
+  }
   NetStat(ARG32(4), a, true, r);
   static std::mutex m;
   static std::set<std::pair<uint32_t, uint16_t>> seen;  // log the first packet to each address
@@ -709,7 +726,7 @@ int RecvInto(SOCKET s, uint32_t bufs, uint32_t count, uint32_t from, uint32_t fr
     flags = 0, alen = sizeof(a);
     r = from ? WSARecvFrom(s, host.data(), DWORD(host.size()), &got, &flags, (sockaddr*)&a, &alen, nullptr, nullptr)
              : WSARecv(s, host.data(), DWORD(host.size()), &got, &flags, nullptr, nullptr);
-  } while (r == 0 && from && Foreign(a));
+  } while (r == 0 && from && (Foreign(a) || AdminBlocked(a)));
   if (r != 0) {
     *err = WSAGetLastError();
     return -1;

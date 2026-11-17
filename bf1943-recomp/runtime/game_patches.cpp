@@ -1,6 +1,8 @@
 // Game patches: strong definitions of chosen weak sub_ symbols from the
 // recompiled code.
 #include "kernel.h"
+#include "admin_server.h"
+#include "lan.h"
 #include "xenia_bridge.h"
 
 #include <algorithm>
@@ -16,6 +18,8 @@
 #ifdef _WIN32
 #include <excpt.h>
 #endif
+#include "bot_players.h"
+#include "pc_settings.h"
 #include <string>
 #include <thread>
 #include <vector>
@@ -715,6 +719,7 @@ GAME_PATCH(82413BC0) {
     St8(ctx.r6.u32 + 41, 0);
   }
   bool multiplayer = create && Ld32(ctx.r6.u32 + 44) == 1;
+  if (create) ++g_server_generation;  // (a new level's server: the bots join it, bot_players.cpp)
   __imp__sub_82413BC0(ctx, base);
   // Online (--online-server): list it on Arcadia so Quick Match finds it.
   if (multiplayer) RegisterHostedGame(uint16_t(1003 + g_port_offset), g_host_map);
@@ -771,9 +776,130 @@ bool rt::g_dedicated = false;
 bool rt::g_auto_start = false;
 std::vector<std::string> rt::g_map_rotation;
 
+// The host's /map (admin_server.cpp) and a joiner sent along with it, or one
+// kicked: the level is left as the game's own menu does (the UI callback
+// doExitLevel, id 0x18 in the table at 82020080), then, back in the front end,
+// the map is hosted (or the host joined again once it says the map is up).
+std::atomic<int> rt::g_server_generation{0};
+namespace {
+std::mutex g_admin_mutex;
+std::string g_admin_map;        // the map to host (or join) after leaving; empty: stay in the menus
+std::atomic<int> g_admin_exit{0};  // 1 leave the level now, 2 left: waiting for the front end
+bool g_rejoin = false;          // a joiner: join the host again on g_admin_map
+std::atomic<bool> g_rejoin_ready{false};
+double g_rejoin_since = 0;      // (seconds; it joins anyway after 90 s without the host's word)
+bool g_admin_map_up = false;    // host: tell the joiners once the new level is up
+bool g_was_in_level = false;    // the dedicated server's rotation: a level was played
+}  // namespace
+void rt::RequestMapChange(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = false, g_admin_exit = 1;
+}
+void rt::RequestRejoin(const std::string& map) {
+  std::lock_guard lock(g_admin_mutex);
+  g_admin_map = map, g_rejoin = true, g_rejoin_ready = false, g_admin_exit = 1;
+  g_rejoin_since = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+}
+void rt::RejoinReady() { g_rejoin_ready = true; }
+
+static void FireUi(PPCContext& ctx, uint8_t* base, const char* name, const char* arg) {
+  uint32_t strs = g_system_heap->Alloc(512, 16);
+  snprintf(G<char>(strs), 64, "%s", name);
+  snprintf(G<char>(strs + 64), 448, "%s", arg);
+  PPCContext c = ctx;
+  c.r3.u64 = g_ui_manager;
+  c.r4.u64 = strs;
+  c.r5.u64 = strs + 64;
+  sub_8246D918(c, base);
+}
+
+static void AdminFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  if (g_admin_exit == 1 && g_ui_manager) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (!rejoin && !map.empty() && (g_dedicated || !CustomMenus() || rt::BotPlayerCount() > 0) &&
+        rt::admin::RestartOnMap(map))
+      return;
+    if (!g_in_menus) {
+      g_leaving_level = true;
+      if (CustomMenus()) {
+        // A window: the game's own pause menu, Exit Game (pc_settings.cpp).
+        RT_INFO("admin: leaving the level (the pause menu's Exit Game)");
+        rt::pcset::QuitToMenu();
+      } else {
+        RT_INFO("admin: leaving the level (doExitLevel)");
+        FireUi(ctx, base, "doExitLevel", "");
+      }
+    }
+    g_admin_exit = 2;
+  }
+  // Back in the front end, and settled there (no notice up) for 4 s: hosting
+  // at once, while the game still went through its exit, was dropped.
+  static double settled_since = 0;
+  const double now_s = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+  if (g_admin_exit != 2 || !g_in_menus || g_dialogs != 0) settled_since = 0;
+  else if (!settled_since) settled_since = now_s;
+  if (g_admin_exit == 2 && settled_since && now_s - settled_since >= 4.0) {
+    std::string map;
+    bool rejoin;
+    {
+      std::lock_guard lock(g_admin_mutex);
+      map = g_admin_map, rejoin = g_rejoin;
+    }
+    if (rejoin) {
+      // A joiner: once the host says its map is up (or after 90 s), join it.
+      double now = double(std::chrono::duration_cast<std::chrono::milliseconds>(
+                              std::chrono::steady_clock::now().time_since_epoch()).count()) / 1000.0;
+      if (!g_rejoin_ready && now - g_rejoin_since < 90) return;
+      g_admin_exit = 0;
+      // (both in network order: the address's bytes as they are)
+      const uint8_t* ip = reinterpret_cast<const uint8_t*>(&g_join_address);
+      const uint8_t* port = reinterpret_cast<const uint8_t*>(&g_join_port);
+      char target_text[64];
+      snprintf(target_text, sizeof(target_text), "%u.%u.%u.%u:%u", ip[0], ip[1], ip[2], ip[3], unsigned(port[0] << 8 | port[1]));
+      std::string target = target_text;
+      RT_INFO("admin: joining the host again (%s, %s)", target.c_str(), map.c_str());
+      if (!g_join_address || !rt::lan::Join(target, map, g_join_password)) RT_WARN("admin: could not join the host again");
+      return;
+    }
+    g_admin_exit = 0;
+    g_was_in_level = false;  // (not the rotation's next map: this one)
+    if (map.empty()) return;
+    {
+      std::lock_guard lock(g_host_map_mutex);  // (the bots' director reads it)
+      g_host_map = map;
+    }
+    RT_INFO("admin: hosting %s", map.c_str());
+    g_admin_map_up = true;
+    g_host_state = 2;
+  }
+  // The new level is up: the joiners sent away by /map come back.
+  if (g_admin_map_up && g_host_state == 3 && !g_in_menus) {
+    g_admin_map_up = false;
+    std::string map;
+    {
+      std::lock_guard lock(g_host_map_mutex);
+      map = g_host_map;
+    }
+    std::thread([map] {
+      for (int i = 0; i < 3; ++i) {  // (UDP: said three times; a joiner acts on the first)
+        std::this_thread::sleep_for(std::chrono::seconds(i ? 5 : 3));
+        rt::admin::MapReady(map);
+      }
+    }).detach();
+  }
+}
+
 static void HostFromMainLoop(PPCContext& ctx, uint8_t* base) {
+  AdminFromMainLoop(ctx, base);
   // Dedicated server: back in the front end after a round, host the next map.
-  static bool was_in_level = false;
+  bool& was_in_level = g_was_in_level;
   if (g_dedicated && g_host_state == 3) {
     if (!g_in_menus) was_in_level = true;
     if (was_in_level && g_in_menus && g_dialogs == 0) {

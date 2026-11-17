@@ -4,6 +4,7 @@
 // weather, time of day, server name and password. Joiners may chat, but only
 // the host's commands change the game.
 #pragma once
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -18,4 +19,6 @@ bool Lines(std::vector<std::wstring>& out);
 void Execute(const std::string& line, bool console);
 // A bot's chat line (all-talk, as "BOT n: ...").
 void Say(const std::string& name, const std::string& text);
+// A packet on the chat's port (admin_server.cpp: the host's notices to a joiner).
+void SendPacket(uint32_t ip, uint16_t port, const std::string& packet);
 }  // namespace rt::admin
