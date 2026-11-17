@@ -8,6 +8,7 @@
 #include "xenia_bridge.h"
 #include "bot_knowledge.h"
 #include "bot_llm.h"
+#include "replay.h"
 namespace xe::gpu::scenefx { void Configure(const char* settings); }  // xenia gpu/vulkan/scene_fx.h
 
 #include "../tools/msvc_compat/crash_diag.h"  // symbolised stack on crash
@@ -339,6 +340,7 @@ int main(int argc, char** argv) {
     else if (a == "--bot-llm") bot_llm = i + 1 < argc && argv[i + 1][0] != '-' ? argv[++i] : "llm";
     // Training: a dedicated server nobody joins, 16 bots; --speed N: N times as fast.
     else if (a == "--train") g_training = true;
+    else if (a == "--replay" && i + 1 < argc) rt::replay::g_replay_file = argv[++i];  // replay.h
     else if (a == "--train-minutes" && i + 1 < argc) train_minutes = std::max(0, atoi(argv[++i]));
     else if (a == "--speed" && i + 1 < argc) g_time_speed_target = std::clamp(atof(argv[++i]), 0.25, 10.0);
   }
@@ -412,6 +414,10 @@ int main(int argc, char** argv) {
   g_game_root = std::filesystem::absolute(g_game_root);
   g_user_root = std::filesystem::absolute(g_user_root);
   std::filesystem::create_directories(g_user_root);
+  // Match replays (replay.h): a game that hosts records its matches (a server's
+  // soldiers are only there when hosting); --replay plays one back instead.
+  if (!rt::replay::g_replay_file.empty()) rt::replay::StartViewer();
+  else if (!g_training) rt::replay::StartRecorder();
   rt::pcset::Load();  // pc_settings.cpp: the PC settings page's saved choices
 #ifdef _WIN32
   AddVectoredExceptionHandler(1, GuestFaultReporter);

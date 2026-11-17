@@ -35,6 +35,7 @@
 #include "bot_tuning.h"
 #include "bot_llm.h"
 #include "bot_players.h"
+#include "replay.h"
 #include "guest.h"
 #include "kernel.h"
 #include "../tools/msvc_compat/crash_diag.h"
@@ -1862,18 +1863,22 @@ GAME_PATCH(823194B0) {  // damage a soldier
       tuning::Death(bot_slot(victim));  // (self-play tuning: bot_tuning.h)
       // (the training replay: where it fell, and by which bot once known below)
       int killer_slot = -1;
+      uint32_t killer_soldier = 0;
       struct Mark {
         uint32_t victim;
         int& killer;
+        uint32_t& killer_soldier;
         ~Mark() {
           botllm::Killed(LdF(victim + 0x180), LdF(victim + 0x188), int(Ld32(victim + 0x48)), killer);
+          rt::replay::Killed(victim, killer_soldier);  // (the match's replay)
         }
-      } mark{victim, killer_slot};
+      } mark{victim, killer_slot, killer_soldier};
       uint32_t w1 = IsCommitted(giver_w) ? Ld32(giver_w) : 0, w2 = IsCommitted(w1) ? Ld32(w1) : 0;
       uint32_t sp = w2 >= 0xDC ? w2 - 0xDC : 0;
       if (!IsCommitted(sp + 0x200) || Ld32(sp) != kSpawnObject) return;
       uint32_t killer = Ld32(sp + 0x120);
       if (!IsCommitted(killer + 0x400) || Ld32(killer) != kSoldier || killer == victim) return;
+      killer_soldier = killer;
       knowledge::Add(knowledge::kKills, int(Ld32(killer + 0x48)), LdF(killer + 0x180), LdF(killer + 0x188),
                      is_bot(killer) ? 0.3f : 1.0f);
       if (Ld32(killer + 0x48) != Ld32(victim + 0x48)) tuning::Kill(bot_slot(killer));  // (not a teammate)

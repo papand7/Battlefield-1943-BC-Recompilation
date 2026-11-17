@@ -1,5 +1,6 @@
 // Game patches: strong definitions of chosen weak sub_ symbols from the
 // recompiled code.
+#include "free_camera.h"
 #include "kernel.h"
 #include "xenia_bridge.h"
 
@@ -145,6 +146,7 @@ GAME_PATCH(82294A58) {
   const uint32_t manager = ctx.r3.u32, before = t_camera_manager;
   const int calls = t_camera_setfov;
   t_camera_manager = manager, t_camera_setfov = 0;
+  rt::freecam::FrameStep();
   __imp__sub_82294A58(ctx, base);
   t_camera_manager = before, t_camera_setfov = calls;
 }
@@ -167,8 +169,53 @@ GAME_PATCH(82583248) {
       rt::g_aiming = aiming;
     }
     ctx.f1.f64 = WiderFov(ctx.f1.f64);
+    rt::freecam::NoteFov(float(ctx.f1.f64));
   }
   __imp__sub_82583248(ctx, base);
+}
+
+// FREE CAMERA (free_camera.h): the view's transform, sub_82583348(view,
+// matrix), copies the camera-to-world matrix (right, up, back, position
+// rows) into the view (+64). In the camera manager's frame, while the free
+// camera is on, the view gets its matrix instead: put in the manager's copy
+// for this call only and put back after it, so the game's camera runs on.
+GAME_PATCH(82583348) {
+  const uint32_t m = ctx.r4.u32;
+  float game[16], ours[16];
+  if (!t_camera_manager || !m || !rt::freecam::Active()) {
+    __imp__sub_82583348(ctx, base);
+    return;
+  }
+  uint32_t kept[16];
+  for (int i = 0; i < 16; ++i) kept[i] = Ld32(m + 4 * i), memcpy(&game[i], &kept[i], 4);
+  if (!rt::freecam::Override(game, ours)) {
+    __imp__sub_82583348(ctx, base);
+    return;
+  }
+  for (int i = 0; i < 16; ++i) SetGuestFloat(m + 4 * i, ours[i]);
+  __imp__sub_82583348(ctx, base);
+  for (int i = 0; i < 16; ++i) St32(m + 4 * i, kept[i]);
+}
+// NOT FOUND YET: the terrain's level of detail stays centred where the game's
+// own camera is; a few hundred metres from it the land comes apart and then
+// isn't drawn (objects, trees and the sky are). Tried without effect: the
+// view's matrix (above), the second view's (below), every caller of the
+// camera getter sub_82294708, the active camera's own matrix (+16), the
+// manager's copies left ours, and the player's soldier moved under the camera.
+//
+// The second view (sub_82294818) gets the camera's matrix from
+// sub_82294708(manager, out) into a buffer of its own: the free camera's.
+GAME_PATCH(82294708) {
+  const uint32_t out = ctx.r4.u32;
+  __imp__sub_82294708(ctx, base);
+  if (!t_second_view || !out || !rt::freecam::Active()) return;
+  float game[16], ours[16];
+  for (int i = 0; i < 16; ++i) game[i] = GuestFloat(out + 4 * i);
+  if (rt::freecam::Override(game, ours)) {
+    for (int i = 0; i < 16; ++i) SetGuestFloat(out + 4 * i, ours[i]);
+    static bool said = false;
+    if (!said) said = true, RT_INFO("free camera: the second view follows it too");
+  }
 }
 
 GAME_PATCH(82623DB8) {
