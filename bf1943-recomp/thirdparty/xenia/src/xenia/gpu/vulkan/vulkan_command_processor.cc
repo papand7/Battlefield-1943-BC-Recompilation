@@ -1569,6 +1569,54 @@ static bool BfScreenSpaceUi(const Shader& vs) {
   return it->second;
 }
 
+// Bad Company's minimap is not 2D UI: after the tone map its map is drawn in 3D
+// onto the main (8-bit) frame, a top-down view of the level's own map meshes
+// (vertex shaders 768D03BE3A979B62 and 07A1C7309B49B532, opaque ONE / ZERO),
+// then the out-of-bounds area is tinted red by a multiply pass (9D71E995E907E20E,
+// DST_COLOR / ZERO); only its icons and frame are screen-space UI. These shaders
+// draw nothing else in a level (the spawn screen's map uses them too, but that
+// is a menu, where nothing is hidden).
+static bool BcMinimapDraw(const Shader& vs) {
+  switch (vs.ucode_data_hash()) {
+    case 0x768D03BE3A979B62ull:
+    case 0x07A1C7309B49B532ull:
+    case 0x9D71E995E907E20Eull:
+      return true;
+    default:
+      return false;
+  }
+}
+
+// The box of a D3D Clear draw (vertex shader 0A6D1DD7767FDF27: positions and
+// colours from vf95, 7 words a vertex, a rectangle list), as the fraction of
+// its target it spans across and down; false if it can't be read.
+static bool BcClearSpan(const Shader& vs, const RegisterFile& regs, Memory& memory,
+                        uint32_t index_count, float& w, float& h) {
+  if (vs.ucode_data_hash() != 0x0A6D1DD7767FDF27ull || index_count == 0 || index_count > 64 ||
+      vs.vertex_bindings().empty())
+    return false;
+  const xenos::xe_gpu_vertex_fetch_t fetch = regs.GetVertexFetch(vs.vertex_bindings()[0].fetch_constant);
+  const uint8_t* vertices = memory.TranslatePhysical(fetch.address << 2);
+  if (!vertices || fetch.size < index_count * 7) return false;
+  float x0 = 1e9f, x1 = -1e9f, y0 = 1e9f, y1 = -1e9f;
+  for (uint32_t i = 0; i < index_count; ++i) {
+    const uint32_t* v = reinterpret_cast<const uint32_t*>(vertices) + i * 7;
+    float px, py;
+    uint32_t bx = xe::byte_swap(v[0]), by = xe::byte_swap(v[1]);
+    std::memcpy(&px, &bx, 4);
+    std::memcpy(&py, &by, 4);
+    if (!std::isfinite(px) || !std::isfinite(py)) return false;
+    x0 = std::min(x0, px), x1 = std::max(x1, px), y0 = std::min(y0, py), y1 = std::max(y1, py);
+  }
+  // Positions in pixels of the target (its width is the surface pitch, its
+  // height 9/16 of that), or in clip space.
+  const float pitch = float(std::max(regs.Get<reg::RB_SURFACE_INFO>().surface_pitch, 1u));
+  const bool ndc = std::max({std::abs(x0), std::abs(x1), std::abs(y0), std::abs(y1)}) <= 1.5f;
+  w = (x1 - x0) / (ndc ? 2.0f : pitch);
+  h = (y1 - y0) / (ndc ? 2.0f : pitch * (9.0f / 16.0f));
+  return true;
+}
+
 // The screen box (0-1 of the frame, y down) of a 2D UI draw's vertices, as
 // the game placed them on its 16:9 frame; false if they can't be read.
 static bool BfUiDrawSpan(const Shader& vs, int kind, const RegisterFile& regs, Memory& memory,
@@ -2755,14 +2803,28 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // screen-space shaders also draw its post passes (bloom, the tone map):
   // only those blended over the main frame are its UI (premultiplied
   // ONE / ONE_MINUS_SRC_ALPHA; the post passes write ONE / ZERO, or go to
-  // smaller targets).
+  // smaller targets). Its minimap's map is 3D, drawn on the main frame after
+  // the tone map (BcMinimapDraw).
   if (bfmenu::g_hide_ui.load(std::memory_order_relaxed)) {
     bool hide = BfMenuShaderKind(*vertex_shader) != 0;
-    if (!hide && bfmenu::g_hide_ui_screen.load(std::memory_order_relaxed) &&
-        regs.Get<reg::RB_SURFACE_INFO>().surface_pitch >= 1280 &&
-        regs.Get<reg::RB_BLENDCONTROL>(XE_GPU_REG_RB_BLENDCONTROL0).color_destblend !=
-            xenos::BlendFactor::kZero) {
-      hide = BfScreenSpaceUi(*vertex_shader);
+    if (!hide && bfmenu::g_hide_ui_screen.load(std::memory_order_relaxed)) {
+      const uint32_t pitch = regs.Get<reg::RB_SURFACE_INFO>().surface_pitch;
+      const auto color_info = regs.Get<reg::RB_COLOR_INFO>();
+      if (pitch >= 1280 && regs.Get<reg::RB_BLENDCONTROL>(XE_GPU_REG_RB_BLENDCONTROL0).color_destblend !=
+                               xenos::BlendFactor::kZero) {
+        hide = BfScreenSpaceUi(*vertex_shader);
+      }
+      if (!hide && color_info.color_format == xenos::ColorRenderTargetFormat::k_8_8_8_8) {
+        // The minimap's map on the main frame, and the grey Clear of its box
+        // before it: a Clear of a small box of the main frame's colour (EDRAM
+        // base 0), drawn at pitch 1280 and once more at pitch 640 over the
+        // same EDRAM (left alone, either shows as a grey box). Clears of a
+        // whole target, and depth-only ones, are kept.
+        float w, h;
+        hide = (pitch >= 1280 && BcMinimapDraw(*vertex_shader)) ||
+               (pitch >= 640 && color_info.color_base == 0 && edram_mode == xenos::EdramMode::kColorDepth &&
+                BcClearSpan(*vertex_shader, regs, *memory_, index_count, w, h) && w < 0.5f && h < 0.5f);
+      }
     }
     if (hide) return true;
   }
