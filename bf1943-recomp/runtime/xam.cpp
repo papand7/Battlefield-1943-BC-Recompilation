@@ -16,7 +16,11 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cstring>
+#include <fstream>
+#include <functional>
 #include <mutex>
+#include <string>
 #include <thread>
 #include <vector>
 
@@ -200,9 +204,25 @@ HWND OurForegroundWindow() {
 }
 std::mutex g_mouse_mutex;
 long g_mouse_dx = 0, g_mouse_dy = 0, g_mouse_wheel = 0;
+// Keys held by the menu automation (BF_AUTO_MP, below): key, until (steady ns).
+std::mutex g_auto_key_mutex;
+std::vector<std::pair<int, int64_t>> g_auto_keys;
+int64_t SteadyNs() {
+  return std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch())
+      .count();
+}
+bool AutoKeyDown(int vk) {
+  std::lock_guard l(g_auto_key_mutex);
+  if (g_auto_keys.empty()) return false;
+  int64_t now = SteadyNs();
+  for (const auto& [key, until] : g_auto_keys)
+    if (key == vk && now < until) return true;
+  return false;
+}
 // Tests: BF_TEST_KEY="<seconds>:<virtual key>[,...]" holds those keys for
 // 0.2 s at those times, whatever window has focus.
 bool TestKeyDown(int vk) {
+  if (AutoKeyDown(vk)) return true;
   static const auto t0 = std::chrono::steady_clock::now();
   static const std::vector<std::pair<double, int>> keys = [] {
     std::vector<std::pair<double, int>> out;
@@ -264,7 +284,139 @@ bool TestKeyDown(int vk) {
   }
   return false;
 }
-bool TestKeysActive() { return std::getenv("BF_TEST_KEY") != nullptr || std::getenv("BF_TEST_KEY_FILE") != nullptr; }
+bool TestKeysActive() {
+  return std::getenv("BF_TEST_KEY") != nullptr || std::getenv("BF_TEST_KEY_FILE") != nullptr ||
+         (std::getenv("BF_AUTO_MP") != nullptr && CustomMenus());  // (Bad Company: bfbc1_game.cpp's)
+}
+
+// Test automation of the PC menus (BF_AUTO_MP=1), as Bad Company's
+// (bfbc1_game.cpp): presses Start at the title until the profile is read,
+// waits for our main menu (pc_settings.cpp), then follows the file
+// BF_AUTO_MP_FILE (default auto_steps.txt in the run folder), read as it
+// grows, one step a line, each run once the last is done, so a host or join
+// can be scripted without --press timing:
+//   up down left right enter (a) back (b) esc space tab   a key, 1 s apart
+//   type:<text>              letters, digits, '.', ':' as keys (an address)
+//   key:<vk>[:<ms>]          any virtual key, held 150 ms (or <ms>)
+//   wait[:<s>]               3 s (or <s>)
+//   screen:<name>[:<s>]      until the page is main, host, join, settings,
+//                            pause or none (60 s at most, or <s>)
+//   level[:<s>]              until a level is up (the front end left; 180 s)
+//   menus[:<s>]              until back in the front end (180 s)
+//   log:<text>               a line in the log
+// Each step is logged ("auto mp: ..."), and a wait that times out says so.
+const bool g_auto_mp_started = [] {
+  if (!std::getenv("BF_AUTO_MP")) return false;
+  const char* env_file = std::getenv("BF_AUTO_MP_FILE");
+  std::string path = env_file ? env_file : "auto_steps.txt";
+  std::thread([path] {
+    using namespace std::chrono;
+    auto hold = [](int vk, int ms) {
+      {
+        std::lock_guard l(g_auto_key_mutex);
+        int64_t now = SteadyNs();
+        std::erase_if(g_auto_keys, [now](const auto& k) { return k.second <= now; });
+        g_auto_keys.push_back({vk, now + int64_t(ms) * 1000000});
+      }
+      std::this_thread::sleep_for(milliseconds(ms + 120));  // held, then let go
+    };
+    // Only with our menus (Bad Company has its own BF_AUTO_MP, bfbc1_game.cpp;
+    // a dedicated server has none): known once the command line is read.
+    std::this_thread::sleep_for(seconds(1));
+    if (!CustomMenus()) return;
+    // Until: a condition, polled every 100 ms, at most s seconds.
+    auto until = [](const std::function<bool()>& done, double s) {
+      auto end = steady_clock::now() + duration_cast<steady_clock::duration>(duration<double>(s));
+      while (!done()) {
+        if (steady_clock::now() > end) return false;
+        std::this_thread::sleep_for(milliseconds(100));
+      }
+      return true;
+    };
+    while (!g_title_passed) {
+      rt::g_auto_buttons = XINPUT_GAMEPAD_START;
+      std::this_thread::sleep_for(milliseconds(200));
+      rt::g_auto_buttons = 0;
+      std::this_thread::sleep_for(seconds(2));
+    }
+    RT_INFO("auto mp: title passed, waiting for the main menu");
+    // The game's own notices before it (a new profile's autosave notice): OK
+    // once one has been up for 2 s.
+    for (int up = 0; std::strcmp(rt::pcset::Screen(), "main");) {
+      std::this_thread::sleep_for(milliseconds(250));
+      up = GameDialogs() > 0 ? up + 1 : 0;
+      if (up >= 8) {
+        RT_INFO("auto mp: OK on a game dialog");
+        rt::g_auto_buttons = XINPUT_GAMEPAD_A;
+        std::this_thread::sleep_for(milliseconds(150));
+        rt::g_auto_buttons = 0;
+        up = 0;
+      }
+    }
+    RT_INFO("auto mp: main menu up; reading %s", path.c_str());
+    size_t done = 0;
+    for (;;) {
+      std::this_thread::sleep_for(milliseconds(300));
+      std::ifstream in(path);
+      std::vector<std::string> lines;
+      for (std::string line; std::getline(in, line);) {
+        while (!line.empty() && (line.back() == '\r' || line.back() == ' ')) line.pop_back();
+        lines.push_back(line);
+      }
+      while (done < lines.size()) {
+        const std::string step = lines[done++];
+        if (step.empty() || step[0] == '#') continue;
+        size_t colon = step.find(':');
+        std::string name = step.substr(0, colon), arg = colon == std::string::npos ? "" : step.substr(colon + 1);
+        static const std::pair<const char*, int> kKeys[] = {
+            {"up", VK_UP},         {"down", VK_DOWN}, {"left", VK_LEFT},  {"right", VK_RIGHT},
+            {"enter", VK_RETURN},  {"a", VK_RETURN},  {"back", VK_BACK},  {"b", VK_BACK},
+            {"esc", VK_ESCAPE},    {"space", VK_SPACE}, {"tab", VK_TAB}};
+        int vk = 0;
+        for (const auto& [n, k] : kKeys)
+          if (name == n) vk = k;
+        bool ok = true;
+        if (vk) {
+          hold(vk, 150);
+          std::this_thread::sleep_for(milliseconds(850));
+        } else if (name == "type") {
+          for (char c : arg) {
+            int k = c >= 'a' && c <= 'z' ? c - 32 : (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ? c
+                  : c == '.' ? VK_OEM_PERIOD : c == '-' ? VK_OEM_MINUS : c == ' ' ? VK_SPACE : 0;
+            if (c == ':') {  // Shift + ';' (US layout)
+              std::lock_guard l(g_auto_key_mutex);
+              g_auto_keys.push_back({VK_SHIFT, SteadyNs() + 150000000});
+              k = VK_OEM_1;
+            }
+            if (k) hold(k, 80);
+          }
+        } else if (name == "key") {
+          int ms = 150;
+          size_t c2 = arg.find(':');
+          if (c2 != std::string::npos) ms = std::atoi(arg.c_str() + c2 + 1);
+          hold(std::atoi(arg.c_str()), ms);
+        } else if (name == "wait") {
+          std::this_thread::sleep_for(duration<double>(arg.empty() ? 3.0 : std::atof(arg.c_str())));
+        } else if (name == "screen") {
+          size_t c2 = arg.find(':');
+          std::string want = arg.substr(0, c2);
+          if (want == "none") want.clear();
+          double s = c2 == std::string::npos ? 60.0 : std::atof(arg.c_str() + c2 + 1);
+          ok = until([&] { return want == rt::pcset::Screen(); }, s);
+        } else if (name == "level" || name == "menus") {
+          bool level = name == "level";
+          ok = until([level] { return level != rt::g_in_menus.load(); }, arg.empty() ? 180.0 : std::atof(arg.c_str()));
+        } else if (name != "log") {
+          RT_WARN("auto mp: unknown step '%s' (step %zu)", step.c_str(), done);
+          continue;
+        }
+        if (ok) RT_INFO("auto mp: %s (step %zu, screen '%s')", step.c_str(), done, rt::pcset::Screen());
+        else RT_WARN("auto mp: %s timed out (step %zu, screen '%s')", step.c_str(), done, rt::pcset::Screen());
+      }
+    }
+  }).detach();
+  return true;
+}();
 bool Down(int vk) {
   // (Alt+Enter is the fullscreen switch, not Enter.)
   if (vk == VK_RETURN && (GetAsyncKeyState(VK_MENU) & 0x8000)) return false;

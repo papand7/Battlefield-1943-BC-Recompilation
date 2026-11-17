@@ -163,6 +163,31 @@ build/game/bf1943.exe --dedicated --bots 1 --host-map Wake_island_s --user userd
 python tools/bot_paths.py board.csv
 ```
 
+The menus, unattended (`BF_AUTO_MP=1`, as Bad Company's): the title and the game's first
+notices are passed, then each line of `BF_AUTO_MP_FILE` (default `auto_steps.txt`, read as
+it grows) is one step, run when the last is done: keys (`up`, `down`, `left`, `right`,
+`enter`, `back`, `esc`), `type:<text>`, `key:<vk>[:<ms>]`, `wait[:<s>]`, and waits for a
+state instead of a time: `screen:<main|host|join|settings|pause|none>[:<s>]`, `level[:<s>]`,
+`menus[:<s>]`; each is logged as `auto mp: ...` (`timed out` if its state never came).
+Hosting Wake Island and spawning (Enter at the loading screen, else it autokicks; the
+last two lines repeated a few times, as the load takes a while):
+
+```
+enter
+screen:host
+down
+down
+down
+enter
+level
+wait:6
+enter
+```
+
+Joining by address: `down`, `enter`, `screen:join`, `wait:6`, `up` three times (the
+address row, counted from the bottom), `enter`, `type:192.168.1.20:1003`, `enter`,
+`down`, `down`, `enter`, `level`.
+
 Vehicles (`BF_BOT_NO_VEHICLES` turns them off):
 - Controls, as the game's default layout: LT throttle (it also lets a landing craft down
   from its carrier crane), LB brake and reverse, left stick X steers; in a plane the right

@@ -76,6 +76,7 @@ namespace rt::pcset {
 void Load() {}
 int Key(Action, int) { return 0; }
 bool IsOpen() { return false; }
+const char* Screen() { return ""; }
 void Open() {}
 void OpenHost() {}
 void OpenJoin() {}

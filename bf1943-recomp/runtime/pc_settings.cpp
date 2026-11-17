@@ -934,6 +934,16 @@ int Key(Action action, int slot) {
 }
 
 bool IsOpen() { return g_open; }
+const char* Screen() {
+  if (!g_open) return "";
+  switch (g_mode) {
+    case kModeMain: return "main";
+    case kModeHost: return "host";
+    case kModeJoin: return "join";
+    case kModePause: return "pause";
+    default: return "settings";
+  }
+}
 
 namespace {
 // The join page: the games found, then refresh and an address to type.
