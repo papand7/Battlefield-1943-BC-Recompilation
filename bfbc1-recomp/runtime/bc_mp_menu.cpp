@@ -1,4 +1,4 @@
-// Our Multiplayer menu for Bad Company: see bc_mp_menu.h. The logic runs on the
+﻿// Our Multiplayer menu for Bad Company: see bc_mp_menu.h. The logic runs on the
 // pad poll (Update); a render thread draws each screen with GDI+ into a
 // 1920x1080 image in the look of the game's own menus: the screen darkened, a
 // big distressed title standing on its side by a white rule, white condensed
@@ -537,6 +537,11 @@ std::mutex g_logic_mutex;
 Page g_page = kMain, g_busy_back = kMain;
 int g_sel = 0, g_page_id = 0, g_map = 0;
 std::string g_address;
+int g_weather_sel = 0, g_time_sel = 1;  // host: clear/rain, dawn/day/sunset/night
+const wchar_t* const kTimeNames[] = {L"DAWN", L"DAY", L"SUNSET", L"NIGHT"};
+const char* const kTimeHours[] = {"6.5", "12", "18", "23"};
+std::string g_name, g_password;  // the game's name and the password players need
+std::wstring Masked(const std::string& s) { return std::wstring(s.size(), L'*'); }
 std::wstring g_note;  // a line for the panel (an error)
 std::vector<lan::Server> g_servers;
 bool g_searching = false;
@@ -576,17 +581,25 @@ View Build() {
     }
     case kHost: {
       v.title = L"HOST GAME";
-      v.items = {{L"MAP", kMaps[g_map].name, true}, {L"START GAME"}, {L"BACK"}};
+      v.items = {{L"MAP", kMaps[g_map].name, true},
+                 {L"SERVER NAME", Wide(g_name), false, g_sel == 1},
+                 {L"PASSWORD", Masked(g_password), false, g_sel == 2},
+                 {L"WEATHER", g_weather_sel ? L"RAIN" : L"CLEAR", true, g_sel == 3},
+                 {L"TIME OF DAY", kTimeNames[g_time_sel], true, g_sel == 4},
+                 {L"START GAME"},
+                 {L"BACK"}};
       v.head = kMaps[g_map].name, v.sub = L"GOLD RUSH";
       if (*kMaps[g_map].desc) v.lines = {kMaps[g_map].desc, L""};
       v.lines.push_back(L"Players on your network will see this game in their SERVER BROWSER.");
+      v.lines.push_back(L"SERVER NAME is what it is listed as. With a PASSWORD, only players who type it can join.");
       v.lines.push_back(L"");
       v.lines.push_back(player);
       break;
     }
     case kBrowser: {
       v.title = L"SERVERS";
-      for (const lan::Server& s : g_servers) v.items.push_back({Upper(Wide(s.name)), MapName(s.map)});
+      for (const lan::Server& s : g_servers)
+        v.items.push_back({(s.locked ? L"[LOCK] " : L"") + Upper(Wide(s.name)), MapName(s.map)});
       v.items.push_back({L"REFRESH"});
       v.items.push_back({L"BACK"});
       int ns = int(g_servers.size());
@@ -608,11 +621,14 @@ View Build() {
     }
     case kAddress: {
       v.title = L"JOIN";
-      v.items = {{L"ADDRESS", Wide(g_address), false, g_sel == 0}, {L"JOIN GAME"}, {L"BACK"}};
+      v.items = {{L"ADDRESS", Wide(g_address), false, g_sel == 0},
+                 {L"PASSWORD", Masked(g_password), false, g_sel == 1},
+                 {L"JOIN GAME"},
+                 {L"BACK"}};
       v.head = L"JOIN BY ADDRESS", v.sub = L"IPV4 ADDRESS";
       v.lines = {L"Type the host's address with the keyboard, for example 192.168.1.20. Add :port when the "
                  L"host's server isn't on the usual one (" + std::to_wstring(1003 + g_base_port_offset) + L").",
-                 L""};
+                 L"PASSWORD is only needed for a game that has one; leave it empty for an open game.", L""};
       if (!g_note.empty()) v.lines.push_back(g_note);
       break;
     }
@@ -641,15 +657,23 @@ void StartBusy(const std::wstring& text, Page back) {
 
 void HostGame() {
   const Map& m = kMaps[g_map];
-  RT_INFO("mp menu: hosting %s", m.level);
+  RT_INFO("mp menu: hosting %s as '%s'%s", m.level, g_name.c_str(), g_password.empty() ? "" : " with a password");
+  g_server_name = g_name;
+  g_server_password = g_password;
+  g_weather = g_weather_sel;
+  g_time_of_day = float(atof(kTimeHours[g_time_sel]));
+  xgpu::SetWeather(float(g_weather), g_time_of_day);
+  RT_INFO("mp menu: weather %s, time %.1f h for everyone joining", g_weather ? "rain" : "clear", g_time_of_day);
   lan::Host(m.level, 0);
   StartBusy(L"STARTING GAME", kHost);
 }
 
 void JoinGame(const std::string& address_port, const std::string& map, const std::wstring& name) {
   RT_INFO("mp menu: joining %s (%s)", address_port.c_str(), map.c_str());
-  if (!lan::PrepareJoin(address_port, map.empty() ? kMaps[0].level : map)) {
-    g_note = L"That isn't an address: type four numbers with dots, e.g. 192.168.1.20.";
+  if (!lan::PrepareJoin(address_port, map.empty() ? kMaps[0].level : map, g_password)) {
+    g_note = lan::JoinError().empty()
+                 ? L"That isn't an address: type four numbers with dots, e.g. 192.168.1.20."
+                 : lan::JoinError();
     return;
   }
   RequestHost();
@@ -666,13 +690,21 @@ void Accept() {
       break;
     case kHost:
       if (g_sel == 0) g_map = (g_map + 1) % kMapCount;
-      else if (g_sel == 1) HostGame();
-      else Go(kMain, 0);
+      else if (g_sel == 3) g_weather_sel = (g_weather_sel + 1) % 2;
+      else if (g_sel == 4) g_time_sel = (g_time_sel + 1) % 4;
+      else if (g_sel == 5) HostGame();
+      else if (g_sel == 6) Go(kMain, 0);
       break;
     case kBrowser: {
       int ns = int(g_servers.size());
       if (g_sel < ns) {
         const lan::Server& s = g_servers[g_sel];
+        if (s.locked && g_password.empty()) {
+          g_address = s.address + ":" + std::to_string(s.port);
+          g_note = L"This game needs its password: type it below, then JOIN GAME.";
+          Go(kAddress, 1);
+          break;
+        }
         JoinGame(s.address + ":" + std::to_string(s.port), s.map, Upper(Wide(s.name)));
       } else if (g_sel == ns) {
         Go(kBrowser, ns);
@@ -682,10 +714,10 @@ void Accept() {
       break;
     }
     case kAddress:
-      if (g_sel <= 1) {
+      if (g_sel == 2) {
         if (g_address.empty()) g_note = L"Type the host's address first.", g_sel = 0;
         else JoinGame(g_address, "", Upper(Wide(g_address)));
-      } else {
+      } else if (g_sel == 3) {
         Go(kMain, 2);
       }
       break;
@@ -707,9 +739,9 @@ void Back() {
 int ItemCount() {
   switch (g_page) {
     case kMain: return 4;
-    case kHost: return 3;
+    case kHost: return 7;
     case kBrowser: return int(g_servers.size()) + 2;
-    case kAddress: return 3;
+    case kAddress: return 4;
     default: return 0;
   }
 }
@@ -719,6 +751,7 @@ void DoOpen() {
   g_join_address = 0;
   g_lan_host = false;
   g_host_map.clear();
+  if (g_name.empty()) g_name = g_server_name.empty() ? g_gamertag : g_server_name;
   g_open = true;
   g_wait_release = true;  // the A that chose MULTIPLAYER
   Go(kMain, 0);
@@ -796,8 +829,9 @@ bool Update(const XINPUT_GAMEPAD& pad) {
     std::memset(pressed, 0, sizeof(pressed));
   }
 
-  // Typing the address: the keys are text, not the pad's buttons too.
-  bool typing = g_page == kAddress && g_sel == 0;
+  // Typing an address, a server name or a password: the keys are text, not the
+  // pad's buttons too.
+  bool typing = (g_page == kAddress && g_sel <= 1) || (g_page == kHost && (g_sel == 1 || g_sel == 2));
   if (typing && any_key) edge = 0;
 
   if (g_page == kBusy) {
@@ -827,21 +861,46 @@ bool Update(const XINPUT_GAMEPAD& pad) {
   bool back = (edge & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) || pressed[VK_ESCAPE] || (!typing && pressed[VK_BACK]);
 
   if (typing) {
+    const bool address = g_page == kAddress && g_sel == 0;
+    std::string& target = address ? g_address : (g_page == kAddress || g_sel == 2) ? g_password : g_name;
+    const size_t limit = address ? 21 : 24;
     bool shift = down[VK_SHIFT];
     for (int vk = 8; vk < 256; ++vk) {
-      if (!pressed[vk] || g_address.size() >= 21) continue;
-      if (vk >= '0' && vk <= '9' && !shift) g_address += char(vk);
-      else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD0 + 9) g_address += char('0' + vk - VK_NUMPAD0);
-      else if (vk == VK_OEM_PERIOD || vk == VK_DECIMAL) g_address += '.';
-      else if (vk == VK_OEM_1 && shift) g_address += ':';
+      if (!pressed[vk] || target.size() >= limit) continue;
+      if (address) {
+        if (vk >= '0' && vk <= '9' && !shift) target += char(vk);
+        else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD0 + 9) target += char('0' + vk - VK_NUMPAD0);
+        else if (vk == VK_OEM_PERIOD || vk == VK_DECIMAL) target += '.';
+        else if (vk == VK_OEM_1 && shift) target += ':';
+      } else if (vk >= 'A' && vk <= 'Z') {
+        target += char(shift ? vk : vk + 32);
+      } else if (vk >= '0' && vk <= '9') {
+        target += char(vk);
+      } else if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD0 + 9) {
+        target += char('0' + vk - VK_NUMPAD0);
+      } else if (vk == VK_SPACE) {
+        target += ' ';
+      } else if (vk == VK_OEM_MINUS || vk == VK_SUBTRACT) {
+        target += '-';
+      } else if (vk == VK_OEM_PERIOD || vk == VK_DECIMAL) {
+        target += '.';
+      } else if (vk == VK_OEM_1 || vk == VK_OEM_4) {
+        target += shift ? ':' : '_';
+      }
     }
-    if (pressed[VK_BACK] && !g_address.empty()) g_address.pop_back();
-    if (pressed[VK_RETURN]) accept = true, g_sel = 1;
+    if (pressed[VK_BACK] && !target.empty()) target.pop_back();
+    if (pressed[VK_RETURN]) {
+      if (g_page == kAddress && g_sel == 0) g_sel = 1;
+      else if (g_page == kHost && g_sel == 1) g_sel = 2;
+      else accept = true;
+    }
   }
 
   int count = ItemCount();
   if (dv) g_sel = (g_sel + dv + count) % count;
   if (dh && g_page == kHost && g_sel == 0) g_map = (g_map + dh + kMapCount) % kMapCount;
+  if (dh && g_page == kHost && g_sel == 3) g_weather_sel = (g_weather_sel + dh + 2) % 2;
+  if (dh && g_page == kHost && g_sel == 4) g_time_sel = (g_time_sel + dh + 4) % 4;
   if (accept) Accept();
   else if (back) Back();
   if (g_open) Show(Build());
@@ -849,3 +908,5 @@ bool Update(const XINPUT_GAMEPAD& pad) {
 }
 
 }  // namespace rt::bcmp
+
+

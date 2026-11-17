@@ -1590,6 +1590,10 @@ struct Bot {
   std::vector<std::array<float, 3>> route;
   size_t step = 0;
   int64_t planned = 0;
+  float plan_goal[2] = {1e9f, 1e9f};  // where the route went (replanned when it moves)
+  // Squads: four alive bots of a team by index, the first leading; a member
+  // takes the leader's crate and keeps with it on the way.
+  int squad = -1, leader = -1;
   float sx = 0, sz = 0, last_sx = 1e9f, last_sz = 1e9f;
   int64_t since = 0, unstick_until = 0, jump_until = 0;
   int side = 1;
@@ -3135,6 +3139,27 @@ static void NoteShot(Bot& b, float x, float y, float z, int64_t now) {
   botllm::Shot(b.index, from, hit ? b.hit_pos : aim, hit);
 }
 
+static const Bot* BotByIndex(int index) {
+  for (const Bot& o : g_bots)
+    if (o.index == index) return &o;
+  return nullptr;
+}
+static bool BotAlive(const Bot& o) {
+  return o.soldier && IsCommitted(o.soldier + 0x400) && Ld32(o.soldier) == 0x820118D0;
+}
+// The squad (four alive bots of a team, by index) and its leader, the first.
+static int SquadOf(const Bot& b, int* leader) {
+  std::vector<int> mates;
+  for (const Bot& o : g_bots)
+    if (o.team == b.team && BotAlive(o)) mates.push_back(o.index);
+  std::sort(mates.begin(), mates.end());
+  *leader = -1;
+  auto it = std::lower_bound(mates.begin(), mates.end(), b.index);
+  if (it == mates.end() || *it != b.index) return -1;
+  const size_t rank = size_t(it - mates.begin());
+  *leader = mates[rank / 4 * 4];
+  return int(b.team == 2) * 8 + int(rank / 4);
+}
 static void BotBrain(Bot& b, uint32_t in) {
   auto set = [in](uint32_t off, float f) {
     uint32_t u;
@@ -3174,9 +3199,28 @@ static void BotBrain(Bot& b, uint32_t in) {
   if (!goal)
     for (uint32_t ie : CrateEntities())
       if (b.team == 1 ? CanDefuseNow(ie) : CanArmNow(ie)) consider(ie, true);
+  // Squads: four bots of a team, the first of the four leading; a member works
+  // on the leader's crate too (when it can), so the squad takes one together.
+  int lead = -1;
+  int sq = SquadOf(b, &lead);
+  static const bool no_squads = getenv("BF_BOT_NO_SQUADS") != nullptr;
+  if (no_squads) sq = -1, lead = -1;
+  if (sq != b.squad) {
+    b.squad = sq;
+    if (sq >= 0) RT_INFO("bot %d: squad %d%s", b.index, sq % 8 + 1, lead == b.index ? " (leader)" : "");
+  }
+  b.leader = lead;
+  if (lead >= 0 && lead != b.index) {
+    const Bot* lb = BotByIndex(lead);
+    if (lb && lb->objective && !(b.avoid_until.count(lb->objective) && now < b.avoid_until[lb->objective]) &&
+        (CanArmNow(lb->objective) || CanDefuseNow(lb->objective))) {
+      goal = lb->objective;
+      guard = !(b.team == 1 ? CanArmNow(goal) : CanDefuseNow(goal));
+    }
+  }
   if (goal != b.objective) b.objective = goal, b.objective_stucks = 0, b.planned = 0;
   float tx = x, ty = y, tz = z;
-  if (goal) tx = LdF(goal + 0xD0), ty = LdF(goal + 0xD4), tz = LdF(goal + 0xD8);
+  if (goal) tx = LdF(goal + 0xD0), ty = LdF(goal + 0xD4), tz = LdF(goal + 0xD8), best = std::hypot(tx - x, tz - z);
   // Guarding a crate (the enemy's to arm or defuse): from the spot the
   // matches showed is good to hold it from (LearnedSpot; chosen again every
   // 30 s and for each crate, within 60 m of it), else at the crate; and
@@ -3244,8 +3288,23 @@ static void BotBrain(Bot& b, uint32_t in) {
       }
     }
   }
-  if (goal && now - b.planned > 5000) {
+  // A squad keeps together: while its crate is still far off, a member on foot
+  // follows its leader (a few metres to its side) instead of walking ahead.
+  if (b.leader >= 0 && b.leader != b.index && !b.in_vehicle && !b.vehicle && goal && !b.enemy) {
+    if (const Bot* lb = BotByIndex(b.leader); lb && BotAlive(*lb) && !lb->in_vehicle) {
+      float lx = LdF(lb->soldier + 0x200), ly = LdF(lb->soldier + 0x204), lz = LdF(lb->soldier + 0x208);
+      float dd = std::hypot(lx - x, lz - z);
+      if (dd > 6.0f && dd < 60.0f && std::hypot(tx - x, tz - z) > 25.0f) {
+        float a = float(b.index % 4) * 1.5708f;
+        tx = lx + std::sin(a) * 4.0f, ty = ly, tz = lz + std::cos(a) * 4.0f;
+        best = std::hypot(tx - x, tz - z);
+      }
+    }
+  }
+  if (goal && (now - b.planned > 5000 ||
+               (now - b.planned > 1500 && std::hypot(tx - b.plan_goal[0], tz - b.plan_goal[1]) > 3.0f))) {
     b.planned = now;
+    b.plan_goal[0] = tx, b.plan_goal[1] = tz;
     float from[3] = {x, y, z}, to[3] = {tx, ty, tz};
     b.route = RouteMesh(from, to, &b.nav);
     b.step = 0;
@@ -4156,6 +4215,47 @@ PPC_FUNC(sub_824ADEE8) {
     put(ctx.r4.u32 + 0x0, std::sin(h));
     put(ctx.r4.u32 + 0x8, std::cos(h));
     ++g_bot_setter_calls;
+  }
+  // INFANTRY AIM: on foot the local player's aim record gets the mouse's turn
+  // itself (xam.cpp keeps the counts; once this ran, AimMouseOwnsLook stops the
+  // right stick carrying the mouse too). The aim's input chain builds the
+  // record and this setter copies it into the aim object; +0x34 is minus the
+  // heading, +0x38 the pitch (up +), +0/+8 its sine and cosine. Only the
+  // client's thread simulates the local player (a host's bots and other
+  // soldiers run on its loading thread), so a call here on that thread is ours.
+  {
+    const uint32_t client = ClientThreadId();
+    const bool client_thread = client && CurrentThreadId() == client;
+    const bool ours = !steered && client_thread && g_present && !g_in_menus.load(std::memory_order_relaxed) &&
+                      !g_level_menu.load(std::memory_order_relaxed) && LocalVehicle() == kOnFoot;
+    if (client_thread && !ours) AimMouseReset();
+    if (ours && IsCommitted(ctx.r4.u32 + 0x38)) {
+      double dx = 0, dy = 0;
+      bool stale = false;
+      if (AimMouseTake(dx, dy, stale) && !stale && (dx != 0 || dy != 0)) {
+        AimMouseSeen();
+        static const double yaw_sign =
+            getenv("BF_MOUSE_YAW_SIGN") ? std::atof(getenv("BF_MOUSE_YAW_SIGN")) : 1.0;
+        double sens = std::clamp(double(g_mouse_sensitivity), 0.05, 10.0);
+        if (g_aiming.load(std::memory_order_relaxed))
+          sens *= std::clamp(double(g_aim_mouse_sensitivity), 0.05, 2.0);
+        constexpr double kPi = 3.14159265358979323846;
+        const double k = 0.07 * kPi / 180.0 * sens;  // a count at sensitivity 1
+        double heading = -double(LdF(ctx.r4.u32 + 0x34)) + dx * k * yaw_sign;
+        double pitch = std::clamp(double(LdF(ctx.r4.u32 + 0x38)) + (g_mouse_invert ? dy : -dy) * k, -1.5, 1.5);
+        if (std::isfinite(heading) && std::isfinite(pitch)) {
+          auto put = [](uint32_t a, float f) {
+            uint32_t u;
+            memcpy(&u, &f, 4);
+            St32(a, u);
+          };
+          put(ctx.r4.u32 + 0x34, float(-heading));
+          put(ctx.r4.u32 + 0x38, float(pitch));
+          put(ctx.r4.u32 + 0x00, float(std::sin(heading)));
+          put(ctx.r4.u32 + 0x08, float(std::cos(heading)));
+        }
+      }
+    }
   }
   // BF_BOT_PITCH_TRACE=1 (testing): a player's (not a bot's) aim record once
   // a second: the three vectors (+0..+2C) and +30..+40, to find its pitch.

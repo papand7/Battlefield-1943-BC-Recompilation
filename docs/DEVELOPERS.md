@@ -63,10 +63,15 @@ type), animated, for mouse, keyboard and controller alike.
 - **Larger shadow map** (1600², 300 m) and **4× vegetation draw distance**.
 - **HDR10 output** with adjustable paper white and peak.
 - **Looks**: stock, enhanced, toon, noir and WW2 newsreel film.
-- **Blood and gore** (optional): hit sprays, pools, bodies breaking apart on explosive kills.
+- **Blood and gore** (optional): hit sprays, pools, bodies breaking apart on explosive kills. The soldier layouts are per game (`rt::g_blood_server/client`); Bad Company's part words are matched strictly first, then by the entity vtable alone, the log naming which.
 
 ### PC controls and menus
 - Full **mouse and keyboard**: raw mouse look, rebindable keys, controller still works.
+  On foot the mouse turns the soldier's own aim, not the right stick
+  (`game_patches.cpp` with the counts from `xam.cpp`): a fixed angle per count on
+  every aim update, so there is no stick curve, dead zone or speed cap; a controller
+  still turns through the game's stick, and `BF_NO_MOUSE_AIM=1` puts the mouse back
+  on the stick.
 - **Vehicle keys**: W/S throttle and brake, A/D steering or rudder, arrow keys pitch and
   roll planes, separate **plane mouse sensitivity** and invert.
 - **PRESS ANY KEY** title; any key or mouse button starts.
@@ -152,6 +157,10 @@ bot's pad on. Testing switches (environment variables, on the hosting game):
   `BF_BOT_SCENARIO_EXIT=1` ends the run once judged, exit code 0 or 3).
 - `BF_BOT_LOG=<file.csv>`: every bot's position, vehicle and state twice a second, with
   the flags and vehicles; `python bf1943-recomp/tools/bot_paths.py <file.csv>` draws it.
+- `BF_BOT_NO_SQUADS=1`: turn squads off (the bots of a team go in fours, the first
+  leading; members take the leader's flag and stay near it on the way; in Bad
+  Company's bots, the leader's crate). `BF_BOT_SQUAD_TRACE=1` logs each 1943
+  squad, rank and leader once.
 
 An unattended test, headless (from `bf1943-recomp/`, in cmd):
 

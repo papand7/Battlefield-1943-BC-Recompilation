@@ -35,6 +35,8 @@ static const bool g_title_set = (g_window_title = "Battlefield: Bad Company", tr
 
 namespace rt {
 uint32_t g_max_fps = 120;    // --max-fps (0 = no limit), applied in VdSwap
+uint32_t g_tick_rate = 75;   // --tickrate: the simulation rate (30, 60, 75, 100...)
+float g_wind_cli = -1.0f;    // --wind (shared runtime; Bad Company's plants)
 bool g_lan_host = false;     // --host
 // Bad Company's ports are BF1943's + 500 (1500 VDP, 1503 server), so both games
 // can host on one PC; BF1943's bot copies use offsets up to 150.
@@ -232,14 +234,15 @@ GAME_PATCH(8229B708) {
   // +48 ticks. Game.MaxFps is read straight from its setting (pointer cached at
   // 82C24C68 on the first call), 30 by default.
   // With a limit, the timer counts Game.MaxFps ticks per second (+48), but every
-  // tick still lasts 1/rate (+44, 30), so a limit above 30 makes the game run
-  // fast. With 0 (no limit) it counts +44 ticks per second of real time. So the
-  // client's timers get 0 and VdSwap (gpu.cpp) caps the frame rate at --max-fps.
+  // tick still lasts 1/rate (+44), so the limit and the rate must agree. The
+  // simulation timers (mode 1) run at --tickrate (75 by default; 30 restores
+  // the original game's rate) and are created with that rate in
+  // 82295A20 below. Others get 0 (no limit) and count their own rate.
   // The server's timer (mode 1, only while hosting: one tick per loop, paced by
-  // sleeping 1/Game.MaxFps) keeps 30, else it spins. The setting is shared and
-  // read at the start of each call, so it's set per call.
+  // sleeping 1/Game.MaxFps) uses the same rate, else it spins. The setting is
+  // shared and read at the start of each call, so it's set per call.
   if (uint32_t max_fps = Ld32(0x82C24C68)) {
-    float f = Ld32(ctx.r3.u32 + 40) == 1 ? 30.0f : 0.0f;
+    float f = Ld32(ctx.r3.u32 + 40) == 1 ? float(std::clamp(g_tick_rate, 30u, 120u)) : 0.0f;
     uint32_t bits;
     memcpy(&bits, &f, 4);
     St32(max_fps, bits);
@@ -247,6 +250,20 @@ GAME_PATCH(8229B708) {
   HostFromMainLoop(ctx, base);
   __imp__sub_8229B708(ctx, base);
 }
+
+// Simulation timer creation (bf1943's 822C7270): r3 = timer, r4 = tick rate
+// (the game asks for 30), r5 = mode. The mode 1 timers (the client's and the
+// server's) get --tickrate, so every tick lasts 1/rate and the game's time is
+// right; the other timers keep what the game asks for. The first timer is the
+// client's (made on the main thread at boot), and its thread is the one that
+// simulates the local player.
+static uint32_t g_client_thread;
+GAME_PATCH(82295A20) {
+  if (!g_client_thread) g_client_thread = CurrentThreadId();
+  if (ctx.r5.u32 == 1) ctx.r4.u64 = std::clamp(g_tick_rate, 30u, 120u);
+  __imp__sub_82295A20(ctx, base);
+}
+uint32_t rt::ClientThreadId() { return g_client_thread; }
 
 // Sets the frame limiter's mode (bf1943's 822BBCF8; r4: 2 = vblank-synced with
 // Game.VsyncEnable, else 0/1 = timed), called from the main loop at 82343F24.

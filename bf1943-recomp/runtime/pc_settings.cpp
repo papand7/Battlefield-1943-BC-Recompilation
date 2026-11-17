@@ -65,6 +65,7 @@ struct Setting {
   std::string text;                  // kText
   int button = 0;                    // kButton: what it does (Button)
   std::string address, map;          // kButton on the join page: the server
+  bool locked = false;               // that server needs a password
   bool touched = false;              // changed on the page this run (only those go to the launcher)
   bool from_launcher = false;        // its value came from the launcher's settings (else pc_settings.ini's)
 };
@@ -140,7 +141,10 @@ void Build() {
                      {L"1280 x 720", L"1600 x 900", L"1920 x 1080", L"2560 x 1440", L"3840 x 2160"},
                      {"1280x720", "1600x900", "1920x1080", "2560x1440", "3840x2160"}, 2, true,
                      "window"));
-  v.push_back(Choice(kGraphics, "display", L"DISPLAY MODE",
+  v.push_back(Choice(kGraphics, "aspect", L"ASPECT RATIO",
+                     L"On a screen wider than 16:9: keep the picture 16:9 with bars, or fill the screen "
+                     L"(the picture is stretched wider).",
+                     {L"16:9 (BARS)", L"FILL SCREEN"}, {"0", "1"}, 0));  v.push_back(Choice(kGraphics, "display", L"DISPLAY MODE",
                      L"Borderless fullscreen on the window's monitor, or a window. Alt+Enter switches.",
                      {L"WINDOWED", L"FULLSCREEN"}, {"windowed", "fullscreen"}, 0, false, "display"));
   v.push_back(Choice(kGraphics, "fov", L"FIELD OF VIEW",
@@ -639,6 +643,7 @@ void ApplyLive() {
   xgpu::SetPicture(float(std::atof(Value("brightness").c_str())), float(std::atof(Value("gamma").c_str())));
   xgpu::SetVsync(Value("vsync") == "1" || g_present_vsync);
   xgpu::SetFullscreen(Value("display") == "fullscreen");
+  xgpu::SetFillScreen(Value("aspect") == "1");
   {
     static const float command_line_fov = g_fov;  // --fov, when the setting is the game's
     float fov = float(std::atof(Value("fov").c_str()));
@@ -927,22 +932,40 @@ void Activate(Setting& s) {
         return;
       }
       lan::SetPublish(PageValue("online") == "1");
+      g_server_name = PageText("server_name");
+      g_server_password = PageText("password");
+      g_weather = PageValue("weather") == "1" ? 1 : 0;
+      g_time_of_day = float(std::atof(PageValue("timeofday").c_str()));
+      xgpu::SetWeather(float(g_weather), g_time_of_day);
+      if (!g_server_password.empty()) RT_INFO("lan: the game needs a password to join");
+      RT_INFO("lan: weather %s, time %.1f h (for everyone joining)", g_weather ? "rain" : "clear", g_time_of_day);
       lan::Host(PageValue("host_map"), std::atoi(PageValue("bots").c_str()));
       g_start_failed = L"Hosting " + Wide(PageValue("host_map")) +
                        L" did not start: the map did not load. Try again, or another map.";
       StartingGame();
     } else if (s.button == kJoinServer) {
-      if (lan::Join(s.address, s.map)) {
+      if (s.locked && PageText("password").empty()) {
+        g_status = L"That game needs its password: type it in PASSWORD below, then pick the game again.";
+        g_dirty = true;
+        return;
+      }
+      if (lan::Join(s.address, s.map, PageText("password"))) {
         g_start_failed = L"No answer from the game at " + Wide(s.address) +
                          L". Check it is still running, on the same network, and that its firewall lets the game through.";
         StartingGame();
+      } else if (!lan::JoinError().empty()) {
+        g_status = lan::JoinError();
+        g_dirty = true;
       }
     } else if (s.button == kJoinAddress) {
       if (!PageText("address").empty()) {
-        if (lan::Join(PageText("address"), PageValue("join_map"))) {
+        if (lan::Join(PageText("address"), PageValue("join_map"), PageText("password"))) {
           g_start_failed = L"No answer from " + Wide(PageText("address")) +
                            L". Check the address, that the game there is hosting, and its firewall.";
           StartingGame();
+        } else if (!lan::JoinError().empty()) {
+          g_status = lan::JoinError();
+          g_dirty = true;
         } else {
           g_status = L"That is not an address: type one like 192.168.1.20 (or 192.168.1.20:1003).";
           g_dirty = true;
@@ -1088,13 +1111,15 @@ int Key(Action action, int slot) {
 }
 
 bool IsOpen() { return g_open; }
+bool WaitRelease() { return g_wait_release; }
 
 namespace {
 // The join page: the games found, then refresh and an address to type.
 void BuildJoinRows() {
-  std::string address, map = "Wake_island_s";
+  std::string address, password, map = "Wake_island_s";
   for (const Setting& s : g_join_rows) {
     if (!std::strcmp(s.key, "address")) address = s.text;
+    if (!std::strcmp(s.key, "password")) password = s.text;
     if (!std::strcmp(s.key, "join_map")) map = s.values[s.index];
   }
   g_join_rows.clear();
@@ -1112,10 +1137,11 @@ void BuildJoinRows() {
     descs[k] = L"Join " + Wide(sv.name) + L"'s game on " + MapName(sv.map) + L" at " + Wide(sv.address) +
                (sv.online ? L" (on the internet)." : L" (" + std::to_wstring(sv.ping_ms) + L" ms).");
     if (sv.online) labels[k] += L"  [INTERNET]";
+    if (sv.locked) labels[k] = L"[LOCK] " + labels[k];
     s.label = labels[k].c_str();
     s.desc = descs[k].c_str();
     s.names = {MapName(sv.map)};
-    s.address = sv.address, s.map = sv.map;
+    s.address = sv.address, s.map = sv.map, s.locked = sv.locked;
     g_join_rows.push_back(s);
     ++k;
   }
@@ -1125,6 +1151,11 @@ void BuildJoinRows() {
   refresh.desc = L"Look again for games on your network.";
   refresh.names = {L"SEARCH"};
   g_join_rows.push_back(refresh);
+  Setting pw;
+  pw.category = kGraphics, pw.kind = Kind::kText, pw.key = "password", pw.label = L"PASSWORD";
+  pw.desc = L"The password of the game you join, if it has one (Enter or click to type).";
+  pw.text = password;
+  g_join_rows.push_back(pw);
   Setting addr;
   addr.category = kGraphics, addr.kind = Kind::kText, addr.key = "address", addr.label = L"ADDRESS";
   addr.desc = L"A game not on your network: type its IP address (Enter or click to type).";
@@ -1160,6 +1191,22 @@ void OpenMode(Mode mode, Mode back_to) {
                                  L"Computer players in your game, half on each team.",
                                  {L"NONE", L"2", L"4", L"6", L"8", L"12", L"15"},
                                  {"0", "2", "4", "6", "8", "12", "15"}, 0));
+    Setting sn;
+    sn.category = kGraphics, sn.kind = Kind::kText, sn.key = "server_name", sn.label = L"SERVER NAME";
+    sn.desc = L"The name of your game in everyone's JOIN GAME list.";
+    sn.text = g_server_name.empty() ? g_gamertag : g_server_name;
+    g_host_rows.push_back(sn);
+    Setting pw;
+    pw.category = kGraphics, pw.kind = Kind::kText, pw.key = "password", pw.label = L"PASSWORD";
+    pw.desc = L"A word players must type to join. Empty: anyone may join.";
+    pw.text = g_server_password;
+    g_host_rows.push_back(pw);
+    g_host_rows.push_back(Choice(kGraphics, "weather", L"WEATHER",
+                                 L"Rain in the world with puddles and drops on the view. Everyone joining gets it.",
+                                 {L"CLEAR", L"RAIN"}, {"0", "1"}, 0));
+    g_host_rows.push_back(Choice(kGraphics, "timeofday", L"TIME OF DAY",
+                                 L"Sunrise, day, sunset or night. Everyone joining gets it.",
+                                 {L"DAWN", L"DAY", L"SUNSET", L"NIGHT"}, {"6.5", "12", "18", "23"}, 1));
     {
       Setting online = Choice(kGraphics, "online", L"LIST ON THE INTERNET",
                               L"Shows your game in everyone's JOIN GAME list (the master server). Your router must "
@@ -1342,7 +1389,7 @@ bool Update(HWND__* window, bool title_passed) {
   } else {
     idle_since = -1;
   }
-  if (CustomMenus() && !g_open && g_in_menus && title_passed && dialogs == 0 && !g_suppress_main && !notice_wait) {
+  if (CustomMenus() && !g_open && g_in_menus && title_passed && !g_suppress_main && !notice_wait) {
     OpenMode(kModeMain, kModeSettings);
     g_wait_release = false;
     RT_INFO("menus: our main menu shown");

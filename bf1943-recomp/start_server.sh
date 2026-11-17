@@ -4,8 +4,14 @@
 # Edit the name, maps and bots below. Maps: Wake_island_s Iwo_Jima_s Guadal_Canal Coral_sea
 GAME=original/v106
 NAME="My Server"
+# SERVERNAME: what server browsers show (default: the name above).
+SERVERNAME="$NAME"
 MAPS=Wake_island_s,Iwo_Jima_s,Guadal_Canal,Coral_sea
 BOTS=0
+# TICKRATE: 75 (the default), 60, 30 (the original game's rate) or 100.
+TICKRATE=75
+# PASSWORD: a word players must type to join. Empty: anyone may join.
+PASSWORD=
 # PUBLISH=1: also listed on the internet (the master server), not only on your network;
 # your router must pass UDP ports 1003 and 19430 to this machine.
 PUBLISH=0
@@ -20,11 +26,12 @@ BOT_LLM=0
 # (tracks, shots, kills, questions): open server_data/bot_advice/runs/<map>_<date>/index.html
 TRAIN=0
 TRAIN_MINUTES=30
-EXTRA=
-[ "$PUBLISH" = "1" ] && EXTRA=--publish
-[ "$TRAIN" = "1" ] && EXTRA="--train --speed 2 --train-minutes $TRAIN_MINUTES"
+EXTRA="--tickrate $TICKRATE"
+[ -n "$PASSWORD" ] && EXTRA="$EXTRA --password $PASSWORD"
+[ "$PUBLISH" = "1" ] && EXTRA="$EXTRA --publish"
+[ "$TRAIN" = "1" ] && EXTRA="$EXTRA --train --speed 2 --train-minutes $TRAIN_MINUTES"
 cd "$(dirname "$0")" || exit 1
 if [ "$BOT_LLM" = "1" ]; then
   if [ -f llm/bot_llm.ini ] || python3 tools/setup_bot_llm.py --dir llm; then EXTRA="$EXTRA --bot-llm llm"; fi
 fi
-exec build/linux/bf1943_server --game "$GAME" --user server_data --dedicated --name "$NAME" --maps "$MAPS" --bots "$BOTS" $EXTRA
+exec build/linux/bf1943_server --game "$GAME" --user server_data --dedicated --name "$NAME" --servername "$SERVERNAME" --maps "$MAPS" --bots "$BOTS" $EXTRA

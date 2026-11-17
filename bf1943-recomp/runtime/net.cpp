@@ -11,6 +11,7 @@
 // game data, as the console's network stack does for UDP peers (the game's
 // server listens on plain UDP), and add the length back on receive.
 #include "kernel.h"
+#include "lan.h"
 
 #include <atomic>
 
@@ -473,6 +474,16 @@ bool Foreign(const sockaddr_in& a) {
 }
 
 // recvfrom(caller, s, buf, len, flags, from, fromlen*)
+// A hosted game with a password drops game packets from addresses that have
+// not typed it on the beacon (lan.cpp): a player who does not know it never
+// gets a connection, and one who does is let in until 10 minutes of silence.
+bool PasswordBlocked(const sockaddr_in& a) {
+  if (rt::g_server_password.empty() || rt::g_join_address) return false;  // open, or we are the client
+  if (!rt::g_lan_host && !rt::g_dedicated) return false;
+  const uint32_t ip = a.sin_addr.s_addr;
+  if ((ntohl(ip) >> 24) == 127 || ip == 0 || ip == g_lan_ip) return false;  // this PC (host, bots)
+  return !rt::lan::GuestAllowed(ip);
+}
 GUEST_IMPORT(NetDll_recvfrom) {
   sockaddr_in a{};
   int len = sizeof(a);
@@ -482,7 +493,7 @@ GUEST_IMPORT(NetDll_recvfrom) {
   do {
     len = sizeof(a);
     r = ::recvfrom(Host(ARG32(4)), (char*)buf, int(ARG32(6)) - (vdp ? 2 : 0), int(ARG32(7)), (sockaddr*)&a, &len);
-  } while (r >= 0 && Foreign(a));
+  } while (r >= 0 && (Foreign(a) || PasswordBlocked(a)));
   if (vdp && r >= 0) {
     St16(ARG32(5), uint16_t(r));  // game data only, no voice
     r += 2;

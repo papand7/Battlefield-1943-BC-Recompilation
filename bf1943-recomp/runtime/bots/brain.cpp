@@ -51,6 +51,9 @@ struct Exit { Vec wet, up; };
 enum BoatState { kNoBoat, kWalkToBoat, kBoard, kDrive, kLeave };
 
 struct Bot {
+  // Squads: the bots of a team go in fours to the same flag, the first one
+  // leading; the others stay near it on the way and spread around the flag.
+  int squad = -1, leader_slot = -1;
   int target_point = -1;     // index into points
   Vec target_offset;         // where around the point to stand
   Vec last_pos;
@@ -398,6 +401,43 @@ struct Brain {
       if (w.vehicles[i].obj == obj) return &w.vehicles[i];
     return nullptr;
   }
+  // Squads: four alive bots of a team, in slot order, to a squad; the first
+  // of the four leads. Returns the squad number (per team) and its leader.
+  int SquadOf(int slot, int team, int* leader_slot, int* alive = nullptr, int* rank_out = nullptr) const {
+    int rank = 0, my_rank = -1;
+    for (int i = 0; i < w.bot_count; ++i) {
+      const BotIO& o = w.bots[i];
+      if (!o.soldier) continue;
+      const Soldier* s = Find(o.soldier);
+      if (!s || s->team != team) continue;
+      if (o.slot == slot) my_rank = rank;
+      ++rank;
+    }
+    *leader_slot = -1;
+    if (alive) *alive = rank;
+    if (rank_out) *rank_out = my_rank;
+    if (my_rank < 0) return -1;
+    const int lead_rank = my_rank / 4 * 4;
+    rank = 0;
+    for (int i = 0; i < w.bot_count; ++i) {
+      const BotIO& o = w.bots[i];
+      if (!o.soldier) continue;
+      const Soldier* s = Find(o.soldier);
+      if (!s || s->team != team) continue;
+      if (rank == lead_rank) {
+        *leader_slot = o.slot;
+        break;
+      }
+      ++rank;
+    }
+    return (team == 2) * 8 + my_rank / 4;
+  }
+  const Soldier* LeaderSoldier(const Bot& b) const {
+    if (b.leader_slot < 0) return nullptr;
+    for (int i = 0; i < w.bot_count; ++i)
+      if (w.bots[i].slot == b.leader_slot && w.bots[i].soldier) return Find(w.bots[i].soldier);
+    return nullptr;
+  }
   bool BoatTaken(uint32_t obj, const BotIO& me) const {
     for (int i = 0; i < w.bot_count; ++i) {
       BotIO& o = w.bots[i];
@@ -427,6 +467,17 @@ struct Brain {
     int best = -1;
     float best_score = -1e9f;
     const Bot& self = *reinterpret_cast<const Bot*>(io.mem);
+    // A squad member goes where its leader goes (unless it couldn't get there).
+    if (self.leader_slot >= 0 && self.leader_slot != io.slot) {
+      for (int k = 0; k < w.bot_count; ++k) {
+        const BotIO& o = w.bots[k];
+        if (o.slot != self.leader_slot || o.mem_tag != kTag) continue;
+        const Bot* lb = reinterpret_cast<const Bot*>(o.mem);
+        if (lb->target_point < 0 || lb->target_point >= w.point_count) break;
+        if (self.avoid_point == lb->target_point && w.now < self.avoid_until && w.point_count > 1) break;
+        return lb->target_point;
+      }
+    }
     for (int i = 0; i < w.point_count; ++i) {
       const Point& p = w.points[i];
       if (i == self.avoid_point && w.now < self.avoid_until && w.point_count > 1) continue;
@@ -1022,6 +1073,17 @@ struct Brain {
     if (!b.alive) b.last_pos = me->pos, b.last_moved = w.now, b.spawned_at = me->pos;
     b.alive = true;
     b.team = me->team;
+    // The squad it is in (four bots of its team) and its leader, the first.
+    int lead = -1, mates = 0, rank = -1;
+    int sq = SquadOf(io.slot, me->team, &lead, &mates, &rank);
+    static const bool trace = getenv("BF_BOT_SQUAD_TRACE") != nullptr;
+    if (trace) Log("squad trace bot%d: team %d rank %d of %d lead %d", io.slot + 1, me->team, rank, mates, lead);
+    if (sq != b.squad) {
+      b.squad = sq;
+      if (!getenv("BF_BOT_NO_SQUADS"))
+        Log("bots: bot%d: squad %d%s", io.slot + 1, sq % 8 + 1, lead == io.slot && mates > 1 ? " (leader)" : "");
+    }
+    b.leader_slot = getenv("BF_BOT_NO_SQUADS") ? -1 : lead;
     // The advisor's answer: a way round what blocks it, or cover.
     if (Vec p; w.answer && w.answer(io.slot, &p) && Dist2D(p, me->pos) < 40) {
       b.advice = p, b.advice_cover = b.asked == 2 || b.asked == 5;
@@ -1103,7 +1165,8 @@ struct Brain {
       if (sc.point >= 0) b.target_point = std::min(sc.point, w.point_count - 1);
       else if (const char* p = getenv("BF_BOT_POINT")) b.target_point = atoi(p);
       else b.target_point = ChoosePoint(io, *me);
-      b.target_offset = {Rand(-6, 6), 0, Rand(-6, 6)};
+      b.target_offset = {std::sin((io.slot % 4) * 1.5708f + Rand(-0.25f, 0.25f)) * Rand(5.0f, 11.0f), 0,
+                         std::cos((io.slot % 4) * 1.5708f + Rand(-0.25f, 0.25f)) * Rand(5.0f, 11.0f)};
     }
     // Shore: remember where bots get up out of the water.
     if (!me->vehicle) {
@@ -1264,6 +1327,14 @@ struct Brain {
       }
       Vec goal = flag;
       goal.x += b.target_offset.x, goal.z += b.target_offset.z;
+      // A squad moves as a group: while the flag is still some way off, a
+      // member keeps to its leader (who walks on to the flag).
+      if (b.leader_slot >= 0 && b.leader_slot != io.slot && Dist2D(me->pos, flag) > 25) {
+        const Soldier* l = LeaderSoldier(b);
+        if (l && !l->vehicle && Dist2D(me->pos, l->pos) > 6.0f && Dist2D(me->pos, l->pos) < 60.0f &&
+            (!w.sight || w.sight(Vec{l->pos.x, l->pos.y + 1.5f, l->pos.z}, Vec{me->pos.x, me->pos.y + 1.5f, me->pos.z})))
+          goal = Vec{l->pos.x + b.target_offset.x * 0.5f, l->pos.y, l->pos.z + b.target_offset.z * 0.5f};
+      }
       float dx = goal.x - me->pos.x, dz = goal.z - me->pos.z;
       Vec next = NextOnRoute(io, b, *me, goal);
       // Near the flag: looking where enemies usually come from (it walks on

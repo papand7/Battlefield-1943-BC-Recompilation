@@ -63,6 +63,12 @@ bool CanAsk(int bot, int cooldown_ms = 15000);
 // The answer, once: true with the place's number (0: none fits), why, and the
 // case's id (for Learn).
 bool Answer(int bot, int* place, std::string* why = nullptr, int64_t* case_id = nullptr);
+// A chat line from a player on a dedicated server: a random bot answers (one
+// short, safe line) if the advisor is on, at most once every ten seconds.
+void ChatReplyTo(const std::string& message);
+// Whether bots answer chat (on by default; /bottalk off on a dedicated server).
+bool ChatEnabled();
+void SetChatEnabled(bool on);
 
 // ---- learning from the answers -------------------------------------------------
 // What came of an answer (judged by the bot's code: out of the stuck spot,

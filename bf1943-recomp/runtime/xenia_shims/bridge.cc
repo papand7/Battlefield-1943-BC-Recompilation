@@ -11,6 +11,7 @@
 #include "third_party/stb/stb_image_write.h"
 
 #include "xenia/base/cvar.h"
+#include "xenia/base/clock.h"
 #include "xenia/base/logging.h"
 #include "xenia/base/threading.h"
 #include "xenia/gpu/vulkan/bf_dlss.h"
@@ -38,11 +39,13 @@ DECLARE_int32(draw_resolution_scale_x);
 DECLARE_uint32(draw_resolution_scale_native_pitch);
 DECLARE_int32(draw_resolution_scale_y);
 DECLARE_bool(depth_float24_convert_in_pixel_shader);
+DECLARE_bool(present_letterbox);
 DECLARE_bool(vulkan_allow_present_mode_immediate);
 DECLARE_bool(vulkan_allow_present_mode_mailbox);
 #include "xenia/cpu/processor.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
+#include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/kernel/kernel_state.h"
 #include "xenia/memory.h"
 #include "xenia/ui/window.h"
@@ -284,6 +287,9 @@ xe::Memory* g_memory = nullptr;  // shared with apu_bridge.cc
 std::unique_ptr<xe::cpu::Processor> g_processor;
 std::unique_ptr<xe::kernel::KernelState> g_kernel;
 std::unique_ptr<xe::gpu::vulkan::VulkanGraphicsSystem> g_graphics;
+// The startup storage load (the stored shaders and their pipelines) has
+// finished reading: prewarming may wait for the creation queue.
+std::atomic<bool> g_shader_storage_ready{false};
 xe::ui::Presenter* g_graphics_presenter() { return g_graphics->presenter(); }
 xe::ui::GraphicsProvider* g_graphics_provider() { return g_graphics->provider(); }
 }  // namespace
@@ -395,6 +401,10 @@ void ApplySceneFx(const char* settings) {
   if (xe::gpu::scenefx::Enabled()) xe::gpu::scenefx::Configure(settings);
 }
 
+void SetWeather(float rain, float time_hours) {
+  if (xe::gpu::scenefx::Enabled()) xe::gpu::scenefx::SetWeather(rain, time_hours);
+}
+
 bool CameraEye(float out[3]) { return xe::gpu::scenefx::Eye(out); }
 
 void SetHdrStretch(bool on) { xe::ui::bfhdr::no_stretch = !on; }
@@ -444,6 +454,9 @@ void SetDisplayOptions(int resolution_scale, int effect, int window_width, int w
   }
   if (window_width > 0 && window_height > 0) g_window_width = window_width, g_window_height = window_height;
 }
+
+// Widescreen ASPECT: fill the window (stretch) or keep 16:9 with bars.
+void SetFillScreen(bool fill) { cvars::present_letterbox = !fill; }
 
 void SetOptions(int anisotropic, uint32_t texture_memory_mb, const char* shader_dump_dir) {
   cvars::anisotropic_override = anisotropic;
@@ -497,8 +510,10 @@ bool Start(uint8_t* guest_base, bool present, InterruptFn interrupt, uint32_t ti
   {
     auto* cp = g_graphics->command_processor();
     auto cache_root = std::filesystem::absolute("shader_cache");
+    g_shader_storage_ready = false;
     cp->CallInThread([cp, cache_root] {
       cp->InitializeShaderStorage(cache_root, 0xBF194300u, false, nullptr);
+      g_shader_storage_ready = true;
     });
   }
   if (present) std::thread(UiThread).detach();
@@ -506,6 +521,23 @@ bool Start(uint8_t* guest_base, bool present, InterruptFn interrupt, uint32_t ti
 }
 
 bool Running() { return g_graphics != nullptr; }
+
+// Waits until the stored shaders' pipelines are created (called when a level
+// opens): the first draws that use them then have the real pipeline instead of
+// the placeholder (which shows as a black blink until the creation threads get
+// to it). Waits for the startup storage load first, so the queue is complete.
+void PrewarmPipelines(uint32_t timeout_ms) {
+  if (!g_graphics) return;
+  auto* cp = static_cast<xe::gpu::vulkan::VulkanCommandProcessor*>(g_graphics->command_processor());
+  if (!cp) return;
+  const uint64_t frequency = xe::Clock::QueryHostTickFrequency();
+  const uint64_t deadline = xe::Clock::QueryHostTickCount() +
+                            (frequency * uint64_t(timeout_ms ? timeout_ms : 1)) / 1000;
+  while (!g_shader_storage_ready && xe::Clock::QueryHostTickCount() < deadline) {
+    xe::threading::Sleep(std::chrono::milliseconds(5));
+  }
+  cp->PrewarmPipelines(timeout_ms);
+}
 
 void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {
   g_graphics->InitializeRingBuffer(ptr, size_log2);

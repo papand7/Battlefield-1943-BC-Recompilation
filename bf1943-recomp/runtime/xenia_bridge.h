@@ -46,6 +46,8 @@ void SetHdrWhite(float nits);
 // Borderless fullscreen on the window's monitor (or windowed); before the
 // window opens it applies when it does. Alt+Enter toggles it too.
 void SetFullscreen(bool on);
+// Widescreen ASPECT: fill the window (stretch) or keep 16:9 with bars.
+void SetFillScreen(bool fill);
 bool IsFullscreen();
 int FullscreenToggles();  // Alt+Enter presses so far (the setting follows them)
 // Our explosion smoke and debris (PC settings: EXPLOSION SMOKE).
@@ -54,6 +56,8 @@ void SetExplosionEffects(bool on);
 void SetSoftParticles(bool on);
 // The scene effects' settings again ("key=value,..."), if they are on.
 void ApplySceneFx(const char* settings);
+// Host/server weather (0 clear, 1 rain) and time of day (hours, 12 noon).
+void SetWeather(float rain, float time_hours);
 // The eye (world position) of the level view now; false if none drawn lately.
 bool CameraEye(float out[3]);
 // The front end menu's rows in the last frame (gpu/vulkan/bf_menu.h): up to max
@@ -74,6 +78,10 @@ void ExplosionAt(const float pos[3]);
 // push: the direction of the killing blow (0 if unknown).
 void GoreDeath(const float feet[3], float damage, bool gib, const float push[3]);
 bool Running();
+// Waits until the stored shaders' pipelines are created (a level's load), so the
+// first draws that use them don't run with the placeholder (a black blink)
+// until the creation threads get to them.
+void PrewarmPipelines(uint32_t timeout_ms);
 void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2);
 void EnableReadPointerWriteBack(uint32_t ptr, uint32_t block_size_log2);
 void SetInterruptCallback(uint32_t callback, uint32_t user_data);

@@ -50,14 +50,15 @@ The latest version of the launcher can be found in the [Releases](https://github
 - **Join by Address** - **Join Game → Address**, or start the game with `--join <address> --host-map <its map>`.
 - **Dedicated Server** - Runs with no graphics, from the launcher's **SERVER** page or a console window, on Windows (`start_server.bat`) or Linux (`start_server.sh`).
 - **List on the Internet** - Shows a server in everyone's **Join Game** list through the master server: `PUBLISH=1` in the start script, `--publish`, or **List on the internet** when hosting from the game. The router must pass UDP ports 1003 and 19430 to the server.
-- **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
+- **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They go in squads of four to the same flag, the first leading and the others staying with it. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
 - **Learning Bots** - Every server learns from its matches where players go, where they die and where they win fights, per map. Bots use it to hold good spots at a flag and to watch where enemies usually come from, and what servers learned can be merged into the next version (`tools/bot_knowledge.py`).
 
 ### Dedicated Server
-The launcher's **SERVER** page runs one for the game chosen at the top: its name, the maps it rotates through, bots, listing on the internet, the bot advisor and training runs, with START / STOP, the server's log and the newest training replay (`server_gui.bat` / `server_gui.sh` open the launcher on that page). Without a window, edit and run `start_server.bat` (name, maps to rotate through, bots and `PUBLISH`), or:
+The launcher's **SERVER** page runs one for the game chosen at the top: its name, the maps it rotates through, bots, listing on the internet, the bot advisor and training runs, with START / STOP, the server's log and the newest training replay (`server_gui.bat` / `server_gui.sh` open the launcher on that page). Without a window, edit and run `start_server.bat` (name, the name browsers show, password, tick rate, maps to rotate through, bots and `PUBLISH`), or:
 ```
-bf1943.exe --game <your game files> --dedicated --name "My Server" --maps Wake_island_s,Iwo_Jima_s --bots 4 --publish
+bf1943.exe --game <your game files> --dedicated --name "Player" --servername "My Server" --password secret --tickrate 75 --maps Wake_island_s,Iwo_Jima_s --bots 4 --publish
 ```
+A server with a password shows a padlock in **JOIN GAME** and only lets in players who type it (UDP 19430 must reach the host for that check). Matches run at 75 ticks a second unless `--tickrate 30` (the original game's rate). In game, **HOST GAME** has the same **SERVER NAME** and **PASSWORD** rows.
 The host's firewall needs to let the game through: UDP ports 1003 and 19430. For the Linux server, see [the developer guide](docs/DEVELOPERS.md).
 
 **Bot advisor (optional)** - `BOT_LLM=1` in the start script: when a bot keeps getting stuck or is losing a fight, a small vision model (Qwen3.5 4B through llama.cpp, on the server's own PC) is shown a map of its surroundings and picks where it should go. The first start installs it into `llm/` (about 3.5 GB, needs Python; `tools/setup_bot_llm.py`), then the server runs with `--bot-llm llm`. It is faster with a graphics card; on a CPU an answer takes several seconds, and the bots carry on as usual meanwhile. Works for both games' servers (`--bot-llm` on Bad Company's too).
@@ -69,11 +70,11 @@ The same recompiler is being used for Battlefield: Bad Company (Xbox 360). Insta
 - **HD Texture Pack** - Made by the launcher from your game files, as for Battlefield 1943.
 - **LAN Multiplayer** - **MULTIPLAYER** on the main menu opens a new menu: **Host Game** (Gold Rush on one of the 8 maps: Valley Run, Deconstruction, Oasis, Final Ignition, End of the Line, Ascension, Harvest Day, Over and Out), **Server Browser** (the games on your network, with map and ping) and **Join by Address** (add `:port` if it isn't the usual 1503). Two copies on one PC can play together; across two PCs it hasn't been tested yet.
 - **Ports** - UDP 1500-1503 and 19431, so it can host on the same PC as Battlefield 1943.
-- **Bots** - On a Bad Company server (the launcher's **SERVER** page, or `--bots N`): mixed kits, sprinting, crouching, grenades and vehicles. Like 1943's bots, they learn from their matches where to hold a crate and where enemies come from.
+- **Bots** - On a Bad Company server (the launcher's **SERVER** page, or `--bots N`): mixed kits, sprinting, crouching, grenades and vehicles, in squads of four to the same crate, the first leading. Like 1943's bots, they learn from their matches where to hold a crate and where enemies come from.
 - **Dedicated Server** - From the launcher's **SERVER** page or `server_gui.bat` / `server_gui.sh`, on Windows and Linux.
 - **Only Gold Rush** - The disc has no Conquest; that came later in an update.
 - **Idle Players** - A player who stays on the spawn screen for about two minutes without deploying is sent back to the menu (the game's own rule).
-- **Not Done Yet** - Playing online, ray-traced shadows (they stall the opening cutscene) and blood. Bots still get stuck in some places. Saving the campaign hasn't been checked yet.
+- **Not Done Yet** - Playing online and ray-traced shadows (they stall the opening cutscene). Bots still get stuck in some places. Saving the campaign hasn't been checked yet.
 
 <img width="1920" alt="Bad Company, the first mission" src="docs/images/bfbc1_gameplay.png" />
 
