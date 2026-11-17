@@ -789,6 +789,7 @@ void Activate(Setting& s) {
                            L". Check the address, that the game there is hosting, and its firewall.";
           StartingGame();
         } else {
+          RT_INFO("menus: join: '%s' is not an address", PageText("address").c_str());
           g_status = L"That is not an address: type one like 192.168.1.20 (or 192.168.1.20:1003).";
           g_dirty = true;
         }
@@ -960,7 +961,9 @@ void BuildJoinRows() {
     s.label = labels[k].c_str();
     s.desc = descs[k].c_str();
     s.names = {MapName(sv.map)};
-    s.address = sv.address, s.map = sv.map;
+    // With its port: a host with another port offset (a second copy on its PC,
+    // a server's --port-offset) listens elsewhere than the usual 1003.
+    s.address = sv.port ? sv.address + ":" + std::to_string(sv.port) : sv.address, s.map = sv.map;
     g_join_rows.push_back(s);
     ++k;
   }
@@ -1308,13 +1311,14 @@ bool Update(HWND__* window, bool title_passed) {
       } else if (vk == VK_BACK) {
         if (!s->text.empty()) s->text.pop_back();
         s->touched = true;
-      } else if (s->text.size() < 15) {
+      } else if (s->text.size() < (std::strcmp(s->key, "address") ? 15u : 21u)) {  // (an address: a.b.c.d:port)
         char c = 0;
         if (vk >= 'A' && vk <= 'Z') c = char(shift ? vk : vk + 32);
         else if (vk >= '0' && vk <= '9') c = char(vk);
         else if (vk == VK_SPACE) c = ' ';
         else if (vk == VK_OEM_MINUS) c = shift ? '_' : '-';
         else if (vk == VK_OEM_PERIOD) c = '.';
+        else if (vk == VK_OEM_1 && shift) c = ':';  // (the address's port)
         if (c) s->text += c, s->touched = true;
       }
       changed = true;

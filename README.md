@@ -51,8 +51,8 @@ The latest version of the launcher can be found in the [Releases](https://github
 <img width="1920" alt="The new main menu" src="docs/images/menu_main.jpg" />
 
 ### Multiplayer
-- **LAN Multiplayer** - Host and join on your network. **Host Game** and **Join Game** are being rebuilt for the new menus and don't work at the moment; a dedicated server works.
-- **Join by Address** - **Join Game → Address**, or start the game with `--join <address> --host-map <its map>`.
+- **LAN Multiplayer** - Host and join on your network: **Host Game** (map, bots, START SERVER) and **Join Game** (the games found on your network and the internet, or an address), or a dedicated server.
+- **Join by Address** - **Join Game → Address** (add `:port` if it isn't the usual 1003), or start the game with `--join <address> --host-map <its map>`.
 - **Dedicated Server** - Runs in a console window with no graphics, on Windows (`start_server.bat`) or Linux (`start_server.sh`, experimental).
 - **List on the Internet** - Shows a server in everyone's **Join Game** list through the master server: `PUBLISH=1` in the start script, `--publish`, or **List on the internet** when hosting from the game. The router must pass UDP ports 1003 and 19430 to the server.
 - **Bots** - Computer players on your server, half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They play inside the server itself, with no extra copies of the game running.
