@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -35,6 +36,7 @@ std::atomic<uint16_t> g_client_game_port{0};
 bool g_admin_console = false;
 std::atomic<bool> g_leaving_level{false};
 extern uint32_t g_lan_ip;  // net.cpp
+extern std::mutex g_host_map_mutex;  // (g_server_name, g_server_password: lan.cpp)
 }  // namespace rt
 
 namespace rt::admin {
@@ -99,6 +101,7 @@ void LoadBansLocked() {
   while (std::getline(f, line)) {
     if (!line.empty() && line.back() == '\r') line.pop_back();
     if (line.empty() || line[0] == '#') continue;
+    if (line[0] == '\\') line.erase(0, 1);  // (an id starting with '#' or '\': SaveBansLocked)
     Ban b;
     std::stringstream ss(line);
     std::getline(ss, b.id, '\t');
@@ -120,7 +123,11 @@ void SaveBansLocked() {
   std::filesystem::create_directories(g_user_root, ec);
   std::ofstream f(BansPath(), std::ios::trunc);
   f << "# Banned players: id <tab> address <tab> name (\"-\": not known). /unban removes them.\n";
-  for (const Ban& b : g_bans) f << b.id << '\t' << b.address << '\t' << b.name << '\n';
+  // The id is the player's own: one starting with '#' would read as a comment,
+  // so such a line (and one starting with '\') gets a '\' in front.
+  for (const Ban& b : g_bans)
+    f << (!b.id.empty() && (b.id[0] == '#' || b.id[0] == '\\') ? "\\" : "") << b.id << '\t' << b.address << '\t'
+      << b.name << '\n';
 }
 bool IsBanned(const Player& p) {
   for (const Ban& b : g_bans) {
@@ -398,38 +405,61 @@ std::string HelloBody() {
 // and this run ends. Joiners told of the change join it once it is up.
 bool RestartOnMap(const std::string& map) {
 #ifdef _WIN32
+  // One argument as the C runtime reads it back (CommandLineToArgvW's rules):
+  // backslashes doubled before a quote and before the closing quote.
   auto quote = [](const std::string& a) {
-    if (!a.empty() && a.find_first_of(" \t\"") == std::string::npos) return a;
+    if (!a.empty() && a.find_first_of(" \t\n\v\"") == std::string::npos) return a;
     std::string q = "\"";
-    for (char c : a) q += c == '"' ? std::string("\\\"") : std::string(1, c);
+    size_t slashes = 0;
+    for (char c : a) {
+      if (c == '\\') {
+        ++slashes;
+        continue;
+      }
+      q.append(c == '"' ? slashes * 2 + 1 : slashes, '\\');
+      q += c;
+      slashes = 0;
+    }
+    q.append(slashes * 2, '\\');
     return q + "\"";
   };
-  // The arguments as given (the C runtime's), without --host-map / --bots.
+  // The arguments as given (the C runtime's), without --host-map / --bots and
+  // the server settings an admin can change while it runs (theirs now below).
   std::string line = quote(__argv[0]);
   for (int i = 1; i < __argc; ++i) {
     std::string a = __argv[i];
-    if ((a == "--host-map" || a == "--bots") && i + 1 < __argc) {
+    if ((a == "--host-map" || a == "--bots" || a == "--password" || a == "--servername" || a == "--server-name" ||
+         a == "--weather" || a == "--time" || a == "--hardcore-damage") &&
+        i + 1 < __argc) {
       ++i;
       continue;
     }
+    if (a == "--hardcore") continue;
     line += " " + quote(a);
   }
   line += " --host-map " + map + " --bots " + std::to_string(g_bot_count);
-  // What a host chose in its menu (not on its command line) goes on to the new
-  // run: its server settings, so a /map keeps them.
   auto given = [&](std::initializer_list<const char*> names) {
     for (int i = 1; i < __argc; ++i)
       for (const char* n : names)
         if (__argv[i] == std::string(n)) return true;
     return false;
   };
+  // What a host chose in its menu or an admin changed goes on to the new run:
+  // its server settings as they are now, so a /map keeps them.
   if (g_lan_host && !g_join_address && !g_dedicated && !given({"--host"})) line += " --host";
-  if (g_hardcore && !given({"--hardcore", "--hardcore-damage"}))
+  if (g_hardcore && std::isfinite(g_hardcore_damage))
     line += " --hardcore-damage " + std::to_string(g_hardcore_damage);
-  if (!g_server_name.empty() && !given({"--servername", "--server-name"})) line += " --servername " + quote(g_server_name);
-  if (!g_server_password.empty() && !given({"--password"})) line += " --password " + quote(g_server_password);
-  if (g_weather && !given({"--weather"})) line += " --weather rain";
-  if (!given({"--time"})) line += " --time " + std::to_string(g_time_of_day);
+  else if (g_hardcore)
+    line += " --hardcore";
+  std::string name, password;
+  {
+    std::lock_guard lock(g_host_map_mutex);  // (lan.cpp)
+    name = g_server_name, password = g_server_password;
+  }
+  if (!name.empty()) line += " --servername " + quote(name);
+  if (!password.empty()) line += " --password " + quote(password);
+  if (g_weather) line += " --weather rain";
+  if (std::isfinite(g_time_of_day)) line += " --time " + std::to_string(g_time_of_day);
   if (lan::Publish() && !given({"--publish"})) line += " --publish";
   // Only the console / pipe handles are passed on: the sockets (inheritable
   // by default) would keep this run's ports taken in the new one.

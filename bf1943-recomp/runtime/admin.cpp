@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
@@ -31,6 +32,7 @@
 
 namespace rt {
 std::atomic<bool> g_admin_host{false};  // lan.cpp: this game hosts (its commands run here)
+extern std::mutex g_host_map_mutex;     // (g_server_name, g_server_password: lan.cpp)
 }
 
 namespace rt::admin {
@@ -59,6 +61,15 @@ std::wstring Wide(const std::string& s) {
 std::string Trim(std::string s) {
   size_t a = s.find_first_not_of(" \t\r\n"), b = s.find_last_not_of(" \t\r\n");
   return a == std::string::npos ? "" : s.substr(a, b - a + 1);
+}
+// A command line for the log: a password's (/password, /login) left out.
+std::string Redacted(const std::string& line) {
+  size_t sp = line.find(' ');
+  std::string first = line.substr(0, sp);
+  std::string word = first.size() && first[0] == '/' ? first.substr(1) : first;
+  std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) { return char(tolower(c)); });
+  if ((word == "password" || word == "login") && sp != std::string::npos) return first + " ***";
+  return line;
 }
 // A remote admin's command (run here for it): what it says goes back to it too.
 thread_local std::string* t_reply = nullptr;
@@ -187,7 +198,7 @@ void ChatNetThread() {
           RT_INFO("admin: a command from %u.%u.%u.%u refused", from.sin_addr.S_un.S_un_b.s_b1,
                   from.sin_addr.S_un.S_un_b.s_b2, from.sin_addr.S_un.S_un_b.s_b3, from.sin_addr.S_un.S_un_b.s_b4);
         } else if (!line.empty() && line[0] == '/') {
-          RT_INFO("admin: remote command %s", line.c_str());
+          RT_INFO("admin: remote command %s", Redacted(line).c_str());
           t_reply = &reply;
           Command(line);
           t_reply = nullptr;
@@ -311,7 +322,7 @@ void Command(const std::string& line) {
     else if (a == "dusk" || a == "sunset") h = 18.0f;
     else if (a == "night") h = 23.0f;
     else if (!a.empty()) h = float(atof(a.c_str()));
-    if (h < 0 || h > 24) {
+    if (!std::isfinite(h) || h < 0 || h > 24) {
       AddLine(L"TIME: dawn, day, sunset, night or hours (12 noon)");
       return;
     }
@@ -322,10 +333,15 @@ void Command(const std::string& line) {
     AddLine(buf);
     RT_INFO("admin: time %.1f h", h);
   } else if (cmd == "name") {
-    g_server_name = arg.substr(0, 48);
-    AddLine(L"server name: " + Wide(g_server_name));
-    RT_INFO("admin: server name '%s'", g_server_name.c_str());
+    const std::string name = arg.substr(0, 48);
+    {
+      std::lock_guard lock(g_host_map_mutex);  // (the beacon reads it: lan.cpp)
+      g_server_name = name;
+    }
+    AddLine(L"server name: " + Wide(name));
+    RT_INFO("admin: server name '%s'", name.c_str());
   } else if (cmd == "password") {
+    std::lock_guard lock(g_host_map_mutex);  // (the beacon reads it: lan.cpp)
     g_server_password = arg.substr(0, 32);
     AddLine(arg.empty() ? L"password cleared" : L"password set");
     RT_INFO("admin: password %s", arg.empty() ? "cleared" : "set");
@@ -433,7 +449,7 @@ void Say(const std::string& name, const std::string& text) {
 void Execute(const std::string& raw, bool console) {
   std::string line = Trim(raw);
   if (line.empty()) return;
-  if (console) RT_INFO("admin: %s", line.c_str());
+  if (console) RT_INFO("admin: %s", Redacted(line).c_str());
   // The console takes commands without their '/' too ("kick Bob").
   if (console && line[0] != '/') {
     static const char* const kWords[] = {"help", "players", "who", "kick", "ban", "unban", "map", "bots", "weather",

@@ -35,6 +35,7 @@ namespace xe::gpu::scenefx { void Configure(const char* settings); bool Enabled(
 #endif
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <thread>
 
@@ -254,7 +255,7 @@ int main(int argc, char** argv) {
       else if (!strcmp(t, "dawn") || !strcmp(t, "sunrise")) g_time_of_day = 6.5f;
       else if (!strcmp(t, "dusk") || !strcmp(t, "sunset")) g_time_of_day = 18.0f;
       else if (!strcmp(t, "night")) g_time_of_day = 23.0f;
-      else g_time_of_day = std::clamp(float(atof(t)), 0.0f, 24.0f);
+      else if (const float h = float(atof(t)); std::isfinite(h)) g_time_of_day = std::clamp(h, 0.0f, 24.0f);
     }
     else if (a == "--vblank-hz" && i + 1 < argc) g_vblank_hz = std::max(1, atoi(argv[++i]));
     else if (a == "--max-fps" && i + 1 < argc) g_max_fps = uint32_t(std::max(0, atoi(argv[++i])));
@@ -285,7 +286,8 @@ int main(int argc, char** argv) {
     else if (a == "--hardcore") g_hardcore = true;
     else if (a == "--hardcore-damage" && i + 1 < argc) {
       g_hardcore = true;
-      g_hardcore_damage = std::clamp(float(atof(argv[++i])), 0.1f, 20.0f);
+      const float d = float(atof(argv[++i]));
+      if (std::isfinite(d)) g_hardcore_damage = std::clamp(d, 0.1f, 20.0f);  // (nan: the default)
     }
     else if (a == "--log-ui") g_log_ui = true;
     else if (a == "--log-settings" && i + 1 < argc) g_log_settings = argv[++i];

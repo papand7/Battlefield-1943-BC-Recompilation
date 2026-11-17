@@ -41,6 +41,9 @@ uint16_t g_join_port = 0x0000;  // network order: its server port (set by Prepar
 std::string g_server_password;  // a hosted game's password (empty: anyone)
 std::string g_join_password;    // the password of the game joined
 std::string g_server_name;      // --servername, or the host page's name (empty: the player name)
+// g_server_password, g_server_name and g_host_map are changed at run time (admin
+// commands, the host page) under this one (the game's: game_patches.cpp).
+extern std::mutex g_host_map_mutex;
 extern uint32_t g_lan_ip;     // net.cpp
 bool g_hardcore = false;
 float g_hardcore_damage = 2.0f;
@@ -184,10 +187,15 @@ void Beacon() {
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
+    std::string password, server_name, host_map;  // (copies: admin commands change them)
+    {
+      std::lock_guard lock(g_host_map_mutex);
+      password = g_server_password, server_name = g_server_name, host_map = g_host_map;
+    }
     if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'K' && buf[5] == '!') {
       // A joiner's password for a protected game: let that address in, or not.
       const std::string given(buf + 6, size_t(n) - 6);
-      const bool ok = g_server_password.empty() || given == g_server_password;
+      const bool ok = password.empty() || given == password;
       if (ok) AllowGuest(from.sin_addr.s_addr);
       const std::string answer = std::string(g_tag) + (ok ? "O!" : "N!");
       sendto(s, answer.data(), int(answer.size()), 0, (sockaddr*)&from, len);
@@ -202,12 +210,12 @@ void Beacon() {
     }
     if (n < 5 || memcmp(buf, g_tag, 4) || buf[4] != '?') continue;
     // The name the browser shows: the server's own, else the host's player name.
-    std::string shown = g_server_name.empty() ? g_gamertag : g_server_name;
+    std::string shown = server_name.empty() ? g_gamertag : server_name;
     for (char& c : shown)
       if (c == '|' || c == '\n' || c == '\r') c = ' ';  // (the reply is split on '|')
     if (shown.size() > 48) shown.resize(48);
-    std::string reply = std::string(g_tag) + "!" + shown + "|" + g_host_map + "|" + std::to_string(1003 + g_port_offset) +
-                        (g_server_password.empty() ? "" : "|lock");
+    std::string reply = std::string(g_tag) + "!" + shown + "|" + host_map + "|" + std::to_string(1003 + g_port_offset) +
+                        (password.empty() ? "" : "|lock");
     // Hardcore: a further field (older games read the port with atoi, which stops at '|').
     if (g_hardcore) reply += "|hardcore";
     sendto(s, reply.data(), int(reply.size()), 0, (sockaddr*)&from, len);
@@ -346,7 +354,10 @@ std::vector<Server> Found() {
 
 // HOST GAME: the map hosted as a LAN server, with bots joining it.
 void Host(const std::string& map, int bots) {
-  g_host_map = map;
+  {
+    std::lock_guard lock(g_host_map_mutex);
+    g_host_map = map;
+  }
   g_lan_host = true;
   g_admin_host = true;
   g_bot_count = bots;
@@ -489,7 +500,10 @@ bool PrepareJoin(const std::string& address_port, const std::string& map, const 
   if (!password.empty() && !AskPassword(ip.s_addr, password, g_join_error)) return false;
   g_join_error.clear();
   g_join_port = htons(uint16_t(port));
-  g_host_map = map;
+  {
+    std::lock_guard lock(g_host_map_mutex);
+    g_host_map = map;
+  }
   g_lan_host = true;
   g_bot_count = 0;
   // On this PC: our own server and ports must not clash with the host's.

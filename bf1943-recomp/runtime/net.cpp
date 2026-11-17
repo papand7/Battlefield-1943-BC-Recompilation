@@ -44,6 +44,7 @@ uint32_t g_lan_ip = 0;        // --lan-ip (network order), else found at startup
 uint16_t g_port_offset = 0;   // --port-offset: added to bound ports (two copies on one PC)
 uint16_t g_base_port_offset = 0;
 std::atomic<bool> g_online_ready{false};  // Theater login answered
+extern std::mutex g_host_map_mutex;  // (g_server_password: lan.cpp)
 }
 
 namespace {
@@ -479,7 +480,11 @@ bool Foreign(const sockaddr_in& a) {
 // not typed it on the beacon (lan.cpp): a player who does not know it never
 // gets a connection, and one who does is let in until 10 minutes of silence.
 bool PasswordBlocked(const sockaddr_in& a) {
-  if (rt::g_server_password.empty() || rt::g_join_address) return false;  // open, or we are the client
+  if (rt::g_join_address) return false;  // we are the client
+  {
+    std::lock_guard lock(rt::g_host_map_mutex);  // (admin commands change it: lan.cpp)
+    if (rt::g_server_password.empty()) return false;  // open
+  }
   if (!rt::g_lan_host && !rt::g_dedicated) return false;
   const uint32_t ip = a.sin_addr.s_addr;
   if ((ntohl(ip) >> 24) == 127 || ip == 0 || ip == g_lan_ip) return false;  // this PC (host, bots)
@@ -726,7 +731,7 @@ int RecvInto(SOCKET s, uint32_t bufs, uint32_t count, uint32_t from, uint32_t fr
     flags = 0, alen = sizeof(a);
     r = from ? WSARecvFrom(s, host.data(), DWORD(host.size()), &got, &flags, (sockaddr*)&a, &alen, nullptr, nullptr)
              : WSARecv(s, host.data(), DWORD(host.size()), &got, &flags, nullptr, nullptr);
-  } while (r == 0 && from && (Foreign(a) || AdminBlocked(a)));
+  } while (r == 0 && from && (Foreign(a) || PasswordBlocked(a) || AdminBlocked(a)));
   if (r != 0) {
     *err = WSAGetLastError();
     return -1;

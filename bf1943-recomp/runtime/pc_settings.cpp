@@ -42,6 +42,10 @@
 
 using namespace rt;
 
+namespace rt {
+extern std::mutex g_host_map_mutex;  // game_patches.cpp (g_server_name, g_server_password: lan.cpp)
+}
+
 bool (*rt::g_setting_hidden)(const char* key) = nullptr;
 const wchar_t* (*rt::g_action_name)(int action) = nullptr;
 
@@ -1036,8 +1040,11 @@ void Activate(Setting& s) {
         if (g_hardcore) g_hardcore_damage = float(hardcore);
       }
       rt::spectate::g_flag = PageValue("spectate") == "1";
-      g_server_name = PageText("server_name");
-      g_server_password = PageText("password");
+      {
+        std::lock_guard lock(g_host_map_mutex);  // (lan.cpp's beacon reads them)
+        g_server_name = PageText("server_name");
+        g_server_password = PageText("password");
+      }
       g_weather = PageValue("weather") == "1" ? 1 : 0;
       g_time_of_day = float(std::atof(PageValue("timeofday").c_str()));
       xgpu::SetWeather(float(g_weather), g_time_of_day);
