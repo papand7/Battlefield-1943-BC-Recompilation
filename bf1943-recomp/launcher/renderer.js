@@ -351,7 +351,7 @@ const serverMaps = {
     ['mp_beachhead_day1', 'Harvest Day'], ['mp_beachhead_day2', 'Over and Out']],
 };
 const serverDefaults = (key) => ({ name: 'My Server', maps: serverMaps[key].map(([m]) => m), bots: 8, publish: false,
-  llm: false, train: false, trainMinutes: 30, exe: '', game: '' });
+  llm: false, train: false, trainMinutes: 30, hardcore: false, exe: '', game: '' });
 let srv = null;          // the choices on the page: { key, c }
 let srvInfo = {};        // what the main process found: exe, data, advisor
 let srvRunning = null;   // the game whose server runs
@@ -388,6 +388,8 @@ function showServer(key) {
   $('srvpublish').checked = !!c.publish;
   $('srvllm').checked = !!c.llm;
   $('srvtrain').checked = !!c.train;
+  $('srvhardcore').checked = !!c.hardcore;
+  $('hardcorerow').style.display = key === 'bf1943' ? '' : 'none';  // (Battlefield 1943's only, so far)
   serverControls();
   refreshServerInfo();
 }
@@ -414,7 +416,7 @@ function serverControls() {
   $('publishhint').textContent = c.train ? 'Not with a training run: nobody joins it'
     : 'Your router must pass the game\'s UDP ports (1003, 19430) to this PC';
   $('mapcount').textContent = `${c.maps.length} of ${serverMaps[srv.key].length} in the rotation`;
-  for (const id of ['srvname', 'srvllm', 'srvtrain', 'srvexepick', 'srvdatapick', 'srvauto']) $(id).disabled = busy;
+  for (const id of ['srvname', 'srvllm', 'srvtrain', 'srvhardcore','srvexepick', 'srvdatapick', 'srvauto']) $(id).disabled = busy;
   $('srvmaps').querySelectorAll('.chip').forEach((b) => (b.disabled = busy));
   $('srvchoices').classList.toggle('locked', busy);
   $('srvstart').disabled = busy || !srvInfo.exe || !srvInfo.data || !c.maps.length;
@@ -548,7 +550,7 @@ $('botsdown').onclick = () => { srv.c.bots = Math.max(0, srv.c.bots - 1); server
 $('botsup').onclick = () => { srv.c.bots = Math.min(16, srv.c.bots + 1); serverChanged(); };
 $('mindown').onclick = () => { srv.c.trainMinutes = Math.max(5, srv.c.trainMinutes - minuteStep(srv.c.trainMinutes, false)); serverChanged(); };
 $('minup').onclick = () => { srv.c.trainMinutes = Math.min(1440, srv.c.trainMinutes + minuteStep(srv.c.trainMinutes, true)); serverChanged(); };
-for (const [id, key] of [['srvpublish', 'publish'], ['srvllm', 'llm'], ['srvtrain', 'train']])
+for (const [id, key] of [['srvpublish', 'publish'], ['srvllm', 'llm'], ['srvtrain', 'train'], ['srvhardcore', 'hardcore']])
   $(id).onchange = () => { srv.c[key] = $(id).checked; serverChanged(); };
 for (const [id, kind] of [['srvexepick', 'exe'], ['srvdatapick', 'game']])
   $(id).onclick = async () => {

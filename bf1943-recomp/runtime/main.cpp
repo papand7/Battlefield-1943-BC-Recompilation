@@ -256,6 +256,13 @@ int main(int argc, char** argv) {
     else if (a == "--host") g_lan_host = true;
     else if (a == "--bots" && i + 1 < argc) g_bot_count = std::clamp(atoi(argv[++i]), 0, 16);  // (botapi::kMaxBots)
     else if (a == "--host-map" && i + 1 < argc) g_host_map = argv[++i];
+    // Hardcore (a host's or dedicated server's): no HUD or crosshair for its
+    // players, soldier damage times --hardcore-damage (default 2; it implies --hardcore).
+    else if (a == "--hardcore") g_hardcore = true;
+    else if (a == "--hardcore-damage" && i + 1 < argc) {
+      g_hardcore = true;
+      g_hardcore_damage = std::clamp(float(atof(argv[++i])), 0.1f, 20.0f);
+    }
     else if (a == "--log-ui") g_log_ui = true;
     else if (a == "--log-settings" && i + 1 < argc) g_log_settings = argv[++i];
     else if (a == "--ui-call" && i + 1 < argc) g_ui_call = argv[++i];
@@ -411,6 +418,14 @@ int main(int argc, char** argv) {
             g_host_map.c_str(), 1003 + g_port_offset, g_bot_count ? ", with bots" : "");
   }
   if (g_lan_host && join_address.empty() && !g_training && !nav_run) rt::lan::StartBeacon();  // --host: shown in server browsers
+  if (!join_address.empty()) g_hardcore = false;  // (a joiner plays by the host's: lan.cpp asks it)
+  else if (g_hardcore && !g_hardcore_supported) {
+    g_hardcore = false;
+    RT_WARN("hardcore: not in this game yet, ignored");
+  } else if (g_hardcore) {
+    g_hardcore_hud = true;
+    RT_INFO("hardcore: no HUD or crosshair, soldier damage x%.2f", g_hardcore_damage);
+  }
   // --publish: on the master server's list once the level runs.
   if ((g_dedicated || g_lan_host) && join_address.empty() && !g_training && !nav_run) rt::lan::StartPublishing();
   // A dedicated server plays no sound: the game's sound system off (its mixer

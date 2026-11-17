@@ -931,6 +931,11 @@ void Activate(Setting& s) {
         return;
       }
       lan::SetPublish(PageValue("online") == "1");
+      if (g_hardcore_supported) {
+        int hardcore = std::atoi(PageValue("hardcore").c_str());
+        g_hardcore = hardcore > 0;
+        if (g_hardcore) g_hardcore_damage = float(hardcore);
+      }
       lan::Host(PageValue("host_map"), std::atoi(PageValue("bots").c_str()));
       g_start_failed = L"Hosting " + Wide(PageValue("host_map")) +
                        L" did not start: the map did not load. Try again, or another map.";
@@ -1116,6 +1121,7 @@ void BuildJoinRows() {
     descs[k] = L"Join " + Wide(sv.name) + L"'s game on " + MapName(sv.map) + L" at " + Wide(sv.address) +
                (sv.online ? L" (on the internet)." : L" (" + std::to_wstring(sv.ping_ms) + L" ms).");
     if (sv.online) labels[k] += L"  [INTERNET]";
+    if (sv.hardcore) labels[k] += L"  [HARDCORE]", descs[k] += L" Hardcore: no HUD or crosshair, fewer hits to kill.";
     s.label = labels[k].c_str();
     s.desc = descs[k].c_str();
     s.names = {MapName(sv.map)};
@@ -1171,6 +1177,12 @@ void OpenMode(Mode mode, Mode back_to) {
                               {L"NO", L"YES"}, {"0", "1"}, lan::Publish() ? 1 : 0);
       g_host_rows.push_back(online);
     }
+    if (g_hardcore_supported)
+      g_host_rows.push_back(Choice(kGraphics, "hardcore", L"HARDCORE",
+                                   L"No HUD or crosshair for anyone in your game (players who join too), and "
+                                   L"soldiers die in fewer hits. The scoreboard (Tab) stays.",
+                                   {L"OFF", L"ON (2X DAMAGE)", L"ON (3X DAMAGE)"}, {"0", "2", "3"},
+                                   !g_hardcore ? 0 : g_hardcore_damage >= 2.5f ? 2 : 1));
     Setting start;
     start.category = kGraphics, start.kind = Kind::kButton, start.key = "start", start.button = kHostStart;
     start.label = L"START SERVER";

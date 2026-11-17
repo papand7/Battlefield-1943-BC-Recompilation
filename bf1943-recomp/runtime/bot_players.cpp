@@ -1921,7 +1921,41 @@ GAME_PATCH(823194B0) {  // damage a soldier
   std::vector<uint32_t> was;
   if (trace && IsCommitted(so + 0x400))
     for (uint32_t k = 0; k < 0x400; k += 4) was.push_back(Ld32(so + k));
+  // Hardcore (--hardcore-damage): the record's damage (+38) scaled for this
+  // call, then put back (the caller may use its record again).
+  const bool scale = g_hardcore && g_hardcore_damage != 1.0f && hp_before > 0 && IsCommitted(rec + 0x3C);
+  const uint32_t damage_word = scale ? Ld32(rec + 0x38) : 0;
+  float damage = 0;
+  if (scale) {
+    memcpy(&damage, &damage_word, 4);
+    float more = damage * g_hardcore_damage;
+    uint32_t u;
+    memcpy(&u, &more, 4);
+    St32(rec + 0x38, u);
+  }
   __imp__sub_823194B0(ctx, base);
+  if (scale) St32(rec + 0x38, damage_word);
+  // BF_HITS_TRACE or hardcore: how many hits each soldier took to die (the
+  // first 40 kills), the evidence for the damage multiplier.
+  static const bool hits_trace = getenv("BF_HITS_TRACE") != nullptr;
+  if ((hits_trace || g_hardcore) && hp_before > 0) {
+    static std::map<uint32_t, std::pair<int, float>> hits;  // hits this life, health after the last
+    static int kills = 0;
+    auto& [count, last] = hits[victim];
+    if (count && hp_before > last + 0.01f) count = 0;  // (healed since, or a new life)
+    int n = ++count;
+    float after = last = LdF(victim + 0x3C);
+    if (after <= 0) {
+      hits.erase(victim);
+      if (kills++ < 40) {
+        float d = 0;
+        uint32_t w = IsCommitted(rec + 0x3C) ? Ld32(rec + 0x38) : 0;
+        memcpy(&d, &w, 4);
+        RT_INFO("damage: soldier %08X killed after %d hit%s (damage %.1f x%.2f a hit)", victim, n, n == 1 ? "" : "s", d,
+                g_hardcore ? g_hardcore_damage : 1.0f);
+      }
+    }
+  }
   if (trace && !was.empty()) {
     static int n = 0;
     if (n++ < 60) {

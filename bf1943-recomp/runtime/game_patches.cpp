@@ -232,12 +232,34 @@ GAME_PATCH(8253EDF8) {
   __imp__sub_8253EDF8(ctx, base);
 }
 
+// Hardcore (kernel.h g_hardcore_hud): the HUD and crosshair are the game's
+// 2D UI movie draws, as its menus are; they are skipped on the GPU
+// (xgpu::SetHideUi) while in a level with no menu over it (spawn screen,
+// pause: g_level_menu) and the scoreboard key not held (xam.cpp
+// g_scoreboard_open), so the scoreboard and menus still show (the scoreboard
+// with the HUD under it). Kill messages, the minimap, ammo and the hit
+// indicator are HUD too: hidden. (The game's own Client.DisableHudMovies and
+// Client.IsHudDisabled settings were tried: neither hides the in-level HUD.)
+struct HardcoreSupported {
+  HardcoreSupported() { rt::g_hardcore_supported = true; }
+} g_hardcore_supported_install;
+void HardcoreHud() {
+  static int last = -1;
+  const bool hide = rt::g_hardcore_hud && !rt::g_in_menus && !rt::g_level_menu && !rt::g_scoreboard_open;
+  if (int(hide) == last) return;
+  last = int(hide);
+  xgpu::SetHideUi(hide);
+  static int said = 0;
+  if (rt::g_hardcore_hud && said++ < 20) RT_INFO("hardcore: the HUD %s", hide ? "hidden" : "shown (a menu or the scoreboard)");
+}
+
 // HUD and menu animations above 30 fps: the UI's update steps its Flash
 // player one movie frame a call, sub_82954388(player, 33, 1), once a game
 // frame, and the movies are authored for 30 frames a second (at 120 fps they
 // played 4x fast). The player is stepped as many times as a 30 Hz clock has
 // ticked since the last step (none on most frames, two at most after a hitch).
 GAME_PATCH(82954388) {
+  HardcoreHud();
   if (ctx.r4.u32 != 33 || rt::g_max_fps == 30) {
     __imp__sub_82954388(ctx, base);
     return;
