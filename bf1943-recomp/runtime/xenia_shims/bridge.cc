@@ -409,6 +409,7 @@ void SetHdrWhite(float nits) { xe::ui::bfhdr::paper_white = std::clamp(nits, 80.
 void ApplySceneFx(const char* settings) {
   if (xe::gpu::scenefx::Enabled()) xe::gpu::scenefx::Configure(settings);
 }
+void SetMotionBlurHold(bool hold) { xe::gpu::scenefx::SetMotionBlurHold(hold); }
 
 void SetWeather(float rain, float time_hours) {
   if (xe::gpu::scenefx::Enabled()) xe::gpu::scenefx::SetWeather(rain, time_hours);

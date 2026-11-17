@@ -169,6 +169,8 @@ layout(set = 0, binding = 3, std140) uniform Params {
                         // z dust motes in the sunlit air (0 off), w drifting
                         // leaves (0 off)
   vec4 tod;             // time of day: grade colour rgb, strength (0 day)
+  vec4 mblur;           // motion blur (passes 10, 11): x one frame's motion to
+                        // the smear, y longest smear (px), z taps, w frame
 };
 
 shared vec4 found[64];
@@ -1790,9 +1792,101 @@ vec3 DriftLeaves(vec3 dir, float limit, float jitter, float ref_l) {
   return acc * ref_l * sky2.w * 2.2;
 }
 
+// Motion blur, after pass 1 and the motion vectors (pass 9), on the HDR scene
+// before the game's bloom, tone mapping and HUD.
+// Pass 10: the finished scene copied into refract_image (free once pass 1 has
+// read it), alpha the distance of what the pixel shows (metres, 65000 the sky)
+// or -1 for the first-person weapon (drawn after the world's depth copy: it
+// has depth now).
+const float kMotionSky = 65000.0;
+void MotionBlurCopy() {
+  ivec2 local = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = imageSize(refract_image);
+  if (any(greaterThanEqual(local, size))) return;
+  ivec2 pixel = local + ivec2(screen.xy);
+  vec3 c = imageLoad(scene, pixel).rgb;
+  float z;
+  if (texelFetch(scene_depth, pixel, 0).r > 0.0) {
+    z = -1.0;
+  } else {
+    float depth = imageLoad(saved_depth, local).r;
+    vec2 uv = (vec2(local) + 0.5) * screen.zw;
+    vec4 w4 = inv_view_proj * vec4(uv.x * 2.0 - 1.0, 1.0 - uv.y * 2.0, depth, 1.0);
+    z = IsSky(depth) || w4.w <= 1e-6 ? kMotionSky : min(length(w4.xyz / w4.w), kMotionSky);
+  }
+  imageStore(refract_image, local, vec4(c, z));
+}
+
+// A pixel's smear for this frame: its motion (pixels moved since the last
+// frame) times the exposure, no longer than mblur.y; none on the weapon.
+vec2 MotionSmear(ivec2 p, float z) {
+  if (z < 0.0) return vec2(0.0);
+  vec2 v = imageLoad(motion_image, p).xy * mblur.x;
+  float l = length(v);
+  return l > mblur.y ? v * (mblur.y / l) : v;
+}
+
+// How much of a sample at distance d (pixels) a smear of length l covers:
+// a cone (soft at its end), and a cylinder (all of it, out to l).
+float SmearCone(float d, float l) { return clamp(1.0 - d / max(l, 1e-3), 0.0, 1.0); }
+float SmearCylinder(float d, float l) { return 1.0 - smoothstep(0.95 * l, 1.05 * l + 1e-3, d); }
+
+// Pass 11: each pixel gathers a few jittered samples along its own smear
+// (McGuire et al. 2012, "A reconstruction filter for plausible motion blur",
+// without the tile neighbourhood: the motion here is the camera's, smooth
+// over the screen). A sample nearer than the pixel counts as far as its own
+// smear reaches it, one further away as far as the pixel's smear reaches, so
+// what is in front is not smeared under what is behind or the other way
+// round; the weapon (no smear, nearest) neither smears nor takes the
+// background's. Still pixels (under half a pixel) are left as they are.
+void MotionBlur() {
+  ivec2 local = ivec2(gl_GlobalInvocationID.xy);
+  ivec2 size = imageSize(refract_image);
+  if (any(greaterThanEqual(local, size))) return;
+  vec4 center = imageLoad(refract_image, local);
+  float zc = center.a;
+  vec2 vc = MotionSmear(local, zc);
+  float lc = length(vc);
+  if (lc < 0.5) return;
+  int taps = int(mblur.z);
+  float jitter = InterleavedGradientNoise(vec2(local), mblur.w) - 0.5;
+  float weight = 1.0 / max(lc, 1.0);
+  vec3 sum = center.rgb * weight;
+  for (int i = 0; i < taps; ++i) {
+    float t = (float(i) + 0.5 + jitter) / float(taps) - 0.5;
+    ivec2 q = clamp(ivec2(floor(vec2(local) + 0.5 + vc * t)), ivec2(0), size - 1);
+    if (q == local) continue;
+    vec4 s = imageLoad(refract_image, q);
+    float zs = s.a < 0.0 ? 0.01 : s.a;
+    float ls = length(MotionSmear(q, s.a));
+    float d = abs(t) * lc;
+    // Soft depth tests over a few percent of the distance.
+    float extent = 0.05 * min(zc, zs) + 0.05;
+    float in_front = clamp(1.0 - (zs - zc) / extent, 0.0, 1.0);
+    float behind = clamp(1.0 - (zc - zs) / extent, 0.0, 1.0);
+    float w = in_front * SmearCone(d, ls) + behind * SmearCone(d, lc) +
+              SmearCylinder(d, ls) * SmearCylinder(d, lc) * 2.0;
+    // The weapon never: its smear is none, and it is nearest.
+    if (s.a < 0.0) w = 0.0;
+    sum += s.rgb * w;
+    weight += w;
+  }
+  ivec2 pixel = local + ivec2(screen.xy);
+  float alpha = imageLoad(scene, pixel).a;
+  imageStore(scene, pixel, vec4(sum / weight, alpha));
+}
+
 void main() {
   if (pass_mode == 9u) {
     MotionVectors();
+    return;
+  }
+  if (pass_mode == 10u) {
+    MotionBlurCopy();
+    return;
+  }
+  if (pass_mode == 11u) {
+    MotionBlur();
     return;
   }
   if (pass_mode == 8u) {

@@ -13,6 +13,7 @@
 
 #include "xenia/base/logging.h"
 #include "xenia/gpu/vulkan/bf_gore.h"
+#include "xenia/gpu/vulkan/bf_menu.h"
 #include "xenia/gpu/vulkan/scene_fx_rt.h"
 #include "xenia/gpu/vulkan/vulkan_command_processor.h"
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
@@ -242,6 +243,10 @@ Settings ParseSettings(const char* text_in) {
     else if (key == "crack_size") s.crack_size = std::max(v, 0.05f);
     else if (key == "flash") s.flash = std::max(v, 0.0f);
     else if (key == "flash_radius") s.flash_radius = std::max(v, 0.5f);
+    else if (key == "motion_blur") s.motion_blur = std::clamp(int(v), 0, 2);
+    else if (key == "mb_shutter") s.mb_shutter = std::clamp(v, 0.0f, 4.0f);
+    else if (key == "mb_max") s.mb_max = std::clamp(v, 0.0f, 256.0f);
+    else if (key == "mb_taps") s.mb_taps = std::clamp(int(v), 0, 32);
   }
   return s;
 }
@@ -306,6 +311,7 @@ struct Params {
   float detail[4];          // surface detail: strength, furthest (m), pebble, crack cell (m)
   float sky2[4];            // sky: sun glow and disc, deeper blue overhead
   float tod[4];             // time of day: grade colour rgb, strength
+  float mblur[4];           // motion blur: motion to smear scale, longest (px), taps, frame
 };
 static_assert(sizeof(Params) <= 4096);
 
@@ -384,11 +390,19 @@ struct Pipeline {
   VkDeviceMemory haze_memory = VK_NULL_HANDLE;
   VkImageView haze_view = VK_NULL_HANDLE;
   bool haze_initialized = false;
-  // Last frame's camera, for the light kept over frames.
+  // Last frame's camera, for the light kept over frames, the motion vectors
+  // and the motion blur (kept every frame).
   bool have_prev = false;
   float prev_view_proj[16] = {};
   float prev_camera[3] = {};
+  double prev_forward[3] = {};  // last frame's view direction (unit)
+  double prev_fov = 0.0;        // and its vertical scale (projection's y over w)
+  std::chrono::steady_clock::time_point prev_time;
+  float frame_seconds = 1.0f / 60.0f;  // smoothed time between frames
 } vk;
+
+// Motion blur held off by a menu of ours (SetMotionBlurHold).
+std::atomic<bool> motion_blur_hold{false};
 
 // The colour cache: 2^21 cells of 16 bytes (scene_fx.cs.glsl CacheLoad).
 constexpr VkDeviceSize kCacheSize = VkDeviceSize(16) << 21;
@@ -470,7 +484,7 @@ constexpr uint32_t kBindings = 20;
 // BF_FX_TIMING: the GPU time of each step from timestamps (kSlots frames in a
 // ring, read back without waiting), logged every 120 frames. Ticks taken as
 // nanoseconds (NVIDIA's timestamp period).
-constexpr uint32_t kStamps = 10;
+constexpr uint32_t kStamps = 11;
 struct Timing {
   VkQueryPool pool = VK_NULL_HANDLE;
   bool tried = false;
@@ -767,6 +781,8 @@ bool FsrInputs(VkImage& depth, VkImage& motion, uint32_t& width, uint32_t& heigh
   return true;
 }
 
+void SetMotionBlurHold(bool hold) { motion_blur_hold = hold; }
+
 bool TakeFresh(Capture& out) {
   // Frames with no lit world draw at all (mostly sky) keep the last capture
   // for a while, so the look does not switch off as the view turns.
@@ -984,14 +1000,76 @@ void VulkanRenderTargetCache::ApplySceneFx(
   // Ray-traced light and reflections: last frame's camera for the light kept
   // over frames (none after a jump, a level load or a resize).
   bool traced_light = vk.rt && !save_pass && vk.rt_instances > 0;
-  if (traced_light) {
+  // Last frame's camera, every frame (the motion vectors and the motion blur
+  // need it, not only the traced light).
+  const float jump = std::sqrt(float((eye[0] - vk.prev_camera[0]) * (eye[0] - vk.prev_camera[0]) +
+                                     (eye[1] - vk.prev_camera[1]) * (eye[1] - vk.prev_camera[1]) +
+                                     (eye[2] - vk.prev_camera[2]) * (eye[2] - vk.prev_camera[2])));
+  if (!save_pass) {
     std::memcpy(p.prev_view_proj, vk.have_prev ? vk.prev_view_proj : p.view_proj,
                 sizeof(p.prev_view_proj));
-    float jump = std::sqrt(float((eye[0] - vk.prev_camera[0]) * (eye[0] - vk.prev_camera[0]) +
-                                 (eye[1] - vk.prev_camera[1]) * (eye[1] - vk.prev_camera[1]) +
-                                 (eye[2] - vk.prev_camera[2]) * (eye[2] - vk.prev_camera[2])));
     std::memcpy(p.prev_camera, vk.prev_camera, 12);
     p.prev_camera[3] = vk.have_prev && vk.light_initialized && jump < 20.0f ? 1.0f : 0.0f;
+  }
+  // Motion blur: on only with a usable last frame (not the first, not after a
+  // cut: a jump of the eye, a sharp turn or zoom in one frame, a pause in the
+  // drawing) and no menu over the game.
+  bool motion_blur = false;
+  if (!save_pass) {
+    const auto now = std::chrono::steady_clock::now();
+    const double dt = vk.have_prev ? std::chrono::duration<double>(now - vk.prev_time).count() : 1.0;
+    double forward[3] = {vp[3][0], vp[3][1], vp[3][2]};
+    const double flen = std::sqrt(forward[0] * forward[0] + forward[1] * forward[1] + forward[2] * forward[2]);
+    const double ylen = std::sqrt(vp[1][0] * vp[1][0] + vp[1][1] * vp[1][1] + vp[1][2] * vp[1][2]);
+    const double fov = flen > 1e-12 ? ylen / flen : 0.0;
+    for (double& f : forward) f = flen > 1e-12 ? f / flen : 0.0;
+    const double turn_cos = forward[0] * vk.prev_forward[0] + forward[1] * vk.prev_forward[1] +
+                            forward[2] * vk.prev_forward[2];
+    const bool zoom_cut = vk.prev_fov <= 0.0 || std::abs(fov / vk.prev_fov - 1.0) > 0.15;
+    const bool cut = !vk.have_prev || dt > 0.25 || jump > 8.0f || turn_cos < 0.866 || zoom_cut;
+    if (vk.have_prev && dt > 0.0 && dt <= 0.25) {
+      vk.frame_seconds += (float(dt) - vk.frame_seconds) * 0.1f;
+    }
+    bool menu = motion_blur_hold.load(std::memory_order_relaxed);
+    if (s.motion_blur > 0 && !cut && !menu) {
+      // The game's own menus (its pause menu, the spawn screen): a highlighted
+      // row (as xgpu::MenuRows finds them).
+      for (const bfmenu::Box& b : bfmenu::Boxes()) {
+        float bw = b.x1 - b.x0, bh = b.y1 - b.y0;
+        if (bw > 0.05f && bh > 0.012f && bh < 0.1f && b.a > 0.5f && b.g > b.r + 0.05f &&
+            b.g > b.b + 0.1f) {
+          menu = true;
+          break;
+        }
+      }
+    }
+    motion_blur = s.motion_blur > 0 && !cut && !menu;
+    if (motion_blur) {
+      const bool high = s.motion_blur >= 2;
+      // The exposure as a share of a 1/60 s frame: the smear is the motion
+      // over that time, whatever the frame rate (the motion vectors are one
+      // frame's).
+      const float shutter = s.mb_shutter > 0.0f ? s.mb_shutter : high ? 1.0f : 0.5f;
+      const float per_frame = std::clamp((1.0f / 60.0f) / std::max(vk.frame_seconds, 1e-3f), 0.25f, 4.0f);
+      const float longest = (s.mb_max > 0.0f ? s.mb_max : high ? 48.0f : 24.0f) * float(height) / 1080.0f;
+      p.mblur[0] = shutter * per_frame;
+      p.mblur[1] = std::max(longest, 1.0f);
+      p.mblur[2] = float(s.mb_taps > 0 ? s.mb_taps : high ? 12 : 8);
+      p.mblur[3] = float(vk.frame & 63);
+    }
+    static const bool mb_log = std::getenv("BF_MB_LOG") != nullptr;
+    if (mb_log && s.motion_blur > 0 && (vk.frame % 60) == 0) {
+      XELOGI("motion blur: {} (first {}, dt {:.3f}, jump {:.2f} m, turn {:.1f} deg, zoom {:.3f}, menu {}), "
+             "frame {:.4f} s, scale {:.2f}",
+             motion_blur ? "on" : "off", !vk.have_prev, dt, jump,
+             std::acos(std::clamp(turn_cos, -1.0, 1.0)) * 57.29578, vk.prev_fov > 0.0 ? fov / vk.prev_fov : 0.0,
+             menu, vk.frame_seconds, p.mblur[0]);
+    }
+    std::memcpy(vk.prev_forward, forward, sizeof(forward));
+    vk.prev_fov = fov;
+    vk.prev_time = now;
+  }
+  if (traced_light) {
     p.gi[0] = s.gi;
     p.gi[1] = float(s.gi_rays);
     p.gi[2] = s.rt_cell;
@@ -1004,6 +1082,8 @@ void VulkanRenderTargetCache::ApplySceneFx(
     p.refl[1] = command_processor_.bf_material_buffer() ? s.gloss : 0.0f;
     p.refl[2] = std::chrono::duration<float>(std::chrono::steady_clock::now() - start).count();
     p.refl[3] = s.waves;
+  }
+  if (!save_pass) {
     std::memcpy(vk.prev_view_proj, p.view_proj, sizeof(vk.prev_view_proj));
     for (int i = 0; i < 3; ++i) vk.prev_camera[i] = float(eye[i]);
     vk.have_prev = true;
@@ -1363,7 +1443,8 @@ void VulkanRenderTargetCache::ApplySceneFx(
         for (uint32_t i = 0; i + 1 < kStamps; ++i) timing.sum[i] += double(t[i + 1] - t[i]) * 1e-6;
         if (++timing.frames == 120) {
           static const char* const kNames[kStamps - 1] = {"bvh", "game", "horizon", "gi", "clouds",
-                                                          "ao", "haze", "water", "main"};
+                                                          "ao", "haze", "water", "main",
+                                                          "motion"};
           std::string line;
           for (uint32_t i = 0; i + 1 < kStamps; ++i) {
             line += fmt::format(" {} {:.2f}", kNames[i], timing.sum[i] / 120.0);
@@ -1452,10 +1533,19 @@ void VulkanRenderTargetCache::ApplySceneFx(
     stamp(8);
     dispatch(1, (width + 7) / 8, (height + 7) / 8);
     stamp(9);
-    if (bffsr::enabled) {
-      // FSR 3's motion vectors.
+    if (bffsr::enabled || motion_blur) {
+      // FSR 3's motion vectors (and the motion blur's).
       dispatch(9, (width + 7) / 8, (height + 7) / 8);
     }
+    if (motion_blur) {
+      // The finished scene copied out (into the refraction's image, free once
+      // pass 1 has read it), then smeared back along the motion.
+      cb.CmdVkPipelineBarrier(stage, stage, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+      dispatch(10, (width + 7) / 8, (height + 7) / 8);
+      cb.CmdVkPipelineBarrier(stage, stage, 0, 1, &barrier, 0, nullptr, 0, nullptr);
+      dispatch(11, (width + 7) / 8, (height + 7) / 8);
+    }
+    stamp(10);
     if (vk.rt && materials) {
       // Cleared for the next frame's draws.
       command_processor_.PushBufferMemoryBarrier(

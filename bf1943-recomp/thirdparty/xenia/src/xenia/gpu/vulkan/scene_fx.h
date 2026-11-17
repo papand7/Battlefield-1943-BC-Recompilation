@@ -135,6 +135,14 @@ struct Settings {
   // meshes. The first-person weapon keeps the game's.
   float flash = 1.0f;            // strength, 0 keeps the game's light
   float flash_radius = 6.0f;     // metres
+  // Motion blur (PC settings MOTION BLUR LOW / HIGH; GAME is the game's own
+  // pass, not this): the scene smeared along each pixel's motion since the
+  // last frame (the camera's turn and travel; the first-person weapon and the
+  // HUD stay sharp), before the game's bloom, tone mapping and HUD.
+  int motion_blur = 0;           // 0 off, 1 low, 2 high (key motion_blur)
+  float mb_shutter = 0.0f;       // exposure, as a share of a 1/60 s frame (0: the level's)
+  float mb_max = 0.0f;           // longest smear, pixels at 1080 lines (0: the level's)
+  int mb_taps = 0;               // samples along it (0: the level's)
   uint32_t debug = 0;  // 1 distance/height, 2 shadow slices, 3 depth, 4 height, 7 shadow map, 8 screen-space shadows, 9 ray-traced shadows, 10 ray-traced light, 11 reflections, 12 colour cache, 13 materials, 14-16 traced terrain, all meshes, alpha-tested meshes seen from the eye
 };
 
@@ -169,6 +177,9 @@ bool AfterDepthCopy();
 // layout. False until there are some. The views are optional (DLSS).
 bool FsrInputs(VkImage& depth, VkImage& motion, uint32_t& width, uint32_t& height,
                VkImageView* depth_view = nullptr, VkImageView* motion_view = nullptr);
+// The motion blur held off (a menu of ours over the game: the PC pause menu,
+// the settings page).
+void SetMotionBlurHold(bool hold);
 
 }  // namespace scenefx
 }  // namespace gpu

@@ -64,6 +64,8 @@ void SetSoftParticles(bool on);
 void ApplySceneFx(const char* settings);
 // Host/server weather (0 clear, 1 rain) and time of day (hours, 12 noon).
 void SetWeather(float rain, float time_hours);
+// The scene effects' motion blur held off (a menu of ours over the game).
+void SetMotionBlurHold(bool hold);
 // The eye (world position) of the level view now; false if none drawn lately.
 bool CameraEye(float out[3]);
 // The front end menu's rows in the last frame (gpu/vulkan/bf_menu.h): up to max

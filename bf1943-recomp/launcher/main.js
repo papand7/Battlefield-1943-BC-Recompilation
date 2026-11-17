@@ -22,6 +22,7 @@ const defaults = {
   frameGen: 'off',      // --frame-gen (AMD FSR 3.1 frame generation, with FSR 3 / DLSS / auto)
   shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
   fov: '0',             // --fov (0: the game's own)
+  motionBlur: '1',        // the game's MOTION BLUR (it reads it here): 0 off, 1 the game's, low / high ours
   textures: true,
   collectShaders: false,  // --dump-shaders: the shaders the game draws, for the PBR table
   collectTextures: false, // --log-textures: textures the pack has no replacement for
