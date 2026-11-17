@@ -149,11 +149,11 @@ void Build() {
   v.push_back(Choice(kGraphics, "aspect", L"ASPECT RATIO",
                      L"On a screen wider than 16:9 (21:9, 32:9): ULTRAWIDE shows more to the sides, nothing "
                      L"stretched, the HUD at its own size; or keep the picture 16:9 with bars, or stretch it.",
-                     {L"16:9 (BARS)", L"STRETCH", L"ULTRAWIDE"}, {"0", "1", "2"}, 2));
+                     {L"16:9 (BARS)", L"STRETCH", L"ULTRAWIDE"}, {"0", "1", "2"}, 2, false, "aspect"));
   v.push_back(Choice(kGraphics, "wide_hud", L"ULTRAWIDE HUD",
                      L"With ULTRAWIDE: the minimap, ammo and other corner parts of the HUD towards the screen's "
                      L"edges (at most a 21:9 width, so on 32:9 they stay in sight), or all in the 16:9 middle.",
-                     {L"EDGES", L"CENTRE 16:9"}, {"1", "0"}, 0));  v.push_back(Choice(kGraphics, "display", L"DISPLAY MODE",
+                     {L"EDGES", L"CENTRE 16:9"}, {"1", "0"}, 0, false, "wideHud"));  v.push_back(Choice(kGraphics, "display", L"DISPLAY MODE",
                      L"Borderless fullscreen on the window's monitor, or a window. Alt+Enter switches.",
                      {L"WINDOWED", L"FULLSCREEN"}, {"windowed", "fullscreen"}, 0, false, "display"));
   v.push_back(Choice(kGraphics, "fov", L"FIELD OF VIEW",

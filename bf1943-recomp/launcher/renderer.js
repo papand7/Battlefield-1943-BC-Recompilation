@@ -13,6 +13,8 @@ const rows = [
   ['fov', 'Field of view', [['Game', '0'], ['90', '90'], ['95', '95'], ['100', '100'], ['105', '105'], ['110', '110']]],
   // The game's MOTION BLUR (read from these settings): Game is its own blur
   // (explosions, low health); Low / High the view smeared as it turns and moves.
+  ['aspect', 'Aspect ratio (wide screens)', [['16:9 bars', '0'], ['Stretch', '1'], ['Ultrawide', '2']]],
+  ['wideHud', 'Ultrawide HUD', [['Edges', '1'], ['Centre 16:9', '0']]],
   ['motionBlur', 'Motion blur', [['Off', '0'], ['Game', '1'], ['Low', 'low'], ['High', 'high']]],
 ];
 
