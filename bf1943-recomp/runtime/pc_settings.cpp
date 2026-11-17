@@ -149,8 +149,11 @@ void Build() {
                      L"How hard the view shakes from blasts and hits.",
                      {L"OFF", L"25%", L"50%", L"75%", L"100%", L"150%", L"200%"},
                      {"0", "0.25", "0.5", "0.75", "1", "1.5", "2"}, 4));
+  // (0 and 1 as before: OFF and the game's own, ON in older settings.)
   v.push_back(Choice(kGraphics, "motion_blur", L"MOTION BLUR",
-                     L"The game's blur from explosions, gunfire and low health.", kOffOn, {"0", "1"}, 1));
+                     L"GAME: the game's own blur from explosions, gunfire and low health. LOW, HIGH: the view "
+                     L"smeared as it turns and moves (the weapon and the HUD stay sharp), the game's own off.",
+                     {L"OFF", L"GAME", L"LOW", L"HIGH"}, {"0", "1", "low", "high"}, 1, false, "motionBlur"));
   v.push_back(Choice(kGraphics, "fps", L"FRAME RATE LIMIT", L"Most frames a second.",
                      {L"30", L"60", L"90", L"120", L"144", L"150", L"165", L"180", L"240", L"UNLIMITED"},
                      {"30", "60", "90", "120", "144", "150", "165", "180", "240", "0"}, 3, false, "frameRate"));
@@ -465,6 +468,11 @@ void ApplyLive() {
           : q == "ultra"  ? ",gi_rays=4,steps=48,cloud_steps=32,shadow_steps=64"
                           : ",gi_rays=2,steps=32,cloud_steps=24,shadow_steps=48";
   }
+  // MOTION BLUR LOW / HIGH: the scene effects' (GAME: the game's own pass).
+  {
+    const std::string& mb = Value("motion_blur");
+    fx += mb == "low" ? ",motion_blur=1" : mb == "high" ? ",motion_blur=2" : ",motion_blur=0";
+  }
   xgpu::ApplySceneFx(fx.c_str());
   // Particles: the game's renderer settings, ours.
   {
@@ -502,7 +510,7 @@ void ApplyLive() {
   g_fps_overlay = std::atoi(Value("fps_overlay").c_str());
   g_skip_intro = Value("skip_intro") != "0";
   g_prompt_style = std::atoi(Value("prompts").c_str());
-  g_motion_blur = Value("motion_blur") != "0";
+  g_motion_blur = Value("motion_blur") == "1";  // the game's own (LOW / HIGH: ours instead)
   g_sprint_toggle = Value("sprint_toggle") == "1";
   g_background_fps = uint32_t(std::atoi(Value("background_fps").c_str()));
   g_background_mute = Value("background_mute") == "1";
@@ -857,6 +865,7 @@ void GoBack() {
 
 void Close() {
   g_open = false;
+  xgpu::SetMotionBlurHold(false);
   g_capture = g_editing = false;
   if (g_mode == kModeSettings) Save();
   pcmenu::Hide();
@@ -991,6 +1000,7 @@ void OpenMode(Mode mode, Mode back_to) {
   g_mode = mode;
   g_back_to = back_to;
   g_open = true;
+  xgpu::SetMotionBlurHold(true);  // (no motion blur under our menus)
   g_dirty = true;
   g_wait_release = true;
   g_status.clear();

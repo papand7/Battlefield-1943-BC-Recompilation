@@ -45,6 +45,8 @@ void SetExplosionEffects(bool on);
 void SetSoftParticles(bool on);
 // The scene effects' settings again ("key=value,..."), if they are on.
 void ApplySceneFx(const char* settings);
+// The scene effects' motion blur held off (a menu of ours over the game).
+void SetMotionBlurHold(bool hold);
 // The eye (world position) of the level view now; false if none drawn lately.
 bool CameraEye(float out[3]);
 // The front end menu's rows in the last frame (gpu/vulkan/bf_menu.h): up to max

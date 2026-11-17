@@ -27,6 +27,7 @@ void SetOverlay(const uint8_t*, uint32_t, uint32_t) {}
 float HdrWhite() { return 0.0f; }
 void SetHdrWhite(float) {}
 void ApplySceneFx(const char*) {}
+void SetMotionBlurHold(bool) {}
 bool CameraEye(float*) { return false; }
 int MenuRows(float (*)[4], int, int* selected) {
   if (selected) *selected = -1;

@@ -20,6 +20,7 @@ const defaults = {
   display: 'windowed',  // --display (fullscreen: borderless on the monitor)
   upscaleQuality: 'off',  // --upscale-quality (with FSR 3 / DLSS / auto)
   shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
+  motionBlur: '1',        // the game's MOTION BLUR (it reads it here): 0 off, 1 the game's, low / high ours
   textures: true,
   preset: 'enhanced',   // --preset stock|enhanced|vivid|toon|noir|ww2
   blood: false,         // --blood (blood on hits, bodies torn apart by explosions)

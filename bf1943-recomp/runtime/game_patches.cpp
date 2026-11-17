@@ -432,7 +432,9 @@ GAME_PATCH(82287B40) {
 // sub_8228C070(manager, camera), which takes the first-person camera's blur
 // (from explosions, bullets, low health) from sub_82282A80 and the manager's
 // own (+0x100, used when above 0); and sub_825A38D8 is the motion blur pass.
-// Off, the blur reads 0 in that gathering and the pass doesn't run.
+// Off, the blur reads 0 in that gathering and the pass doesn't run. Only
+// MOTION BLUR GAME keeps it (g_motion_blur); LOW / HIGH are the scene
+// effects' own motion blur instead (gpu/vulkan/scene_fx.cc).
 thread_local bool t_view_effects = false;
 GAME_PATCH(8228C070) {
   const uint32_t manager = ctx.r3.u32;

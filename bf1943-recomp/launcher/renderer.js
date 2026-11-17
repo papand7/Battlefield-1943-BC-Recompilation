@@ -9,6 +9,9 @@ const rows = [
   ['preset', 'Look', [['Stock', 'stock'], ['Enhanced', 'enhanced'], ['Vivid', 'vivid'], ['Toon', 'toon'], ['Noir', 'noir'], ['WW2', 'ww2']]],
   ['frameRate', 'Frame rate', [['60', '60'], ['120', '120'], ['144', '144'], ['Max', '0']]],
   ['shadowDetail', 'Shadow detail', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra']]],
+  // The game's MOTION BLUR (read from these settings): Game is its own blur
+  // (explosions, low health); Low / High the view smeared as it turns and moves.
+  ['motionBlur', 'Motion blur', [['Off', '0'], ['Game', '1'], ['Low', 'low'], ['High', 'high']]],
 ];
 
 // The EFFECTS card: the game's PC SETTINGS > EFFECTS, the same values (the
