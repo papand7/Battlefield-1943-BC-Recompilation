@@ -550,6 +550,9 @@ void BurstKeyThread() {
 #endif
 }
 void BurstKey() {
+  // Off unless BF_BURST_KEY=1 (a developer tool; the REC marker only shows while a burst runs).
+  static const bool enabled = std::getenv("BF_BURST_KEY") != nullptr;
+  if (!enabled) return;
   static std::once_flag started;
   std::call_once(started, [] { std::thread(BurstKeyThread).detach(); });
 }
