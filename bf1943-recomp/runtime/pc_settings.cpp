@@ -589,7 +589,10 @@ std::atomic<bool> g_burst_running{false};
 std::atomic<bool> g_burst_stop{false};
 extern "C" std::atomic<uint64_t> g_title_swaps;
 void BurstThread() {
-  std::filesystem::create_directories("frames");
+  {
+    std::error_code ec;
+    std::filesystem::create_directories("frames", ec);  // (no throw: a failure shows when saving)
+  }
   auto stamp = std::chrono::duration_cast<std::chrono::seconds>(
                    std::chrono::system_clock::now().time_since_epoch()).count();
   xgpu::g_burst_recording = true;
@@ -603,8 +606,13 @@ void BurstThread() {
     uint64_t now = g_title_swaps;
     if (now == last) { std::this_thread::sleep_for(std::chrono::milliseconds(1)); continue; }
     last = now;
-    frames.emplace_back();
-    if (!xgpu::CaptureBurstFrame(frames.back())) frames.pop_back();
+    const size_t before = frames.size();
+    try {
+      frames.emplace_back();
+      if (!xgpu::CaptureBurstFrame(frames.back())) frames.pop_back();
+    } catch (const std::bad_alloc&) {  // (out of memory: this frame is dropped, the burst goes on)
+      if (frames.size() > before) frames.pop_back();
+    }
   }
   xgpu::g_burst_recording = false;
   for (size_t n = 0; n < frames.size(); ++n) {
@@ -613,8 +621,8 @@ void BurstThread() {
     xgpu::SaveBurstPng(path, frames[n]);
   }
   RT_INFO("F2 burst: %zu frames (1280x720) in frames/burst_%lld_*.png", frames.size(), (long long)stamp);
+  g_burst_running = false;  // (running first: a tap in between starts a new burst, whose stop must not be eaten)
   g_burst_stop = false;
-  g_burst_running = false;
 }
 // Polled every 5 ms on its own thread: a tap shorter than a frame (at 30 fps
 // a frame is 33 ms) was missed when the key was read once a frame.
@@ -623,7 +631,13 @@ void BurstKeyThread() {
   bool was_down = false;
   for (;;) {
     bool down = (GetAsyncKeyState(VK_F2) & 0x8000) != 0;
+    bool ours = false;  // (only while the game's window has the focus)
     if (down && !was_down) {
+      DWORD pid = 0;
+      GetWindowThreadProcessId(GetForegroundWindow(), &pid);
+      ours = pid == GetCurrentProcessId();
+    }
+    if (down && !was_down && ours) {
       if (g_burst_running) {
         g_burst_stop = true;
       } else {
@@ -638,7 +652,10 @@ void BurstKeyThread() {
 }
 void BurstKey() {
   // Off unless BF_BURST_KEY=1 (a developer tool; the REC marker only shows while a burst runs).
-  static const bool enabled = std::getenv("BF_BURST_KEY") != nullptr;
+  static const bool enabled = [] {
+    const char* v = std::getenv("BF_BURST_KEY");
+    return v && *v && std::strcmp(v, "0") != 0;
+  }();
   if (!enabled) return;
   static std::once_flag started;
   std::call_once(started, [] { std::thread(BurstKeyThread).detach(); });

@@ -449,8 +449,12 @@ void MouseThread() {
     if (m == WM_INPUT) {
       RAWINPUT ri;
       UINT size = sizeof(ri);
+      static bool have_last = false;  // (RDP absolute mouse, below)
+      static LONG last_x = 0, last_y = 0;
+      const bool foreground = OurForegroundWindow() != nullptr;
+      if (!foreground) have_last = false;  // (the first move after refocus must not jump)
       if (GetRawInputData(HRAWINPUT(l), RID_INPUT, &ri, &size, sizeof(RAWINPUTHEADER)) != UINT(-1) &&
-          ri.header.dwType == RIM_TYPEMOUSE && OurForegroundWindow()) {
+          ri.header.dwType == RIM_TYPEMOUSE && foreground) {
         std::lock_guard lock(g_mouse_mutex);
         if (!(ri.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE)) {
           g_mouse_dx += ri.data.mouse.lLastX;
@@ -458,8 +462,6 @@ void MouseThread() {
         } else if (GetSystemMetrics(SM_REMOTESESSION)) {
           // Remote Desktop sends the mouse as absolute positions (0..65535 over
           // the remote screen): turn each move into a delta from the last one.
-          static LONG last_x = 0, last_y = 0;
-          static bool have_last = false;
           LONG x = ri.data.mouse.lLastX, y = ri.data.mouse.lLastY;
           if (have_last) {
             g_mouse_dx += LONG((x - last_x) * GetSystemMetrics(SM_CXSCREEN) / 65535.0);
@@ -558,7 +560,7 @@ MouseLook SampleMouse() {
   }
   dt = std::min(dt, 0.05);
   // The free camera (free_camera.h) takes the mouse while it flies.
-  if (rt::freecam::Active() && !g_in_menus && !g_level_menu) {
+  if (rt::freecam::Active() && !g_in_menus && !g_level_menu && !rt::pcset::IsOpen()) {
     rt::freecam::AddMouse(dx, dy, wheel);
     dx = dy = wheel = 0;
   }

@@ -4,6 +4,7 @@
 //   Mouse wheel: the base speed (2...200 m/s).
 #include "free_camera.h"
 
+#include "admin.h"
 #include "kernel.h"
 #include "spectate.h"
 
@@ -94,15 +95,23 @@ void SetActive(bool on) {
 void Toggle() { SetActive(!Active()); }
 
 void PollKeys(bool menus) {
-  static bool f3_was = false;
-  bool f3 = Held(VK_F3);
-  if (f3 && !f3_was) {
+  // A new level (or the menus again) puts the camera back with the game.
+  static std::atomic<int64_t> level_was{0};
+  static std::atomic<bool> menus_was{true};
+  const int64_t level = rt::g_level_open_ms.load();
+  const bool in_menus = rt::g_in_menus.load();
+  if ((level_was.exchange(level) != level || (menus_was.exchange(in_menus) != in_menus && in_menus)) && Active())
+    SetActive(false);
+  menus_was = in_menus;
+  const bool typing = rt::admin::Typing();  // (chat: the keys are letters)
+  static std::atomic<bool> f3_was{false};  // (the pad is polled from several threads)
+  bool f3 = !typing && Held(VK_F3);
+  if (f3 != f3_was.exchange(f3) && f3) {
     if (rt::spectate::Active()) rt::spectate::FreeKey();  // (the spectator's: free camera on / off)
     else Toggle();
   }
-  f3_was = f3;
   Keys k{};
-  if (Active() && !menus) {
+  if (Active() && !menus && !typing) {
     k.w = Held('W'), k.a = Held('A'), k.s = Held('S'), k.d = Held('D');
     k.up = (Held(VK_SPACE) && !rt::spectate::Active()) || Held('E');  // (spectating: Space switches follow / free)
     k.down = Held(VK_CONTROL) || Held('C') || Held('Q');
