@@ -46,6 +46,7 @@ int SetActiveBots(int n);
 #include "DetourCommon.h"
 #include "../../bf1943-recomp/tools/msvc_compat/crash_diag.h"  // PrintStack
 
+#include <setjmp.h>
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -4474,6 +4475,21 @@ PPC_FUNC(sub_821BF2A8) {
 // the weapon choice (+1D8) is left to the kit (0) unless it is the host's kit.
 struct KitInfo { uint32_t kit; std::string side, cls; };
 static std::vector<KitInfo> g_kits;
+static thread_local jmp_buf t_deploy_jmp;  // 82764820 gives up a bot's deployment through it
+static thread_local bool t_bot_deploy = false;  // (a bot's spawn is running on this thread)
+static std::atomic<uint32_t> g_missing_sides{0};  // sides whose kit animtree is not in the level: 1 US, 2 RU, 4 MEC (82764820)
+// The bot's spawn (82332350 with its spawn object), run so that 82764820 can
+// give it up: false when it did.
+static __attribute__((noinline)) bool SpawnGuarded(PPCContext& c, uint8_t* base) {
+  if (setjmp(t_deploy_jmp)) {
+    t_bot_deploy = false;
+    return false;
+  }
+  t_bot_deploy = true;
+  __imp__sub_82332350(c, base);
+  t_bot_deploy = false;
+  return true;
+}
 static void FindKits() {
   if (!g_kits.empty()) return;
   for (uint32_t a : Scan(0x8207B2FC)) {
@@ -4552,6 +4568,22 @@ static uint32_t BotKit(Bot& b, uint32_t host_kit) {
     for (auto& k : g_kits)
       if ((host_team == b.team) == (k.side == host_side)) side = k.side;
   }
+  // A side the level has no kit animtree for (82764820 saw it missing): the
+  // first other side the other team does not have.
+  static std::map<uint32_t, std::string> team_side;
+  auto side_bit = [](const std::string& s) { return s == "US" ? 1u : s == "RU" ? 2u : s == "MEC" ? 4u : 0u; };
+  if (g_missing_sides & side_bit(side)) {
+    for (const char* s : {"US", "MEC", "RU"}) {
+      bool taken = false;
+      for (auto& [team, ts] : team_side) taken |= team != b.team && ts == s;
+      if (!(g_missing_sides & side_bit(s)) && !taken) {
+        RT_INFO("bot %d: side %s has no animtree in this level, team %u takes %s", b.index, side.c_str(), b.team, s);
+        side = s;
+        break;
+      }
+    }
+  }
+  team_side[b.team] = side;
   static const char* kClasses[] = {"Assault", "Support", "Demolition", "Recon", "Specialist"};
   if (!b.kit_class) b.kit_class = kClasses[b.index % 5];
   // BF_BOT_CLASS=Support (testing): every bot takes this class.
@@ -4821,7 +4853,17 @@ PPC_FUNC(sub_823D1DD0) {
     c.r4.u64 = 0;
     c.r5.u64 = 0x800;
     c.r6.u64 = 0x20;
-    __imp__sub_82332350(c, base);
+    bool gave_up = !SpawnGuarded(c, base);
+    if (gave_up) {
+      // A kit resource the level does not have (82764820): not deployed, the
+      // next try (BotKit) takes a side it has.
+      std::string kit_side = KitSide(bot_kit);
+      g_missing_sides |= kit_side == "US" ? 1u : kit_side == "RU" ? 2u : kit_side == "MEC" ? 4u : 0u;
+      RT_INFO("bot %d: kit %s/%s has no resources in this level, deployment given up", b.index, kit_side.c_str(),
+              b.kit_class);
+      b.died_at = now - 6000;
+      continue;
+    }
     // The new one: the spawn object's soldier (+104), a live one on its team.
     uint32_t made = Ld32(b.spawner + 0x104);
     if (Ptr(made) && IsCommitted(made + 0x400) && Ld32(made) == 0x820118D0 && Ld32(made + 0x48) == b.team &&
@@ -5205,7 +5247,41 @@ static std::string ArmArg(uint32_t v) {
   }
 ARM_TRACE(822C4F48)
 static std::string DamageWords(uint32_t a);
-// The client message dispatcher (arming and getting into vehicles come
+extern "C" PPC_FUNC(__imp__sub_82764820);
+// 82764820(cache r3, resource ref r4, vector r5): finds or makes the instance
+// of a resource ref in the cache at r3 + 84, through the constructor 82762A10,
+// which reads the ref's resolved asset (+38) at once (a pointer at +C of it).
+// The ref is made by 82254D28 (the kit's pieces: soldier spawn) and its asset
+// looked up by name; the asset is 0 when that resource is not in the level
+// (the kit joints animtree of a side the level does not use: Oasis is not
+// US against RU, its RU kits exist in memory but have no animtree) and the
+// constructor then read guest address 0xC: the "access violation in
+// sub_82762A10" of a bot's deployment (823D1DD0 -> 82332350 -> 822D1468 ->
+// 82254D28 -> 82764820), and without the instance the soldier crashed in its
+// first animation update (821DEBE0): that side's kits are not usable. So while
+// a bot is deployed (t_bot_deploy) the deployment is given up (a longjmp back
+// to SpawnGuarded, around 82332350: the soldier is not made; an exception
+// would hit the generated functions' noexcept handler) and BotKit does not give
+// that kit's side to bots again; any other spawn just leaves the instance out.
+static __attribute__((noinline)) void LogRefWithoutAsset(uint32_t ref, bool bot) {
+  static std::atomic<int> noted{0};
+  if (noted.fetch_add(1) >= 20) return;
+  std::string path;
+  if (Ptr(ref) && IsCommitted(ref + 0x44 + 0x60)) path.assign(G<char>(ref + 0x44), strnlen(G<char>(ref + 0x44), 0x60));
+  RT_WARN("resource ref %08X (%s) has no asset: %s", ref, path.c_str(), bot ? "the bot's deployment is given up" : "left out");
+}
+PPC_FUNC(sub_82764820) {
+  uint32_t ref = ctx.r4.u32;
+  if (!Ptr(ref) || !IsCommitted(ref + 0x44 + 0x60) || !Ptr(Ld32(ref + 0x38))) {
+    LogRefWithoutAsset(ref, t_bot_deploy);
+    // (nothing of ours with a destructor is alive in this frame: the longjmp
+    // unwinds the generated functions between, which have no handlers either)
+    if (t_bot_deploy) longjmp(t_deploy_jmp, 1);  // to SpawnGuarded
+    ctx.r3.u64 = 0;  // (the caller ignores the result)
+    return;
+  }
+  __imp__sub_82764820(ctx, base);
+}// The client message dispatcher (arming and getting into vehicles come
 // through it): with BF_BOT_MSG_TRACE=1 every message type (r4) a player (r3,
 // not a bot) sends, the first time each, with its payload (r5, 0x60 bytes).
 extern "C" PPC_FUNC(__imp__sub_82345AD0);
