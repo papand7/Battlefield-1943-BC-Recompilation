@@ -54,7 +54,7 @@ std::string g_worldrender;
 std::string g_overgrowth;
 float g_lod = 1.0f;
 bool g_auto_start = false;  // set by main.cpp for dedicated/bot copies (bf1943)
-std::string g_aspect_override, g_wide_hud_override;  // --aspect / --wide-hud (bf1943's ULTRAWIDE: not here yet)
+std::string g_aspect_override, g_wide_hud_override;  // --aspect / --wide-hud (kernel.h)
 std::mutex g_host_map_mutex;  // (taken to change g_host_map in a level's run: the replay and the bots read it)
 std::atomic<int> g_server_generation{0};
 
@@ -114,6 +114,20 @@ bool AddBotInput(XINPUT_GAMEPAD& pad) {
   return false;
 }
 bool CustomMenus() { return false; }
+// PC settings rows that do nothing here (pc_settings.cpp hides them): PLANT
+// WIND sways BF1943's plant vertex shaders (a vec4 mad with c213.w, see
+// spirv_shader_translator.h IsWindConstant); none of Bad Company's has it.
+static const bool g_bc_settings_hidden = (g_setting_hidden = [](const char* key) {
+  return !std::strcmp(key, "wind");
+}, true);
+// Key binding names in Bad Company: LB (the GRENADE key) takes out the kit's
+// "G" group, the grenade and the gadgets (auto injector, motion mine...), as
+// the kit screen shows; RB (SWITCH WEAPON) the "1" group, the main weapon and
+// its launcher. (Seen in a running game with the pad presses: Y is the knife.)
+static const bool g_bc_action_names = (g_action_name = [](int action) -> const wchar_t* {
+  return action == pcset::kGrenade ? L"GRENADE / GADGET" : action == pcset::kNextWeapon ? L"SWITCH WEAPON / LAUNCHER"
+                                                                                         : nullptr;
+}, true);
 // The PC settings page in Bad Company's menu look (pc_menu.cpp).
 #if defined(_WIN32) || defined(BF1943_CLIENT)  // (the server has no PC menus)
 static const bool g_bc_menu_look = (pcmenu::SetBadCompanyLook(), true);
@@ -691,8 +705,42 @@ GAME_PATCH(827F2A20) {
   }
   __imp__sub_827F2A20(ctx, base);
 }
+// ULTRAWIDE (xgpu::SetWide; bf1943's 82583430 / 82623DB8): a view's update,
+// sub_827F2C08(view), builds its culling frustum (sub_82482970) from its
+// vertical angle (+12) and aspect (+32, width / height; +16 = +12 * +32).
+// Every 16:9 view (camera, weapon, shadow cascades) gets the window's aspect:
+// the same vertical angle, more to the sides; the presenter stretches the 16:9
+// frame over the window, which undoes the squeeze. Square views stay.
+namespace {
+std::mutex g_wide_mutex;
+std::vector<float> g_wide_applied;  // aspects given to views so far (a resize)
+float WideAspect(float a) {
+  const float want = xgpu::ViewAspect();
+  if (std::abs(a - want) < 1e-4f) return a;
+  bool ours = std::abs(a - 16.0f / 9.0f) < 0.002f;
+  std::lock_guard lock(g_wide_mutex);
+  for (float applied : g_wide_applied) ours |= std::abs(a - applied) < 1e-4f;
+  if (!ours) return a;
+  if (std::find(g_wide_applied.begin(), g_wide_applied.end(), want) == g_wide_applied.end() &&
+      g_wide_applied.size() < 64)
+    g_wide_applied.push_back(want);
+  return want;
+}
+}  // namespace
+GAME_PATCH(827F2C08) {
+  const uint32_t view = ctx.r3.u32;
+  const float a = GuestFloat(view + 32), wide = WideAspect(a);
+  if (wide != a) {
+    SetGuestFloat(view + 32, wide);
+    SetGuestFloat(view + 16, GuestFloat(view + 12) * wide);
+    St32(view, Ld32(view) | 10);
+  }
+  __imp__sub_827F2C08(ctx, base);
+}
 GAME_PATCH(82482970) {
   if (t_second_view) ctx.f1.f64 = WiderFov(ctx.f1.f64);
+  // ULTRAWIDE: views built without their update (sub_8226D8B8's) the same.
+  if (float wide = WideAspect(float(ctx.f2.f64)); wide != float(ctx.f2.f64)) ctx.f2.f64 = wide;
   __imp__sub_82482970(ctx, base);
 }
 
@@ -772,6 +820,14 @@ void HardcoreHud() {
 // ticked since the last step (none on most frames, two at most after a hitch).
 GAME_PATCH(8278ED20) {
   HardcoreHud();
+  // ULTRAWIDE (bf_menu.h): under a menu (the loading screen too: a level before
+  // its first spawn screen) the UI's draws stay together in the centre.
+  if (ctx.r4.u32 == 33) {
+    static bool spawn_seen = false;
+    if (rt::g_in_menus) spawn_seen = false;
+    if (rt::g_level_menu) spawn_seen = true;
+    xgpu::SetUiMenu(rt::g_in_menus || rt::g_level_menu || rt::g_scoreboard_open || !spawn_seen);
+  }
   if (ctx.r4.u32 != 33 || rt::g_max_fps == 30) {
     __imp__sub_8278ED20(ctx, base);
     return;

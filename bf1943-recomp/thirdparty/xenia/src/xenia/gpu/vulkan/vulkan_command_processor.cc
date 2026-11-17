@@ -1622,6 +1622,8 @@ static bool BfUiWideTransform(const Shader& vs, const RegisterFile& regs, Memory
                               uint32_t index_count, uint32_t index_base, bool index_16,
                               bool textured, float& scale, float& offset) {
   scale = 1.0f, offset = 0.0f;
+  static const bool ui_off = std::getenv("BF_WIDE_UI_OFF") != nullptr;
+  if (ui_off) return false;
   const float s = bfmenu::g_ui_scale.load(std::memory_order_relaxed);
   if (!(s < 0.999f)) return false;
   const int kind = BfMenuShaderKind(vs);
@@ -1634,6 +1636,12 @@ static bool BfUiWideTransform(const Shader& vs, const RegisterFile& regs, Memory
   const bool menu = bfmenu::g_ui_menu.load(std::memory_order_relaxed);
   if (span && x0 < 0.02f && x1 > 0.98f && (!menu || !textured)) return false;
   scale = s;
+  if (std::getenv("BF_WIDE_UI_LOG")) {
+    static std::set<uint64_t> logged;
+    if (logged.size() < 60 && logged.insert(vs.ucode_data_hash() ^ (uint64_t(menu) << 60)).second)
+      fprintf(stderr, "[ui-wide] vs %016llX kind %d menu %d span %d x %.2f-%.2f y %.2f-%.2f tex %d\n",
+              (unsigned long long)vs.ucode_data_hash(), kind, int(menu), int(span), x0, x1, y0, y1, int(textured));
+  }
   const float shift = bfmenu::g_ui_shift.load(std::memory_order_relaxed);
   if (span && shift > 0.0f && !menu) {
     if (y0 > 0.55f && y1 < 1.0f && x0 > 0.0f && x1 < 0.3f) offset = -shift;

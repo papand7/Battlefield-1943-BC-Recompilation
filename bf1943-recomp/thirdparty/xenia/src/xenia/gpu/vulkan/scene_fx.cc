@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <set>
 #include <string>
 #include <unordered_map>
 
@@ -696,7 +697,12 @@ void CaptureDraw(const Shader* vertex_shader, const Shader* pixel_shader,
   if (!IsLitVertexShader(vertex_shader)) return;
   const auto* f = reinterpret_cast<const float*>(
       &regs.values[XE_GPU_REG_SHADER_CONSTANT_000_X]);
-  if (std::abs(z_scale) < 0.5f) {
+  // Bad Company draws its whole world in one depth range (viewport z scale
+  // about -0.0045, no near slice at about 1): with no near slice ever seen,
+  // that range is the nearest.
+  static bool near_slices = false;
+  if (std::abs(z_scale) >= 0.5f) near_slices = true;
+  if (std::abs(z_scale) < 0.5f && near_slices) {
     if (!fx || fresh) return;
     Capture& c = latest_far;
     std::memcpy(c.vs, f, sizeof(c.vs));

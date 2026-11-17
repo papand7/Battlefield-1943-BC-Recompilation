@@ -41,6 +41,9 @@
 
 using namespace rt;
 
+bool (*rt::g_setting_hidden)(const char* key) = nullptr;
+const wchar_t* (*rt::g_action_name)(int action) = nullptr;
+
 namespace rt::pcset {
 namespace {
 
@@ -366,6 +369,7 @@ void Build() {
   for (int a = 0; a < kActionCount; ++a) {
     Setting s;
     s.category = kKeys, s.kind = Kind::kKey, s.action = a, s.label = kActions[a].name;
+    if (const wchar_t* own = g_action_name ? g_action_name(a) : nullptr) s.label = own;
     static std::string keys[kActionCount];
     keys[a] = "key_" + std::to_string(a);
     s.key = keys[a].c_str();
@@ -381,6 +385,9 @@ void Build() {
     s.text = g_gamertag;
     v.push_back(s);
   }
+  // Rows the running game has no use for (kernel.h g_setting_hidden).
+  if (g_setting_hidden)
+    std::erase_if(v, [](const Setting& s) { return s.kind == Kind::kChoice && g_setting_hidden(s.key); });
 }
 
 Setting* Find(const char* key) {
