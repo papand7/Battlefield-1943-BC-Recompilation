@@ -570,6 +570,23 @@ bool CaptureFrame(const char* png_path, FrameStats* stats) {
   // RGBX -> RGBA with opaque alpha for the PNG.
   for (uint32_t y = 0; y < image.height; ++y)
     for (uint32_t x = 0; x < image.width; ++x) image.data[y * image.stride + x * 4 + 3] = 255;
+  // What is drawn over the picture (SetOverlay: the replay viewer's markers,
+  // the PC settings page) as on the screen, stretched to the frame.
+  {
+    std::lock_guard lock(g_overlay_mutex);
+    if (!g_overlay_pixels.empty() && g_overlay_width && g_overlay_height) {
+      for (uint32_t y = 0; y < image.height; ++y) {
+        const uint32_t oy = uint32_t(uint64_t(y) * g_overlay_height / image.height);
+        for (uint32_t x = 0; x < image.width; ++x) {
+          const uint32_t ox = uint32_t(uint64_t(x) * g_overlay_width / image.width);
+          const uint8_t* o = &g_overlay_pixels[(size_t(oy) * g_overlay_width + ox) * 4];
+          if (!o[3]) continue;
+          uint8_t* p = &image.data[y * image.stride + x * 4];
+          for (int c = 0; c < 3; ++c) p[c] = uint8_t((p[c] * (255 - o[3]) + o[c] * o[3]) / 255);
+        }
+      }
+    }
+  }
   return stbi_write_png(png_path, int(image.width), int(image.height), 4, image.data.data(),
                         int(image.stride)) != 0;
 }
