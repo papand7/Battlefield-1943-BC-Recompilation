@@ -66,13 +66,14 @@ function ask_bf_beacon($ip, $port, $tag, $beacon_port) {
         if (count($f) < 3 || (int)$f[2] !== $port) return null;
         $players = 0;
         $locked = in_array('lock', array_slice($f, 3), true);
+        $hardcore = in_array('hardcore', array_slice($f, 3), true);  // hardcore mode (no HUD, fewer hits to kill)
         if (count($f) >= 5) {  // the optional players/max run
             $players = max(0, min(64, (int)$f[3]));
         } elseif (isset($f[3]) && ($f[3] === 'lock' || $f[3] === '1')) {
             $locked = true;
         }
         return ['name' => text($f[0]), 'map' => text(str_replace('_', ' ', $f[1])),
-                'players' => $players, 'locked' => $locked];
+                'players' => $players, 'locked' => $locked, 'hardcore' => $hardcore];
     });
 }
 function ask_bf1943($ip, $port) { return ask_bf_beacon($ip, $port, 'BF43', 19430); }
@@ -136,7 +137,7 @@ if ($action === 'list') {
     if (!isset(GAMES[$game])) done(['ok' => false, 'error' => 'unknown game'], 400);
     $out = with_servers($file, fn(&$servers) => array_values(array_map(fn($s) => [
         'address' => $s['ip'], 'port' => $s['port'], 'name' => $s['name'], 'map' => $s['map'], 'players' => $s['players'],
-        'max' => $s['max'], 'mode' => $s['mode'], 'version' => $s['version'], 'locked' => !empty($s['locked']),
+        'max' => $s['max'], 'mode' => $s['mode'], 'version' => $s['version'], 'locked' => !empty($s['locked']), 'hardcore' => !empty($s['hardcore']),
     ], array_filter($servers, $of_game))));
     if (($_GET['format'] ?? '') === 'lines') {  // for the game: one server a line, tab-separated, no JSON to parse
         header('Content-Type: text/plain; charset=utf-8');
@@ -145,7 +146,7 @@ if ($action === 'list') {
 ", "
 "], ' ', (string)$v),
                 [$s['address'], $s['port'], $s['name'], $s['map'], $s['players'], $s['max'], $s['mode'], $s['version'],
-                 $s['locked'] ? 1 : 0])), "
+                 $s['locked'] ? 1 : 0, !empty($s['hardcore']) ? 1 : 0])), "
 ";
         exit;
     }
@@ -205,7 +206,7 @@ if ($action === 'announce' || $action === 'remove') {
             }
         $servers[] = $entry;
     });
-    done(['ok' => true, 'listed' => true, 'name' => $info['name'], 'map' => $info['map'], 'players' => $info['players'], 'locked' => !empty($info['locked'])]);
+    done(['ok' => true, 'listed' => true, 'name' => $info['name'], 'map' => $info['map'], 'players' => $info['players'], 'locked' => !empty($info['locked']), 'hardcore' => !empty($info['hardcore'])]);
 }
 
 if ($action === 'selftest') {

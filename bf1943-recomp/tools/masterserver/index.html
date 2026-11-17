@@ -120,7 +120,7 @@ function render() {
   $('rows').innerHTML = rows.map(s => {
     const pct = s.max ? Math.min(100, s.players / s.max * 100) : (s.players ? 100 : 0);
     return `<tr>
-      <td><div class="name">${s.locked ? '&#128274;  ' : ''}${esc(s.name)}</div><div class="sub">${s.version ? 'v' + esc(s.version) : ''}</div></td>
+      <td><div class="name">${s.locked ? '&#128274;  ' : ''}${esc(s.name)}${s.hardcore ? ' <span class="pill">HARDCORE</span>' : ''}</div><div class="sub">${s.version ? 'v' + esc(s.version) : ''}</div></td>
       <td>${esc(s.map) || '—'}</td>
       <td class="hide-s">${s.mode ? `<span class="pill">${esc(s.mode)}</span>` : '<span class="sub">—</span>'}</td>
       <td><div class="pl"><span>${s.players}${s.max ? ' / ' + s.max : ''}</span><div class="meter" style="--c:${esc(color)}"><i style="width:${pct}%"></i></div></div></td>

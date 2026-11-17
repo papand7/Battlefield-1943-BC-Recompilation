@@ -131,6 +131,7 @@ std::vector<Server> MasterList() {
     sv.online = true;
     sv.players = atoi(f[4].c_str());
     if (f.size() > 8) sv.locked = atoi(f[8].c_str()) != 0;
+    if (f.size() > 9) sv.hardcore = atoi(f[9].c_str()) != 0;  // the master's 10th field
     out.push_back(sv);
   }
   return out;
