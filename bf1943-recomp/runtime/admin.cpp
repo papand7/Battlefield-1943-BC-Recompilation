@@ -100,6 +100,22 @@ std::mutex g_peers_lock;
 std::map<uint32_t, std::pair<uint16_t, std::chrono::steady_clock::time_point>> g_peers;  // ip -> port, last seen
 std::atomic<int> g_chat_port{0};  // ours, as told to the host
 
+// The chat's peers: at most 64, forgotten after 5 minutes without a packet
+// (any sender's packet registers one: a flood must not grow it for ever).
+void PrunePeersLocked() {
+  const auto stale = std::chrono::steady_clock::now() - std::chrono::minutes(5);
+  for (auto it = g_peers.begin(); it != g_peers.end();)
+    if (it->second.second < stale) it = g_peers.erase(it);
+    else ++it;
+}
+bool RegisterPeer(uint32_t ip, uint16_t port) {  // (false: refused)
+  std::lock_guard lock(g_peers_lock);
+  PrunePeersLocked();
+  if (!g_peers.count(ip) && g_peers.size() >= 64) return false;
+  g_peers[ip] = {port, std::chrono::steady_clock::now()};
+  return true;
+}
+
 void SendRaw(uint32_t ip, uint16_t port, const std::string& packet) {
   if (g_chat_socket == INVALID_SOCKET || !ip) return;
   sockaddr_in to{};
@@ -130,6 +146,7 @@ void BroadcastChat(const std::string& text) {
   }
   AddLine(L"> " + Wide(text));
   std::lock_guard lock(g_peers_lock);
+  PrunePeersLocked();
   for (auto& [ip, peer] : g_peers) SendTo(ip, peer.first, text);
 }
 void ChatNetThread() {
@@ -180,10 +197,8 @@ void ChatNetThread() {
         size_t bar = body.find('|');
         const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
         if (!peer_port) continue;
-        {
-          std::lock_guard lock(g_peers_lock);  // (it hears the chat from now on)
-          g_peers[from.sin_addr.s_addr] = {peer_port, std::chrono::steady_clock::now()};
-        }
+        if (ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
+        if (!RegisterPeer(from.sin_addr.s_addr, peer_port)) continue;  // (it hears the chat from now on)
         body = body.substr(bar + 1);
         if (kind == 'H') {
           OnHello(from.sin_addr.s_addr, peer_port, body);
@@ -225,9 +240,9 @@ void ChatNetThread() {
       if (bar != std::string::npos && bar > 0 && bar < 7) {
         const uint16_t peer_port = uint16_t(atoi(text.substr(0, bar).c_str()));
         text = text.substr(bar + 1);
-        if (peer_port) {
+        if (peer_port && ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
+        if (peer_port && RegisterPeer(from.sin_addr.s_addr, peer_port)) {
           std::lock_guard lock(g_peers_lock);
-          g_peers[from.sin_addr.s_addr] = {peer_port, std::chrono::steady_clock::now()};
           for (auto& [ip, peer] : g_peers)
             if (ip != from.sin_addr.s_addr) SendTo(ip, peer.first, text);
         }

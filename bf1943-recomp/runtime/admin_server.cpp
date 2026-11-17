@@ -349,6 +349,18 @@ bool Blocked(uint32_t ip, uint16_t port) {
   return blocked;
 }
 
+bool ChatBlocked(uint32_t ip, uint16_t chat_port) {
+  if (!g_any_block.load(std::memory_order_relaxed)) return false;
+  if (Blocked(ip, 0)) return true;  // (blocks of the whole address)
+  uint16_t game_port = 0;
+  {
+    std::lock_guard lock(g_mutex);
+    auto it = g_players.find(std::make_pair(ip, chat_port));
+    if (it != g_players.end()) game_port = it->second.game_port;
+  }
+  return game_port && Blocked(ip, htons(game_port));  // (a local player's block: by its game port)
+}
+
 void OnHello(uint32_t ip, uint16_t chat_port, const std::string& body) {
   // "<game port>|<id>|<name>"
   size_t a = body.find('|'), b = a == std::string::npos ? a : body.find('|', a + 1);
@@ -356,7 +368,12 @@ void OnHello(uint32_t ip, uint16_t chat_port, const std::string& body) {
   std::lock_guard lock(g_mutex);
   LoadBansLocked();
   auto key = std::make_pair(ip, chat_port);
+  const auto stale = Clock::now() - std::chrono::minutes(5);  // (the hellos come every 5 s)
+  for (auto it = g_players.begin(); it != g_players.end();)
+    if (it->second.seen < stale) it = g_players.erase(it);
+    else ++it;
   const bool fresh = !g_players.count(key);
+  if (fresh && g_players.size() >= 64) return;  // (a flood of made-up senders)
   Player& p = g_players[key];
   p.ip = ip, p.chat_port = chat_port;
   p.game_port = uint16_t(atoi(body.c_str()));
