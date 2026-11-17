@@ -150,6 +150,10 @@ def main():
     ap.add_argument('--repo', default='unsloth/Qwen3.5-4B-GGUF', help='the model on Hugging Face')
     ap.add_argument('--quant', default='Q4_K_M')
     ap.add_argument('--mmproj', default='mmproj-F16.gguf', help='the vision projector (empty: no vision)')
+    ap.add_argument('--chat-repo', default='bartowski/Qwen2.5-1.5B-Instruct-GGUF',
+                    help='a small text model for chat only (empty: none)')
+    ap.add_argument('--chat-quant', default='Q4_K_M')
+    ap.add_argument('--chat-port', type=int, default=8081, help='the chat model\'s llama-server port')
     a = ap.parse_args()
     out = os.path.abspath(a.dir)
     os.makedirs(os.path.join(out, 'models'), exist_ok=True)
@@ -192,6 +196,21 @@ def main():
         download(f'https://huggingface.co/{a.repo}/resolve/main/{name}', os.path.join(out, 'models', name),
                  lfs.get('size') or files[name].get('size'), lfs.get('sha256'))
 
+    # 2b. A small text model for chat only (it answers a line; the tactical
+    # one stays free for questions with pictures).
+    chat = None
+    if a.chat_repo:
+        cinfo = get_json(f'https://huggingface.co/api/models/{a.chat_repo}?blobs=true')
+        cfiles = {s['rfilename']: s for s in cinfo.get('siblings', [])}
+        chat = next((n for n in cfiles if n.endswith(f'-{a.chat_quant}.gguf') and 'mmproj' not in n), None)
+        if not chat:
+            print(f'warning: no {a.chat_quant} model in {a.chat_repo}: chat uses the main model')
+        else:
+            lfs = cfiles[chat].get('lfs') or {}
+            download(f'https://huggingface.co/{a.chat_repo}/resolve/main/{chat}',
+                     os.path.join(out, 'models', chat),
+                     lfs.get('size') or cfiles[chat].get('size'), lfs.get('sha256'))
+
     # The graphics card to run it on: with an integrated one as well, llama.cpp
     # splits the model over both and the integrated one slows it down a lot.
     device = pick_device(server)
@@ -205,6 +224,9 @@ def main():
         f.write(f'model=models/{model}\n')
         if a.mmproj:
             f.write(f'mmproj=models/{a.mmproj}\n')
+        if chat:
+            f.write(f'chat_model=models/{chat}\n')
+            f.write(f'chat_port={a.chat_port}\n')
         f.write('# more llama-server options (-ngl 99: all of it on the GPU, when there is one)\n')
         f.write('args=-ngl 99' + (f' --device {device.split(":")[0]}' if device else '') + '\n')
     print(f'ok {out}')

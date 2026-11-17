@@ -23,6 +23,8 @@ void Load();
 // second key that no other action uses; 0 if none).
 int Key(Action action, int slot);
 bool IsOpen();
+// A key closed the page and is still held: the game gets nothing yet.
+bool WaitRelease();
 void Open();
 // The main menu's HOST GAME and JOIN GAME pages (lan.cpp).
 void OpenHost();

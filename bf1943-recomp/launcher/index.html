@@ -102,8 +102,10 @@
             <div class="card">
               <div class="card-head"><span class="num">01</span> Server</div>
               <div class="card-body">
-                <label class="muted" for="srvname">Server name</label>
+                <label class="muted" for="srvname">Server name (what browsers show)</label>
                 <input id="srvname" type="text" maxlength="31" spellcheck="false" autocomplete="off">
+                <label class="muted" for="srvpass">Password (empty: anyone may join)</label>
+                <input id="srvpass" type="text" maxlength="24" spellcheck="false" autocomplete="off">
                 <div class="toggle-row">
                   <div><div class="label">Bots</div><div class="muted" id="botshint">Computer players, half on each team</div></div>
                   <div class="seg stepper"><button id="botsdown" aria-label="Fewer bots">−</button><span id="bots">8</span><button id="botsup" aria-label="More bots">+</button></div>
@@ -123,6 +125,18 @@
                 <div class="toggle-row">
                   <label for="srvllm"><div class="label">Bot advisor</div><div class="muted" id="llmhint">A small AI model on this PC tells stuck or losing bots where to go</div></label>
                   <input type="checkbox" class="switch" id="srvllm">
+                </div>
+                <div class="toggle-row">
+                  <div><div class="label">Tick rate</div><div class="muted">How often the server simulates: 75 is the default, 30 the original game's rate, 100 the quickest.</div></div>
+                  <button id="srvtick" class="btn ghost small" title="Click to change">75 HZ</button>
+                </div>
+                <div class="toggle-row">
+                  <div><div class="label">Weather</div><div class="muted">Clear, or rain with puddles and drops on the view. Everyone joining gets it.</div></div>
+                  <button id="srvweather" class="btn ghost small" title="Click to change">CLEAR</button>
+                </div>
+                <div class="toggle-row">
+                  <div><div class="label">Time of day</div><div class="muted">Dawn, day, sunset or night. Everyone joining gets it.</div></div>
+                  <button id="srvtime" class="btn ghost small" title="Click to change">DAY</button>
                 </div>
                 <div class="toggle-row">
                   <label for="srvtrain"><div class="label">Training run</div><div class="muted">Nobody joins: 16 bots, twice as fast, tune how they play; a replay at the end</div></label>
@@ -191,6 +205,9 @@
             <div class="toggle-row">
               <div><div class="label">Automatic updates</div><div class="muted">Installs a new release from GitHub when the launcher starts</div></div>
               <input type="checkbox" class="switch" id="autoupdate">
+            </div>            <div class="toggle-row">
+              <div><div class="label">Update from GitHub</div><div id="updatehint" class="muted">Checks the releases page for a newer version.</div></div>
+              <button id="checkupdate" class="btn ghost small">CHECK NOW</button>
             </div>
           </div>
         </div>
@@ -199,6 +216,24 @@
           <div class="card-body">
             <div class="muted fxnote">The game's scene effects (the same as PC SETTINGS &rsaquo; EFFECTS in the game). The quality preset sets them all; changing one makes it custom.</div>
             <div id="fxrows"></div>
+          </div>
+        </div>
+        <div class="card" id="collectcard">
+          <div class="card-head"><span class="num">03</span> Collect</div>
+          <div class="card-body">
+            <div class="muted fxnote">What the game saves while you play: the shaders it draws (for the PBR table) and the textures the HD pack has no replacement for.</div>
+            <div class="toggle-row">
+              <div><div class="label">Save shaders while playing</div><div id="shaderhint" class="muted">No shaders collected yet</div></div>
+              <button id="shaderopen" class="btn ghost small" title="The folder the shaders are saved in">FOLDER</button>
+              <input type="checkbox" class="switch" id="collectShaders">
+            </div>
+            <div class="toggle-row">
+              <div><div class="label">Save textures the pack misses</div><div id="texmisshint" class="muted">No textures saved yet</div></div>
+              <button id="texmissopen" class="btn ghost small" title="The folder the textures are saved in">FOLDER</button>
+              <input type="checkbox" class="switch" id="collectTextures">
+            </div>
+            <div class="row"><button id="texmake2" class="btn" title="Makes the HD texture pack on this PC from your game files (or carries on one): AI upscaling with PBR materials">CREATE HD PACK</button></div>
+            <div class="row"><button id="pbrrebuild" class="btn ghost" title="Runs tools/pbr_taps.py on the collected shaders and adds the lit ones the table does not have yet (restart the game after)">REBUILD PBR TABLE</button></div>
           </div>
         </div>
       </section>

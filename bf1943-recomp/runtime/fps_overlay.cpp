@@ -5,6 +5,7 @@
 //         rate of the slowest hundredth of frames) over the last two seconds.
 #include "kernel.h"
 #include "xenia_bridge.h"
+#include "admin.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -36,20 +37,24 @@ using Clock = std::chrono::steady_clock;
 std::mutex g_mutex;
 std::deque<Clock::time_point> g_swaps;  // the last two seconds' swaps
 
-// The lines drawn white on a dark, see-through panel: RGBA (straight alpha).
+// Chat in the PC menus' style: a dark, see-through panel, a white rule under a
+// small heading, white condensed capitals. RGBA (straight alpha).
 std::vector<uint8_t> Render(const std::vector<std::wstring>& lines, int& w, int& h) {
-  const int line_h = 26, pad = 8;
+  const int line_h = 24, pad = 14, header_h = 40;
   HDC dc = CreateCompatibleDC(nullptr);
-  HFONT font = CreateFontW(-22, 0, 0, 0, FW_BOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
-                           ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Bahnschrift SemiBold Condensed");
-  HGDIOBJ old_font = SelectObject(dc, font);
+  HFONT header_font = CreateFontW(-17, 0, 0, 0, FW_SEMIBOLD, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                  CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Bahnschrift SemiBold Condensed");
+  HFONT body_font = CreateFontW(-22, 0, 0, 0, FW_NORMAL, 0, 0, 0, DEFAULT_CHARSET, OUT_DEFAULT_PRECIS,
+                                CLIP_DEFAULT_PRECIS, ANTIALIASED_QUALITY, DEFAULT_PITCH, L"Bahnschrift SemiCondensed");
+  HGDIOBJ old_font = SelectObject(dc, body_font);
   int text_w = 0;
   for (const std::wstring& l : lines) {
     SIZE ext{};
     GetTextExtentPoint32W(dc, l.c_str(), int(l.size()), &ext);
     text_w = std::max(text_w, int(ext.cx));
   }
-  w = text_w + 2 * pad, h = int(lines.size()) * line_h + 2 * pad - 4;
+  w = std::max(text_w + 2 * pad, 560);
+  h = header_h + int(lines.size()) * line_h + pad - 4;
   BITMAPINFO bi{};
   bi.bmiHeader = {sizeof(BITMAPINFOHEADER), w, -h, 1, 32, BI_RGB};
   void* bits = nullptr;
@@ -57,9 +62,17 @@ std::vector<uint8_t> Render(const std::vector<std::wstring>& lines, int& w, int&
   HGDIOBJ old_bmp = SelectObject(dc, bmp);
   memset(bits, 0, size_t(w) * h * 4);
   SetBkMode(dc, TRANSPARENT);
-  SetTextColor(dc, RGB(255, 255, 255));
+  SelectObject(dc, header_font);
+  SetTextColor(dc, RGB(150, 150, 150));
+  TextOutW(dc, pad, 8, L"CHAT", 4);
+  HBRUSH rule = CreateSolidBrush(RGB(230, 230, 230));
+  RECT rr{pad, header_h - 10, w - pad, header_h - 9};
+  FillRect(dc, &rr, rule);
+  DeleteObject(rule);
+  SelectObject(dc, body_font);
+  SetTextColor(dc, RGB(245, 245, 245));
   for (size_t i = 0; i < lines.size(); ++i)
-    TextOutW(dc, pad, pad - 2 + int(i) * line_h, lines[i].c_str(), int(lines[i].size()));
+    TextOutW(dc, pad, header_h + int(i) * line_h, lines[i].c_str(), int(lines[i].size()));
   GdiFlush();
   // The text's coverage (white on black) over the panel.
   float white = xgpu::HdrWhite();
@@ -73,14 +86,15 @@ std::vector<uint8_t> Render(const std::vector<std::wstring>& lines, int& w, int&
   const auto* px = static_cast<const uint8_t*>(bits);
   for (size_t i = 0; i < size_t(w) * h; ++i) {
     double t = std::max({px[i * 4], px[i * 4 + 1], px[i * 4 + 2]}) / 255.0;
-    double v = 0.08 + 0.92 * t;  // dark panel, white text
+    double v = 0.02 + 0.98 * t;  // the menus' near-black panel, white text
     rgba[i * 4] = rgba[i * 4 + 1] = rgba[i * 4 + 2] = out(v);
-    rgba[i * 4 + 3] = uint8_t(std::lround((0.55 + 0.45 * t) * 255));
+    rgba[i * 4 + 3] = uint8_t(std::lround((0.70 + 0.30 * t) * 255));
   }
   SelectObject(dc, old_bmp);
   DeleteObject(bmp);
   SelectObject(dc, old_font);
-  DeleteObject(font);
+  DeleteObject(body_font);
+  DeleteObject(header_font);
   DeleteDC(dc);
   return rgba;
 }
@@ -88,12 +102,8 @@ std::vector<uint8_t> Render(const std::vector<std::wstring>& lines, int& w, int&
 void OverlayThread() {
   int shown = 0;
   for (;;) {
-    std::this_thread::sleep_for(std::chrono::milliseconds(500));
+    std::this_thread::sleep_for(std::chrono::milliseconds(rt::admin::Typing() ? 100 : 500));
     const int mode = rt::g_fps_overlay;
-    if (mode == 0) {
-      if (shown) xgpu::SetCornerOverlay(nullptr, 0, 0), shown = 0;
-      continue;
-    }
     std::vector<Clock::time_point> swaps;
     {
       std::lock_guard lock(g_mutex);
@@ -108,8 +118,10 @@ void OverlayThread() {
     }
     std::vector<std::wstring> lines;
     wchar_t buf[96];
-    swprintf(buf, 96, L"%d FPS", last_second);
-    lines.push_back(buf);
+    if (mode) {
+      swprintf(buf, 96, L"%d FPS", last_second);
+      lines.push_back(buf);
+    }
     if (mode == 2 && !frames.empty()) {
       double sum = 0, worst = 0;
       for (double f : frames) sum += f, worst = std::max(worst, f);
@@ -125,10 +137,15 @@ void OverlayThread() {
       swprintf(buf, 96, L"1%% low %.0f FPS", slow > 0 ? 1000.0 / slow : 0.0);
       lines.push_back(buf);
     }
+    rt::admin::Lines(lines);
+    if (lines.empty()) {
+      if (shown) xgpu::SetCornerOverlay(nullptr, 0, 0), shown = 0;
+      continue;
+    }
     int w = 0, h = 0;
     std::vector<uint8_t> rgba = Render(lines, w, h);
     xgpu::SetCornerOverlay(rgba.data(), uint32_t(w), uint32_t(h));
-    shown = mode;
+    shown = 1;
   }
 }
 }  // namespace

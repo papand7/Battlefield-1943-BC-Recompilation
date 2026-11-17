@@ -1486,7 +1486,7 @@ GAME_PATCH(8236F238) {
           // + 20) * 2 (822C1818: entering a vehicle wants Interact, 16, held
           // long enough; Bad Company's records the same).
           for (int a = 8; a < 40; ++a) {
-            b.held[a] = (bits >> a & 1) ? b.held[a] + 1.0f / 30.0f : 0.0f;
+            b.held[a] = (bits >> a & 1) ? b.held[a] + 1.0f / float(std::max(1u, g_tick_rate)) : 0.0f;
             uint16_t h = HalfFloat(b.held[a]);
             for (uint32_t o : {rec, ctx.r3.u32}) St16(o + uint32_t(a + 20) * 2, h);
           }

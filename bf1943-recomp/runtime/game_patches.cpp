@@ -22,6 +22,7 @@
 
 namespace rt {
 uint32_t g_max_fps = 120;  // --max-fps (0 = no limit), applied in VdSwap
+uint32_t g_tick_rate = 75; // --tickrate: the server's simulation rate (30, 60, 75, 100...)
 bool g_lan_host = false;   // --host
 bool g_vsync = false;      // --vsync
 std::string g_host_map;    // --host-map: host this level from the main menu
@@ -46,26 +47,35 @@ static void LogSettings(PPCContext& ctx, uint8_t* base);
 // so a limit above the rate makes the game run fast. With 0 (no limit) it ticks
 // at +44 and measures real frame time. So the client's timer gets 0 and VdSwap (gpu.cpp)
 // caps the frame rate at --max-fps. The server's timer (mode 1: one tick per
-// loop, paced by sleeping 1/Game.MaxFps) keeps 30, else it spins.
+// loop, paced by sleeping 1/Game.MaxFps) gets the tick rate (--tickrate, 75 by
+// default), else it spins.
 static thread_local uint32_t t_timer_mode;
 GAME_PATCH(822C4830) {
   HostFromMainLoop(ctx, base);
   LogSettings(ctx, base);
   __imp__sub_822C4830(ctx, base);
-  ctx.f1.f64 = t_timer_mode == 1 ? 30.0 : 0.0;
+  ctx.f1.f64 = t_timer_mode == 1 ? double(g_tick_rate) : 0.0;
 }
 
 // Frame timer setup: r3 = timer, r4 = tick rate (30), r5 = mode. Every
 // simulation tick lasts 1/rate (worked out here), so the client's timers (made
 // on the main thread at boot) tick at the frame rate: movement then updates
 // every frame instead of every 4th at 120 fps. The server's timer (made later
-// on its loading thread) stays at 30. Up to 4 ticks a frame (+56, game: 2)
-// keep game time right when the frame rate dips below half the tick rate.
+// on its loading thread) runs at --tickrate (75 by default, the rate its
+// matches are played at). Up to 4 ticks a frame (+56, game: 2) keep game time
+// right when the frame rate dips below half the tick rate.
 static uint32_t g_client_thread;
+uint32_t rt::ClientThreadId() { return g_client_thread; }
 GAME_PATCH(822C7270) {
   if (!g_client_thread) g_client_thread = CurrentThreadId();
   bool client = CurrentThreadId() == g_client_thread;
   if (client) ctx.r4.u64 = g_max_fps ? std::clamp(g_max_fps, 30u, 240u) : 120u;
+  else ctx.r4.u64 = std::clamp(g_tick_rate, 30u, 120u);
+  static bool logged_rate = false;
+  if (!client && !logged_rate) {
+    logged_rate = true;
+    RT_INFO("server: simulating %u ticks a second", uint32_t(ctx.r4.u32));
+  }
   uint32_t timer = ctx.r3.u32;
   __imp__sub_822C7270(ctx, base);
   if (client) St32(timer + 56, 4);
@@ -165,6 +175,8 @@ GAME_PATCH(82583248) {
       static const bool trace = std::getenv("BF_FOV_TRACE") != nullptr;
       if (trace && aiming != rt::g_aiming) RT_INFO("fov: aiming %s (%.1f of %.1f degrees)", aiming ? "on" : "off", now, own);
       rt::g_aiming = aiming;
+      rt::g_fov_now_deg.store(now, std::memory_order_relaxed);
+      rt::g_fov_own_deg.store(own, std::memory_order_relaxed);
     }
     ctx.f1.f64 = WiderFov(ctx.f1.f64);
   }
@@ -561,6 +573,81 @@ GAME_PATCH(822ADE38) {
   __imp__sub_822ADE38(ctx, base);
 }
 
+// INFANTRY AIM: on foot the mouse turns the local soldier's aim itself
+// (xam.cpp keeps its counts). The aim update sub_822B0B18(aim, input, zoom
+// flag) adds the stick's turn to the yaw at aim+8 and the pitch at aim+0xC,
+// wraps the yaw to [0, 2*pi) and clamps the pitch to input+0x14/+0x18 (degrees)
+// and the aim's limit object at aim+0x38. It runs as usual (a controller still
+// turns through the stick and the game's aim assist follows the result) and
+// the mouse's turn, a fixed angle per count, is added on top; putting the
+// counts into the stick instead left its curve, acceleration and speed cap in
+// the way. The local player is simulated only on the client's thread (the
+// server's soldiers run on its loading thread), which is what makes an update
+// here ours. Nothing turns in a menu, without a window, or in a vehicle (its
+// guns are aimed above; planes keep the stick).
+GAME_PATCH(822B0B18) {
+  const uint32_t aim = ctx.r3.u32, input = ctx.r4.u32, client = rt::ClientThreadId();
+  const bool client_thread = client && rt::CurrentThreadId() == client;
+  const bool look = client_thread && aim && input && rt::g_present &&
+                    !rt::g_in_menus.load(std::memory_order_relaxed) &&
+                    !rt::g_level_menu.load(std::memory_order_relaxed) && rt::LocalVehicle() == rt::kOnFoot;
+  if (client_thread && !look) rt::AimMouseReset();  // a menu, a vehicle, a dead player: drop it
+  __imp__sub_822B0B18(ctx, base);
+  if (!look) return;
+  double dx = 0, dy = 0;
+  bool stale = false;
+  if (!rt::AimMouseTake(dx, dy, stale)) return;  // BF_NO_MOUSE_AIM
+  rt::AimMouseSeen();
+  if (stale || (dx == 0 && dy == 0)) return;
+
+  static const double yaw_sign =
+      std::getenv("BF_MOUSE_YAW_SIGN") ? std::atof(std::getenv("BF_MOUSE_YAW_SIGN")) : 1.0;
+  double sens = std::clamp(double(rt::g_mouse_sensitivity), 0.05, 10.0);
+  if (rt::g_aiming.load(std::memory_order_relaxed)) {
+    sens *= std::clamp(double(rt::g_aim_mouse_sensitivity), 0.05, 2.0);
+    // While a sight or scope narrows the view, turn by less so a movement
+    // covers the same distance on screen: the view's own half-angle tangents.
+    const double now = rt::g_fov_now_deg.load(std::memory_order_relaxed);
+    const double own = rt::g_fov_own_deg.load(std::memory_order_relaxed);
+    if (now > 1.0 && own > 1.0 && now < own && own < 179.0)
+      sens *= std::clamp(std::tan(now * kPi / 360.0) / std::tan(own * kPi / 360.0), 0.02, 1.0);
+  }
+  constexpr double kRadiansPerCount = 0.07 * kPi / 180.0;  // a count at sensitivity 1 (0.07 degrees)
+  const double k = kRadiansPerCount * sens;
+  const double turn = dx * k * yaw_sign;
+  const double tilt = (rt::g_mouse_invert ? dy : -dy) * k;
+
+  double lo = double(GuestFloat(input + 0x14)) * kPi / 180.0;
+  double hi = double(GuestFloat(input + 0x18)) * kPi / 180.0;
+  if (const uint32_t limits = Ld32(aim + 0x38)) {
+    lo = std::max(lo, double(GuestFloat(limits + 0x0C)));
+    hi = std::min(hi, double(GuestFloat(limits + 0x10)));
+  }
+  if (!(lo < hi)) lo = -1.5, hi = 1.5;
+  double yaw = std::fmod(double(GuestFloat(aim + 8)) + turn, 2.0 * kPi);
+  if (yaw < 0) yaw += 2.0 * kPi;
+  const double pitch = std::clamp(double(GuestFloat(aim + 0x0C)) + tilt, lo, hi);
+  if (!std::isfinite(yaw) || !std::isfinite(pitch)) return;
+  SetGuestFloat(aim + 8, float(yaw));
+  SetGuestFloat(aim + 0x0C, float(pitch));
+
+  // BF_MOUSE_LOG: how often the aim turned and by how much, once a second.
+  static const bool log_on = std::getenv("BF_MOUSE_LOG") != nullptr;
+  static int logged_updates = 0;
+  static double logged_turn = 0, logged_tilt = 0, logged_counts = 0;
+  static auto logged_at = std::chrono::steady_clock::now();
+  if (log_on) {
+    ++logged_updates, logged_turn += turn * 180.0 / kPi, logged_tilt += tilt * 180.0 / kPi, logged_counts += dx;
+    const auto now = std::chrono::steady_clock::now();
+    if (now - logged_at > std::chrono::seconds(1)) {
+      RT_INFO("mouse aim: %d updates, turned %+.1f deg, pitch %+.1f deg, %+.0f counts (yaw %.3f pitch %.3f)",
+              logged_updates, logged_turn, logged_tilt, logged_counts, double(GuestFloat(aim + 8)),
+              double(GuestFloat(aim + 0x0C)));
+      logged_updates = 0, logged_turn = logged_tilt = logged_counts = 0, logged_at = now;
+    }
+  }
+}
+
 GAME_PATCH(82205B20) {
   uint32_t obj = ctx.r3.u32;
   __imp__sub_82205B20(ctx, base);
@@ -826,6 +913,7 @@ std::string g_emitter;      // --emitter "Field=value,..."
 float g_wind_cli = -1.0f;   // --wind (-1: the PLANT WIND setting)
 float g_fov = 0.0f;         // --fov, the FIELD OF VIEW setting
 std::atomic<bool> g_aiming{false};
+std::atomic<float> g_fov_now_deg{0}, g_fov_own_deg{0};  // the FOV controller's now and own (82583248)
 float g_lod = 4.0f;         // --lod N: N times the vegetation detail (1 = the game's)
 }
 namespace {

@@ -56,15 +56,23 @@ function ask_nightfire($ip, $port) {
 }
 
 // Battlefield 1943 and Bad Company PC (bf1943-recomp runtime/lan.cpp): the LAN browser's beacon answers
-// "<tag>?" on its UDP port with "<tag>!host|map|port[|players|max]" (tag BF43 on 19430, BFBC on 19431). The
-// beacon is asked on its own port; the answer must name the announced game port.
+// "<tag>?" on its UDP port with "<tag>!host|map|port[|players|max][|lock]" (tag BF43 on 19430, BFBC on 19431).
+// The beacon is asked on its own port; the answer must name the announced game port. "lock" means the game
+// needs a password ("1" from builds before the word: both are read as a lock).
 function ask_bf_beacon($ip, $port, $tag, $beacon_port) {
     return ask_udp($ip, $beacon_port, [$tag . '?'], function ($buf) use ($tag, $port) {
         if (strlen($buf) < 6 || substr($buf, 0, 5) !== $tag . '!') return null;
         $f = explode('|', substr($buf, 5));
         if (count($f) < 3 || (int)$f[2] !== $port) return null;
+        $players = 0;
+        $locked = in_array('lock', array_slice($f, 3), true);
+        if (count($f) >= 5) {  // the optional players/max run
+            $players = max(0, min(64, (int)$f[3]));
+        } elseif (isset($f[3]) && ($f[3] === 'lock' || $f[3] === '1')) {
+            $locked = true;
+        }
         return ['name' => text($f[0]), 'map' => text(str_replace('_', ' ', $f[1])),
-                'players' => isset($f[3]) ? max(0, min(64, (int)$f[3])) : 0];
+                'players' => $players, 'locked' => $locked];
     });
 }
 function ask_bf1943($ip, $port) { return ask_bf_beacon($ip, $port, 'BF43', 19430); }
@@ -128,14 +136,16 @@ if ($action === 'list') {
     if (!isset(GAMES[$game])) done(['ok' => false, 'error' => 'unknown game'], 400);
     $out = with_servers($file, fn(&$servers) => array_values(array_map(fn($s) => [
         'address' => $s['ip'], 'port' => $s['port'], 'name' => $s['name'], 'map' => $s['map'], 'players' => $s['players'],
-        'max' => $s['max'], 'mode' => $s['mode'], 'version' => $s['version'],
+        'max' => $s['max'], 'mode' => $s['mode'], 'version' => $s['version'], 'locked' => !empty($s['locked']),
     ], array_filter($servers, $of_game))));
     if (($_GET['format'] ?? '') === 'lines') {  // for the game: one server a line, tab-separated, no JSON to parse
         header('Content-Type: text/plain; charset=utf-8');
         foreach ($out as $s)
             echo implode("	", array_map(fn($v) => str_replace(["	", "
-", ""], ' ', (string)$v),
-                [$s['address'], $s['port'], $s['name'], $s['map'], $s['players'], $s['max'], $s['mode'], $s['version']])), "
+", "
+"], ' ', (string)$v),
+                [$s['address'], $s['port'], $s['name'], $s['map'], $s['players'], $s['max'], $s['mode'], $s['version'],
+                 $s['locked'] ? 1 : 0])), "
 ";
         exit;
     }
@@ -195,7 +205,7 @@ if ($action === 'announce' || $action === 'remove') {
             }
         $servers[] = $entry;
     });
-    done(['ok' => true, 'listed' => true, 'name' => $info['name'], 'map' => $info['map'], 'players' => $info['players']]);
+    done(['ok' => true, 'listed' => true, 'name' => $info['name'], 'map' => $info['map'], 'players' => $info['players'], 'locked' => !empty($info['locked'])]);
 }
 
 if ($action === 'selftest') {

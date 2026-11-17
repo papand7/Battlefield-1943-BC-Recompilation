@@ -91,10 +91,17 @@ extern bool g_present;  // open a window and show frames
 extern uint32_t g_capture_seconds;
 extern uint32_t g_look_showcase;  // seconds: then one capture per look (look_<name>.png)
 extern uint32_t g_capture_burst;  // seconds: then 8 frames back to back (burst_N.png)
-extern bool g_blood;              // --blood: blood on soldiers hit, gibs on big kills
+extern bool g_blood;
+// Host/server weather (0 clear, 1 rain) and time of day (hours, 12 noon), synced to joiners.
+extern int g_weather;
+// admin.cpp: this game hosts (its chat commands change weather, time, name).
+extern std::atomic<bool> g_admin_host;
+extern float g_time_of_day;              // --blood: blood on soldiers hit, gibs on big kills
 void DumpGuestThreads();  // --dump-threads <seconds>
 void GovernorFrame();  // pc_settings.cpp: ADAPTIVE QUALITY, once per frame
 extern uint32_t g_max_fps;   // --max-fps: replaces Game.MaxFps (0 = no limit)
+extern uint32_t g_tick_rate; // --tickrate: the server's simulation rate (30 or 60)
+extern uint32_t g_video_width, g_video_height;  // --video-mode: the display mode the game is told about
 extern bool g_vsync;         // --vsync: keep the game's vblank-paced presents
 extern uint32_t g_vblank_hz;  // --vblank-hz: guest vsync rate (the game presents every 2nd vblank)
 extern std::string g_gamertag;       // --gamertag: profile name (default "Player")
@@ -102,6 +109,7 @@ extern float g_mouse_sensitivity;  // --mouse-sens (1 = default)
 extern bool g_mouse_invert;        // --invert-mouse
 extern float g_aim_mouse_sensitivity;    // PC settings: times the mouse sensitivity while aiming
 extern std::atomic<bool> g_aiming;        // game_patches.cpp: the infantry camera zoomed in (sights)
+extern std::atomic<float> g_fov_now_deg, g_fov_own_deg;  // the view now and unzoomed (aim sensitivity)
 extern float g_plane_mouse_sensitivity;  // PC settings: mouse in planes (1 = default)
 extern int g_prompt_style;               // PC settings: button prompts (0 auto, 1 keys, 2 Xbox 360, 3 Xbox Series, 4 PS3, 5 PS5, 6 Steam Deck)
 extern bool g_present_vsync;              // --present-vsync (or the VSYNC setting)
@@ -135,6 +143,17 @@ extern bool g_plane_mouse_invert;        // PC settings: mouse forward pulls up 
 // The local player's vehicle (bots.cpp; none in games without the probe).
 enum LocalVehicleKind { kOnFoot = 0, kDriving = 1, kFlying = 2, kGunner = 3 };
 int LocalVehicle();
+// Mouse aim (xam.cpp, turned into the aim by game_patches.cpp): the mouse's
+// counts, given to the local soldier's aim update; dropped when the look stops
+// (menus, Alt, a vehicle).
+void AimMouseAdd(long dx, long dy);
+void AimMouseReset();
+bool AimMouseTake(double& dx, double& dy, bool& stale);
+void AimMouseSeen();
+bool AimMouseOwnsLook();
+// The thread the client's timers were made on (game_patches.cpp): the local
+// player's simulation runs there; the server's runs on its own thread.
+uint32_t ClientThreadId();
 bool SimulatedKeyDown(int vk);  // xam.cpp: a key held by BF_TEST_KEY (tests)
 // The PC main and pause menus replace the game's (game_patches.cpp; false in
 // games without them), and the game's dialogs up now (-1 before it said).
@@ -178,6 +197,9 @@ extern bool g_lan_host;            // --host: local game over real UDP (LAN serv
 extern std::string g_host_map;     // --host-map: level hosted from the main menu
 extern uint32_t g_join_address;    // lan.cpp: the joined host (network order, 0 none)
 extern uint16_t g_join_port;       // lan.cpp: the joined host's server port (network order)
+extern std::string g_server_password;  // --password: a hosted game only lets in those who know it
+extern std::string g_join_password;    // --join-password: the password of the game joined
+extern std::string g_server_name;      // --servername: the name browsers show (empty: the player name)
 void RequestHost();                // game_patches.cpp: host g_host_map from the main loop
 extern bool g_log_ui;              // --log-ui: log menu callbacks (name and argument)
 extern std::string g_log_settings; // --log-settings A.B,C.D: log these engine settings

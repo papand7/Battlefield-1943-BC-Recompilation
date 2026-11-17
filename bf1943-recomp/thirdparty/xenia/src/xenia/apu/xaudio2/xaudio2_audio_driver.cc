@@ -223,6 +223,30 @@ void XAudio2AudioDriver::SubmitFrame(float* frame) {
   } else {
     memcpy(output_frame, frame, frame_size_);
   }
+  // Binaural: the game mixes 5.1; for headphones the rears come a little late
+  // and duller, crossed to the other ear, the centre folded in and the LFE low
+  // passed. The result is put in the front pair and the rest silenced, so
+  // XAudio2's own downmix passes it through (and the layout stays 5.1).
+  {
+    static float dl[64] = {}, dr[64] = {};
+    static int dp = 0;
+    static float lfe_lp = 0.0f, rear_lp[2] = {0.0f, 0.0f};
+    const int n = int(channel_samples_);
+    for (int i = 0; i < n; ++i) {
+      float* smp = output_frame + size_t(i) * 6;
+      const float fl = smp[0], fr = smp[1], fc = smp[2], lfe = smp[3],
+                  rl = smp[4], rr = smp[5];
+      dl[dp] = rl, dr[dp] = rr;
+      const int back = (dp + 64 - 12) % 64;  // about 0.25 ms at 48 kHz
+      rear_lp[0] += 0.35f * (dl[back] - rear_lp[0]);
+      rear_lp[1] += 0.35f * (dr[back] - rear_lp[1]);
+      lfe_lp += 0.02f * (lfe - lfe_lp);
+      dp = (dp + 1) % 64;
+      const float l = fl + 0.707f * fc + 0.62f * rear_lp[0] + 0.30f * rear_lp[1] + 0.12f * lfe_lp;
+      const float r = fr + 0.707f * fc + 0.62f * rear_lp[1] + 0.30f * rear_lp[0] + 0.12f * lfe_lp;
+      smp[0] = l, smp[1] = r, smp[2] = smp[3] = smp[4] = smp[5] = 0.0f;
+    }
+  }
 
   api::XAUDIO2_BUFFER buffer;
   buffer.Flags = 0;

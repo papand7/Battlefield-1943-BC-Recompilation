@@ -8,6 +8,7 @@
 #include "kernel.h"
 #include "http.h"
 #include "lan.h"
+#include "xenia_bridge.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -26,6 +27,7 @@
 #include <chrono>
 #include <cstdio>
 #include <cstring>
+#include <map>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -36,6 +38,9 @@ using namespace rt;
 namespace rt {
 uint32_t g_join_address = 0;  // network order: the host's address while joining (0 none)
 uint16_t g_join_port = 0x0000;  // network order: its server port (set by PrepareJoin)
+std::string g_server_password;  // a hosted game's password (empty: anyone)
+std::string g_join_password;    // the password of the game joined
+std::string g_server_name;      // --servername, or the host page's name (empty: the player name)
 extern uint32_t g_lan_ip;     // net.cpp
 }
 
@@ -48,6 +53,44 @@ std::mutex g_mutex;
 std::vector<Server> g_found;
 std::string g_master = "https://masterserver.dankelsoft.dk/api.php";
 std::atomic<bool> g_publish{false}, g_publishing{false};
+
+// The addresses a password-protected host has let in, with the time they last
+// sent it a packet (checked again after ten minutes of silence).
+std::mutex g_guest_mutex;
+std::map<uint32_t, std::chrono::steady_clock::time_point> g_guests;
+
+std::wstring g_join_error;
+
+bool AskPassword(uint32_t address, const std::string& password, std::wstring& error) {
+  SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (s == INVALID_SOCKET) {
+    error = L"Could not open the network.";
+    return false;
+  }
+#ifdef _WIN32
+  DWORD timeout = 600;
+#else
+  timeval timeout{0, 600000};
+#endif
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+  sockaddr_in to{};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(kBeaconPort);
+  to.sin_addr.s_addr = address;
+  const std::string query = std::string(g_tag) + "K!" + password;
+  sendto(s, query.data(), int(query.size()), 0, (sockaddr*)&to, sizeof(to));
+  char buf[128];
+  int n = int(recv(s, buf, sizeof(buf) - 1, 0));
+  closesocket(s);
+  if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'O' && buf[5] == '!') return true;
+  if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'N' && buf[5] == '!') {
+    error = L"That game's password is different.";
+    return false;
+  }
+  error = L"No answer from that game's password check. Is it still hosting, and is UDP " +
+          std::to_wstring(kBeaconPort) + L" open?";
+  return false;
+}
 
 // The master's name for this game.
 std::string MasterGame() { return std::string(g_tag) == "BFBC" ? "bfbc1" : "bf1943"; }
@@ -82,11 +125,43 @@ std::vector<Server> MasterList() {
     for (char& c : sv.map) if (c == ' ') c = '_';  // (the master shows it with spaces)
     sv.online = true;
     sv.players = atoi(f[4].c_str());
+    if (f.size() > 8) sv.locked = atoi(f[8].c_str()) != 0;
     out.push_back(sv);
   }
   return out;
 }
 std::atomic<bool> g_browsing{false}, g_beacon{false};
+
+// The host's weather and time of day (a joiner's beacon query).
+void AskWeather(uint32_t address) {
+  SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+  if (s == INVALID_SOCKET) return;
+#ifdef _WIN32
+  DWORD timeout = 500;
+#else
+  timeval timeout{0, 500000};
+#endif
+  setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char*)&timeout, sizeof(timeout));
+  sockaddr_in to{};
+  to.sin_family = AF_INET;
+  to.sin_port = htons(kBeaconPort);
+  to.sin_addr.s_addr = address;
+  const std::string query = std::string(g_tag) + "W?";
+  sendto(s, query.data(), int(query.size()), 0, (sockaddr*)&to, sizeof(to));
+  char buf[80]{};
+  sockaddr_in from{};
+  int len = sizeof(from);
+  int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
+  closesocket(s);
+  if (n < 8 || memcmp(buf, g_tag, 4) || buf[4] != 'W' || buf[5] != '!') return;
+  float rain = 0.0f, hours = 12.0f;
+  if (sscanf(buf + 6, "%f|%f", &rain, &hours) != 2) return;
+  g_weather = rain > 0.5f ? 1 : 0;
+  g_time_of_day = std::clamp(hours, 0.0f, 24.0f);
+  xgpu::SetWeather(rain, g_time_of_day);
+  RT_INFO("lan: the host's weather: %s, %.1f h", g_weather ? "rain" : "clear", g_time_of_day);
+}
+
 
 void Beacon() {
   SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
@@ -103,12 +178,51 @@ void Beacon() {
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
+    if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'K' && buf[5] == '!') {
+      // A joiner's password for a protected game: let that address in, or not.
+      const std::string given(buf + 6, size_t(n) - 6);
+      const bool ok = g_server_password.empty() || given == g_server_password;
+      if (ok) AllowGuest(from.sin_addr.s_addr);
+      const std::string answer = std::string(g_tag) + (ok ? "O!" : "N!");
+      sendto(s, answer.data(), int(answer.size()), 0, (sockaddr*)&from, len);
+      continue;
+    }
+    if (n >= 6 && !memcmp(buf, g_tag, 4) && buf[4] == 'W' && buf[5] == '?') {
+      // A joiner asking the host's weather and time of day.
+      char reply[80];
+      int m = snprintf(reply, sizeof(reply), "%sW!%d|%.2f", g_tag, g_weather, g_time_of_day);
+      sendto(s, reply, m, 0, (sockaddr*)&from, len);
+      continue;
+    }
     if (n < 5 || memcmp(buf, g_tag, 4) || buf[4] != '?') continue;
-    std::string reply = std::string(g_tag) + "!" + g_gamertag + "|" + g_host_map + "|" + std::to_string(1003 + g_port_offset);
+    // The name the browser shows: the server's own, else the host's player name.
+    std::string shown = g_server_name.empty() ? g_gamertag : g_server_name;
+    for (char& c : shown)
+      if (c == '|' || c == '\n' || c == '\r') c = ' ';  // (the reply is split on '|')
+    if (shown.size() > 48) shown.resize(48);
+    std::string reply = std::string(g_tag) + "!" + shown + "|" + g_host_map + "|" + std::to_string(1003 + g_port_offset) +
+                        (g_server_password.empty() ? "" : "|lock");
     sendto(s, reply.data(), int(reply.size()), 0, (sockaddr*)&from, len);
   }
 }
 }  // namespace
+
+bool GuestAllowed(uint32_t ip) {
+  std::lock_guard lock(g_guest_mutex);
+  auto it = g_guests.find(ip);
+  if (it == g_guests.end()) return false;
+  if (std::chrono::steady_clock::now() - it->second > std::chrono::minutes(10)) {
+    g_guests.erase(it);
+    return false;
+  }
+  it->second = std::chrono::steady_clock::now();  // still playing: keep it open
+  return true;
+}
+void AllowGuest(uint32_t ip) {
+  std::lock_guard lock(g_guest_mutex);
+  g_guests[ip] = std::chrono::steady_clock::now();
+}
+const std::wstring& JoinError() { return g_join_error; }
 
 void SetGame(const char* tag, uint16_t beacon_port) {
   snprintf(g_tag, sizeof(g_tag), "%.4s", tag);
@@ -190,6 +304,8 @@ void Refresh() {
       Server sv{text.substr(0, a), text.substr(a + 1, b - a - 1), ip, uint16_t(atoi(text.c_str() + b + 1)),
                 int(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start)
                         .count())};
+      const size_t c = text.find('|', b + 1);
+      sv.locked = c != std::string::npos && (text.compare(c + 1, 4, "lock") == 0 || text[c + 1] == '1');
       bool dup = false;
       for (const Server& o : found) dup |= o.address == sv.address && o.port == sv.port;
       // This PC answers on loopback and its LAN address: one entry.
@@ -223,6 +339,7 @@ std::vector<Server> Found() {
 void Host(const std::string& map, int bots) {
   g_host_map = map;
   g_lan_host = true;
+  g_admin_host = true;
   g_bot_count = bots;
   if (!g_beacon.exchange(true)) std::thread(Beacon).detach();
   RT_INFO("lan: hosting %s with %d bots", map.c_str(), bots);
@@ -306,13 +423,20 @@ void StartBeacon() {
 }
 
 // JOIN GAME: the host's map loaded here, the client sent to the host.
-bool PrepareJoin(const std::string& address_port, const std::string& map) {
+bool PrepareJoin(const std::string& address_port, const std::string& map, const std::string& password) {
   // "<ip>[:<port>]": the port is the host's server port (1003 + its port offset).
   size_t colon = address_port.find(':');
   std::string address = address_port.substr(0, colon);
   int port = colon == std::string::npos ? 1003 + g_base_port_offset : atoi(address_port.c_str() + colon + 1);
   in_addr ip{};
-  if (inet_pton(AF_INET, address.c_str(), &ip) != 1 || port <= 0 || port > 65535) return false;
+  if (inet_pton(AF_INET, address.c_str(), &ip) != 1 || port <= 0 || port > 65535) {
+    g_join_error = L"That is not an address: type one like 192.168.1.20 (or 192.168.1.20:1003).";
+    return false;
+  }
+  // A password-protected game: the beacon lets our address in before the game
+  // starts sending (net.cpp drops packets from addresses it has not let in).
+  if (!password.empty() && !AskPassword(ip.s_addr, password, g_join_error)) return false;
+  g_join_error.clear();
   g_join_port = htons(uint16_t(port));
   g_host_map = map;
   g_lan_host = true;
@@ -321,11 +445,13 @@ bool PrepareJoin(const std::string& address_port, const std::string& map) {
   bool local = ip.s_addr == htonl(INADDR_LOOPBACK) || ip.s_addr == g_lan_ip;
   if (local && g_port_offset == g_base_port_offset) g_port_offset += 10;
   g_join_address = local ? htonl(INADDR_LOOPBACK) : ip.s_addr;
+  g_admin_host = false;
+  AskWeather(g_join_address);
   RT_INFO("lan: joining %s (%s)%s", address.c_str(), map.c_str(), local ? " on this PC" : "");
   return true;
 }
-bool Join(const std::string& address, const std::string& map) {
-  if (!PrepareJoin(address, map)) return false;
+bool Join(const std::string& address, const std::string& map, const std::string& password) {
+  if (!PrepareJoin(address, map, password)) return false;
   RequestHost();
   return true;
 }

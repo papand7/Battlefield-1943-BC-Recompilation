@@ -231,6 +231,8 @@ Settings ParseSettings(const char* text_in) {
     else if (key == "water_shallow") s.water_shallow = std::max(v, 0.0f);
     else if (key == "foam_width") s.foam_width = std::max(v, 0.1f);
     else if (key == "detail") s.detail = std::max(v, 0.0f);
+    else if (key == "rain") s.rain = std::clamp(v, 0.0f, 1.0f);
+    else if (key == "time") s.time_of_day = std::clamp(v, 0.0f, 24.0f);
     else if (key == "sun") s.sun = std::max(v, 0.0f);
     else if (key == "sky_depth") s.sky_depth = std::clamp(v, 0.0f, 2.0f);
     else if (key == "motes") s.motes = std::clamp(v, 0.0f, 3.0f);
@@ -303,6 +305,7 @@ struct Params {
   float flash2[4];          // its colour (the game's c7), radius (m)
   float detail[4];          // surface detail: strength, furthest (m), pebble, crack cell (m)
   float sky2[4];            // sky: sun glow and disc, deeper blue overhead
+  float tod[4];             // time of day: grade colour rgb, strength
 };
 static_assert(sizeof(Params) <= 4096);
 
@@ -602,6 +605,12 @@ void Configure(const char* text) {
 }
 
 bool Enabled() { return enabled; }
+
+// Host or server weather and time of day: live, the other settings stay.
+void SetWeather(float rain, float time_hours) {
+  settings.rain = std::clamp(rain, 0.0f, 1.0f);
+  settings.time_of_day = std::clamp(time_hours, 0.0f, 24.0f);
+}
 
 namespace {
 std::atomic<float> eye_x{0}, eye_y{0}, eye_z{0};
@@ -1074,6 +1083,42 @@ void VulkanRenderTargetCache::ApplySceneFx(
   p.sky2[1] = s.sky_depth;
   p.sky2[2] = s.motes;
   p.sky2[3] = s.leaves;
+  // Time of day: the sun's height, its and the sky's light, and a grade for the
+  // whole image (warm low sun, dark blue night). Blended between the keys.
+  {
+    struct Key { float h, sun, amb, grade, r, g, b; };
+    static const Key k[] = {
+        {0.0f, 0.04f, 0.16f, 0.92f, 0.30f, 0.40f, 0.66f},
+        {4.5f, 0.04f, 0.16f, 0.92f, 0.30f, 0.40f, 0.66f},
+        {6.0f, 0.35f, 0.50f, 0.55f, 1.08f, 0.80f, 0.62f},
+        {8.0f, 0.85f, 0.85f, 0.15f, 1.00f, 1.00f, 1.00f},
+        {12.0f, 1.0f, 1.0f, 0.0f, 1.00f, 1.00f, 1.00f},
+        {16.0f, 0.9f, 0.9f, 0.08f, 1.00f, 1.00f, 1.00f},
+        {18.0f, 0.4f, 0.5f, 0.5f, 1.12f, 0.80f, 0.58f},
+        {19.5f, 0.04f, 0.16f, 0.9f, 0.34f, 0.42f, 0.64f},
+        {24.0f, 0.04f, 0.16f, 0.92f, 0.30f, 0.40f, 0.66f},
+    };
+    const float h = s.time_of_day;
+    size_t i = 0;
+    while (i + 2 < sizeof(k) / sizeof(k[0]) && h > k[i + 1].h) ++i;
+    const Key& a = k[i];
+    const Key& b = k[i + 1];
+    const float f = std::clamp((h - a.h) / std::max(b.h - a.h, 1e-3f), 0.0f, 1.0f);
+    auto lerp = [f](float x, float y) { return x + (y - x) * f; };
+    const float sun = lerp(a.sun, b.sun), amb = lerp(a.amb, b.amb);
+    for (int c = 0; c < 3; ++c) p.sun_color[c] *= sun;
+    for (int c = 0; c < 3; ++c) p.ambient[c] *= amb;
+    // A low sun at dawn and dusk: its direction lower, shadows longer.
+    if (sun > 0.15f) {
+      const float elev = 3.14159265f * (h - 6.0f) / 12.0f;
+      const float horiz = std::sqrt(p.sun_dir[0] * p.sun_dir[0] + p.sun_dir[2] * p.sun_dir[2]);
+      if (horiz > 0.05f) p.sun_dir[1] = horiz * std::tan(std::clamp(elev, -1.2f, 1.2f));
+    }
+    p.tod[0] = lerp(a.r, b.r);
+    p.tod[1] = lerp(a.g, b.g);
+    p.tod[2] = lerp(a.b, b.b);
+    p.tod[3] = lerp(a.grade, b.grade);
+  }
   if (!save_pass && flash.seen && s.flash > 0.0f) {
     std::memcpy(p.flash, flash.pos, sizeof(flash.pos));
     p.flash[3] = s.flash;
@@ -1083,6 +1128,7 @@ void VulkanRenderTargetCache::ApplySceneFx(
   p.water[0] = s.eye_height;
   p.water[1] = zs < 0.0 ? 1.0f : 0.0f;
   p.water[2] = s.sky;
+  p.water[3] = s.rain;
   if (!save_pass) StepLights();
   if (!save_pass && (bflook::gore || bflook::effects)) {
     p.gore_info[0] = float(bflook::BuildGore(p.gore, kGoreMax));
