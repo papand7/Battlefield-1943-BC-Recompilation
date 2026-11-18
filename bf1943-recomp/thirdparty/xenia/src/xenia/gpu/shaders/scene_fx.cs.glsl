@@ -427,6 +427,18 @@ void MeasureHorizon() {
   // depth copy, so they look like sky) brightened the haze, fog and clouds.
   const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
   float mean = average.w != 0.0 ? dot(average.rgb, lum) : 0.0;
+  // Unless most of the screen's columns disagree with it: then the kept mean
+  // is the stale one (measured over the spawn screen's view of the sea, or a
+  // fade from black), and leaving out every brighter column kept it, and the
+  // haze and the clouds lit from it, dark grey for the whole round.
+  float measured = 0.0, disagree = 0.0;
+  for (int i = 0; i < 64; ++i) {
+    if (found[i].w <= 0.0) continue;
+    float l = dot(found[i].rgb, lum);
+    measured += 1.0;
+    if (l > 1.6 * mean || l < 0.5 * mean) disagree += 1.0;
+  }
+  if (disagree > 0.5 * measured) mean = 0.0;
   for (int i = 0; i < 64; ++i) {
     float d = abs(found_bin[i] - float(bin) - 0.5);
     d = min(d, 64.0 - d);
@@ -2157,6 +2169,9 @@ void main() {
   // crosses the sea level. Debug 22: foam red, shallow green, at any
   // distance.
   bool water_debug = debug == 22u;
+  // The sea level is trusted for what lies under it only with the eye well over it (the
+  // measured level of a ship's deck, or a guess from the eye height, put the deck under the sea).
+  bool level_ok = camera.y - sea_level > (sea.w != 0.0 && sea.x < camera.y - 0.5 ? 1.2 : 4.0);
   if ((wfx.x > 0.0 || wfx.z > 0.0) && !sky && (debug == 0u || water_debug) &&
       camera.y > sea_level && dir.y < -1e-4) {
     float t_surf = (sea_level - camera.y) / dir.y;
@@ -2175,7 +2190,7 @@ void main() {
     // Only where the depth really is under the water: a colour test alone
     // took bullet impacts, splashes and muzzle flashes over the sea for the
     // sea bed (green or turquoise while shooting).
-    bool below = has_depth && !on_sea && world.y < sea_level - 0.3 && dist > t_surf && through_water;
+    bool below = has_depth && level_ok && !on_sea && world.y < sea_level - 0.3 && dist > t_surf && through_water;
     bool surface = !has_depth || on_sea;
     if ((below || surface) && (t_surf < 400.0 || water_debug)) {
       vec3 p = camera.xyz + dir * t_surf;
@@ -2225,6 +2240,113 @@ void main() {
           color.rgb = mix(color.rgb, vec3(white * 1.15 * lit), clamp(foam, 0.0, 0.9));
         }
       }
+    }
+  }
+  // The open sea graded: clear turquoise looking down, deep blue further
+  // out, the sky's sheen at grazing angles and the sun's glints on the waves,
+  // under the game's own haze (kept as it is towards the horizon). The game's
+  // sea is a flat grey-navy; its own wave shading keeps its detail here (its
+  // luminance scales the colour).
+  bool sea_px = on_sea || !has_depth;
+  // The sea drawn without depth over a sea bed (the game's sea does not write
+  // depth): what is seen beyond the sea plane is seen through the water.
+  float bed_depth = 0.0;
+  if (!sea_px && has_depth && level_ok && camera.y > sea_level + 0.5 &&
+      dir.y < -1e-4 && !ground_at_sea) {
+    float t_p = (sea_level - camera.y) / dir.y;
+    vec3 cb = color.rgb / max(dot(color.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
+    bool blue = cb.b > cb.r * 1.15 || (cb.g > cb.r * 1.15 && cb.b > cb.r);
+    // Not blue (the game's far sea is fogged grey-beige): the traced terrain along
+    // the eye ray is under the sea plane (a sea bed, not land: the depth is too
+    // coarse out here to tell by its height).
+    bool bed_under = false;
+#ifdef SCENE_FX_RT
+    if (!blue && rt.x > 0.0) {
+      rayQueryEXT lq;
+      rayQueryInitializeEXT(lq, world_meshes, gl_RayFlagsOpaqueEXT, 0x02, camera.xyz, 0.0, dir,
+                            max(dist * 1.5, t_p * 1.2) + 100.0);
+      while (rayQueryProceedEXT(lq)) {
+      }
+      if (rayQueryGetIntersectionTypeEXT(lq, true) != gl_RayQueryCommittedIntersectionNoneEXT) {
+        float t_h = rayQueryGetIntersectionTEXT(lq, true);
+        bed_under = abs(t_h - dist) < 0.06 * dist + 1.0 && t_h > t_p + 1.0 && camera.y + dir.y * t_h < sea_level - 3.0;
+      }
+    }
+#endif
+    // Never a mesh in the way (a deck, a hull, a ship: lit as the sea where the
+    // level was only guessed).
+    bool solid = false;
+#ifdef SCENE_FX_RT
+    if (rt.x > 0.0) {
+      rayQueryEXT mq;
+      float slack = 0.3 + 0.02 * dist;
+      rayQueryInitializeEXT(mq, world_meshes, gl_RayFlagsOpaqueEXT | gl_RayFlagsTerminateOnFirstHitEXT,
+                            0xFD, camera.xyz, 0.0, dir, dist + slack);
+      while (rayQueryProceedEXT(mq)) {
+      }
+      solid = rayQueryGetIntersectionTypeEXT(mq, true) != gl_RayQueryCommittedIntersectionNoneEXT;
+    }
+#endif
+    if (!solid && (blue || bed_under) && dist > t_p + 0.5 + 0.01 * t_p && world.y < sea_level - 0.3) {
+      sea_px = true;
+      bed_depth = sea_level - world.y;
+    }
+  }
+  if (wfx.z > 0.0 && debug == 0u && sea_px && level_ok && camera.y > sea_level + 0.5 &&
+      dir.y < -1e-4) {
+    float t_s = (sea_level - camera.y) / dir.y;
+    float far_fade = 1.0 - smoothstep(600.0, 9000.0, t_s);
+    if (far_fade > 0.0) {
+      const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+      vec3 p = camera.xyz + dir * t_s;
+      vec3 n = SeaNormal(p, t_s);
+      float down = clamp(-dot(dir, n), 0.0, 1.0);
+      float l = dot(color.rgb, lum);
+      // Looking down, turquoise; at a slant, deep blue.
+      float steep = smoothstep(0.03, 0.30, down);
+      vec3 deep = vec3(0.015, 0.14, 0.30);
+      vec3 turq = vec3(0.03, 0.50, 0.55);
+      vec3 water = mix(deep, turq, steep);
+      // Sunlit more, and the game's wave shading (relative to its mean).
+      float lit = clamp(normalize(sun_dir.xyz).y * 1.6, 0.35, 1.0);
+      float shade = clamp(l / 0.22, 0.55, 1.6);
+      // Ripples and wave facets (by world position, fading with distance).
+      vec2 drift = vec2(0.9, 0.5) * refl.z;
+      float rip = 0.55 * CloudNoise2(p.xz * 0.55 + drift) + 0.30 * CloudNoise2(p.xz * 1.9 - drift * 1.3) +
+                  0.15 * CloudNoise2(p.xz * 5.3 + drift * 2.1);
+      float detail_fade = 1.0 - smoothstep(80.0, 1400.0, t_s);
+      vec3 sd0 = normalize(sun_dir.xyz);
+      float facet = dot(n, sd0) - sd0.y;
+      float wave_shade = 1.0 + (rip - 0.5) * 2.6 * detail_fade + facet * 20.0;
+      vec3 graded = water * (0.75 + 0.9 * lit) * shade * clamp(wave_shade, 0.5, 1.8);
+      // Crests a lighter turquoise.
+      graded += turq * 0.35 * smoothstep(0.62, 0.8, rip) * detail_fade * steep;
+      // Sky mirrored at slant angles (Fresnel).
+      float fresnel = 0.02 + 0.98 * pow(1.0 - down, 5.0);
+      vec3 rd = reflect(dir, n);
+      vec3 sky_r = mix(HazeColor(normalize(vec3(rd.x, max(rd.y, 0.02), rd.z))),
+                       vec3(0.16, 0.36, 0.75) * lit, 0.7);
+      graded = mix(graded, sky_r, clamp(fresnel * 0.9, 0.0, 0.5));
+      // Sun glints: a tight lobe and a broad sheen.
+      vec3 sd = normalize(sun_dir.xyz);
+      float sd_r = max(dot(rd, sd), 0.0);
+      vec3 sun_c = sun_color.rgb / max(dot(sun_color.rgb, lum), 1e-3);
+      graded += sun_c * (pow(sd_r, 900.0) * 6.0 + pow(sd_r, 40.0) * 0.25) *
+                clamp(sd.y * 3.0, 0.0, 1.0);
+      // Towards the horizon the sea turns into the haze.
+      graded = mix(graded, HazeColor(normalize(vec3(dir.x, 0.05, dir.z))), 0.95 * pow(smoothstep(150.0, 3500.0, t_s), 0.8));
+      // The haze after this is by the distance to the water's surface, as for the sea
+      // beyond what the game drew (its depth here is the bed's or a coarse slice's).
+      if (has_depth && t_s > dist) {
+        dist = t_s;
+        len = min(dist, march.x);
+      }
+      float k = clamp(wfx.z, 0.0, 1.0) * far_fade;
+      // Shallow water over a bed: the bed shows through, less graded.
+      if (bed_depth > 0.0) {
+        k *= mix(1.0, 0.15 + 0.85 * smoothstep(1.5, 9.0, bed_depth), 1.0 - smoothstep(150.0, 450.0, t_s));
+      }
+      color.rgb = mix(color.rgb, graded, k);
     }
   }
   if (water_debug) {

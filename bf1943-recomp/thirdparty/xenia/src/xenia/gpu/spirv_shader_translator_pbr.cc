@@ -723,29 +723,6 @@ void SpirvShaderTranslator::EmitPbrLighting() {
   spv::Id ao = sat(tap(6, pbr_->ao, 1, 1.0f));
   spv::Id albedo = scale(tap(2, pbr_->albedo, 3, 0.5f), ao);
 
-  // Relief: the normal map detail exaggerated. The flat face normal comes
-  // from screen derivatives of the position (the camera minus the view
-  // vector), which are constant over a triangle, so this does not shimmer;
-  // the game's mip-filtered normal minus the face normal is the detail, scaled
-  // by bump. Only where the two are close (normal map detail, not the smooth
-  // shading of curved meshes) and fading out by 60 m.
-  if (pbr_->bump > 0.0f && has_view) {
-    spv::Id sx = b.createUnaryOp(spv::OpDPdx, f3, v_raw);
-    spv::Id sy = b.createUnaryOp(spv::OpDPdy, f3, v_raw);
-    spv::Id face = ext2(GLSLstd450Cross, f3, sx, sy);
-    spv::Id face_len = ext1(GLSLstd450Length, f1, face);
-    face = scale(face, div(k(1.0f), ext2(GLSLstd450FMax, f1, face_len, k(1e-20f))));
-    face = scale(face, ext1(GLSLstd450FSign, f1, dot(face, n)));
-    spv::Id n_f = dot(n, face);
-    spv::Id dist = ext1(GLSLstd450Length, f1, v_raw);
-    spv::Id weight = mul(f1, ext3(GLSLstd450SmoothStep, f1, k(0.80f), k(0.92f), n_f),
-                         sat(sub(f1, k(1.5f), mul(f1, dist, k(1.0f / 40.0f)))));
-    weight = b.createTriOp(spv::OpSelect, f1,
-                           b.createBinOp(spv::OpFOrdGreaterThan, b.makeBoolType(), face_len, k(0.0f)),
-                           weight, k(0.0f));
-    spv::Id detail = sub(f3, n, scale(face, n_f));
-    n = normalize(add(f3, n, scale(detail, mul(f1, weight, k(pbr_->bump)))));
-  }
   spv::Id lit = sat(tap(3, pbr_->lit, 1, 1.0f));
   spv::Id so = mul(f1, sat(tap(5, pbr_->so, 1, 1.0f)), ao);
 
@@ -764,6 +741,37 @@ void SpirvShaderTranslator::EmitPbrLighting() {
                     k(0.0f), k(0.9f)),
       k(pbr_->metal));
 
+  // Relief: the normal map detail exaggerated. The flat face normal comes
+  // from screen derivatives of the position (the camera minus the view
+  // vector), which are constant over a triangle, so this does not shimmer;
+  // the game's mip-filtered normal minus the face normal is the detail, scaled
+  // by bump. Only where the two are close (normal map detail, not the smooth
+  // shading of curved meshes), fading out by 60 m, and only on rough
+  // dielectrics (below).
+  if (pbr_->bump > 0.0f && has_view) {
+    spv::Id sx = b.createUnaryOp(spv::OpDPdx, f3, v_raw);
+    spv::Id sy = b.createUnaryOp(spv::OpDPdy, f3, v_raw);
+    spv::Id face = ext2(GLSLstd450Cross, f3, sx, sy);
+    spv::Id face_len = ext1(GLSLstd450Length, f1, face);
+    face = scale(face, div(k(1.0f), ext2(GLSLstd450FMax, f1, face_len, k(1e-20f))));
+    face = scale(face, ext1(GLSLstd450FSign, f1, dot(face, n)));
+    spv::Id n_f = dot(n, face);
+    spv::Id dist = ext1(GLSLstd450Length, f1, v_raw);
+    spv::Id weight = mul(f1, ext3(GLSLstd450SmoothStep, f1, k(0.80f), k(0.92f), n_f),
+                         sat(sub(f1, k(1.5f), mul(f1, dist, k(1.0f / 40.0f)))));
+    weight = b.createTriOp(spv::OpSelect, f1,
+                           b.createBinOp(spv::OpFOrdGreaterThan, b.makeBoolType(), face_len, k(0.0f)),
+                           weight, k(0.0f));
+    spv::Id detail = sub(f3, n, scale(face, n_f));
+    // Not on metal or smooth surfaces: there the exaggerated detail of the
+    // pack's normal maps caught the sun's highlight and the environment in
+    // single pixels, a bright speckle over the crane's paint and the
+    // first-person tools and weapons (wrench, knife). Rough dielectrics (wood,
+    // ground, stone) keep their relief.
+    weight = mul(f1, weight, mul(f1, sub(f1, k(1.0f), metal),
+                                 ext3(GLSLstd450SmoothStep, f1, k(0.45f), k(0.75f), rough)));
+    n = normalize(add(f3, n, scale(detail, mul(f1, weight, k(pbr_->bump)))));
+  }
   spv::Id l = normalize(constant(pbr_->c_light));
   spv::Id up = constant(pbr_->c_up);
   spv::Id sky = constant(pbr_->c_sky), ground = constant(pbr_->c_ground);

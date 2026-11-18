@@ -180,6 +180,7 @@ uint64_t TranslationKey() {
   uint32_t u;
   std::memcpy(&u, &g_tonemap, 4), mix(u);
   std::memcpy(&u, &g_pom_scale, 4), mix(u);
+  mix(2);  // the translator's revision (2: no relief on metal or smooth surfaces)
   mix(uint64_t(g_soft_particles) | uint64_t(g_fsr_capture) << 1 | uint64_t(g_game_shadows_off) << 2 |
       uint64_t(g_material_output) << 3);
   return h;

@@ -90,7 +90,9 @@ B649FD77AA9F4220 rm=10 n=r3.yzw@47 v=r3.xyz@12 a=r6.yzw@63 lit=r2.x@74 env=r5.xy
 B7EB3BA059ED0886 rm=14 n=r4.xyz@52 v=r14.xyz@20 a=r5.xzy@110 lit=r0.z@109 env=r0.xyz@86 ao=r18.z@12 out=r0.xyz@120 rough_scale=0.66 bump=5
 B9AFD7B698934E5B rm=13 n=r11.xyz@44 v=r15.xyz@15 a=r0.xzy@120 lit=r1.z@106 env=r6.yzw@53 ao=r16.x@11 out=r0.xyz@133 pow=c248.w rough_scale=0.66 bump=5
 B9C0B380ABB5D0B0 n=r4.xyz@s v=r9.xyz@12 a=r3.yzw@52 lit=r2.w@86 env=r5.xyz@53 out=r0.xyz@101 pow=c248.y rough_scale=0.66 bump=5
-BEAD02FECCE1E2EA rm=19 n=r10.xyz@77 v=r11.xyz@45 a=r4.xyz@130 lit=r1.w@133 env=r6.xyz@108 out=r2.xyz@146 pow=c251.z rough_scale=0.66 bump=5
+# Left out: the open sea, as 60BD629ABC6BFCFC below (the same shader with a view vector
+# of its own: Coral Sea's).
+# BEAD02FECCE1E2EA rm=19 n=r10.xyz@77 v=r11.xyz@45 a=r4.xyz@130 lit=r1.w@133 env=r6.xyz@108 out=r2.xyz@146 pow=c251.z rough_scale=0.66 bump=5
 C2234507AAADB789 rm=11 n=r5.xyz@47 v=r13.xyz@15 a=r6.xyz@80 lit=r7.w@91 env=r2.yzw@68 ao=r10.w@14 out=r0.xyz@103 pow=c245.w rough_scale=0.66 bump=5
 C827D156E42E33B1 rm=11 n=r10.yzw@33 v=r10.xyz@13 a=r4.xzy@81 env=r1.xyz@60 ao=r0.w@12 out=r0.xzy@88 rough_scale=0.66 bump=5
 CBA8771ECE01EDCD rm=9 n=r3.xyz@32 v=r12.xyz@14 a=r4.xyz@47 lit=r2.w@59 env=r0.xyz@41 out=r0.xyz@82 pow=c251.y rough_scale=0.66 bump=5
@@ -108,7 +110,8 @@ F819F26C2C47D01B rm=15 n=r7.yzw@60 v=r9.xyz@94 a=r2.xyz@127 lit=r4.w@124 env=r8.
 05960116A76F91B1 rm=43 n=r4.xyz@80 a=r7.xyz@54 ao=r0.x@47 out=r0.xyz@100 pow=c251.y rough_scale=0.66 bump=5 camv=1 pl=1
 093F0BDA54882749 rm=35 n=r1.xyz@80 a=r4.xyz@89 ao=r14.z@10 out=r0.xzy@104 rough_scale=0.66 bump=5 camv=1 pl=1
 0A7D6FF89553BACC rm=9 n=r2.xzw@32 a=r5.xzy@52 lit=r3.w@73 env=r9.xyz@46 ao=r8.x@44 out=r0.xyz@95 pow=c249.y rough_scale=0.66 bump=5 camv=1 pl=1
-1139C2856EADF277 rm=15 n=r7.xyz@62 a=r1.xyz@131 env=r5.xyz@75 out=r2.xyz@142 pow=c251.z rough_scale=0.66 bump=5 camv=1
+# Left out: the open sea at its other detail level, as 60BD629ABC6BFCFC above.
+# 1139C2856EADF277 rm=15 n=r7.xyz@62 a=r1.xyz@131 env=r5.xyz@75 out=r2.xyz@142 pow=c251.z rough_scale=0.66 bump=5 camv=1
 14786440BC9050E0 rm=10 n=r4.xyz@47 a=r6.yzw@63 lit=r1.y@77 env=r8.xyz@55 out=r0.xyz@103 pow=c250.w rough_scale=0.66 bump=5 camv=1 pl=1
 14CFC49A57045B16 rm=9 n=r10.xyz@32 a=r4.xzy@52 lit=r2.w@73 env=r6.xyz@46 ao=r1.x@44 out=r0.xyz@95 pow=c248.y rough_scale=0.66 bump=5 camv=1 pl=1
 1622BC73E2876721 rm=9 n=r8.xyz@46 a=r1.yzw@61 lit=r3.w@73 env=r4.xyz@54 out=r0.xyz@95 pow=c251.x rough_scale=0.66 bump=5 camv=1 pl=1
@@ -144,7 +147,10 @@ F819F26C2C47D01B rm=15 n=r7.yzw@60 v=r9.xyz@94 a=r2.xyz@127 lit=r4.w@124 env=r8.
 # Left out: no a found (it would be lit grey, without its texture).
 # 58492B051FC9BEC9 rm=10 n=r2.yzw@47 env=r8.xyz@55 ao=r8.w@56 out=r0.xyz@104 pow=c248.x rough_scale=0.66 bump=5 camv=1 pl=1
 5C376D29E1E16ACE n=r4.xyz@s a=r3.xzy@52 ao=r0.x@30 out=r0.xzy@64 pow=c249.y rough_scale=0.66 bump=5 camv=1 pl=1
-60BD629ABC6BFCFC rm=15 n=r7.xyz@54 a=r4.xyz@123 lit=r0.w@114 env=r6.xyz@79 out=r3.xyz@136 pow=c248.x rough_scale=0.66 bump=5 camv=1
+# Left out: the open sea (its waves scroll with the time, c6.x; its sheen is the game's own
+# cube map reflection and sun glint). Lit as a material it came out flat dark navy, without
+# the sheen or the wave detail, wherever the scene effects were on.
+# 60BD629ABC6BFCFC rm=15 n=r7.xyz@54 a=r4.xyz@123 lit=r0.w@114 env=r6.xyz@79 out=r3.xyz@136 pow=c248.x rough_scale=0.66 bump=5 camv=1
 615922A888F81CD1 rm=10 n=r11.xzy@36 a=r1.zxy@63 lit=r5.w@77 env=r0.xzw@54 ao=r2.x@48 out=r0.xyz@96 pow=c248.y rough_scale=0.66 bump=5 camv=1 pl=1
 62E4B34BFC902E1D rm=24 n=r6.xyz@52 a=r3.xyz@42 ao=r9.x@25 out=r0.xyz@73 pow=c249.x rough_scale=0.66 bump=5 camv=1 pl=1
 # Left out: no a found (it would be lit grey, without its texture).
