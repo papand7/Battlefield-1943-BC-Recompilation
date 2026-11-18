@@ -66,6 +66,33 @@ struct Recording {
 };
 bool Load(const std::string& path, Recording& out, std::string* error = nullptr);
 
+// The live map (commander.cpp serves it): the recorder's latest sample, the
+// same ten-times-a-second reads the file is written from. Nothing is copied
+// unless someone asks (LiveCopy); false when no match is being recorded or
+// the last sample is older than max_age_ms.
+struct LiveSoldier {
+  uint16_t id;
+  uint8_t team, health, seated;
+  float x, z, yaw;
+};
+struct LiveVehicle {
+  uint16_t id;
+  float x, z, yaw;
+};
+struct LivePoint {
+  uint16_t id;
+  uint8_t owner;  // team (0 none)
+  float x, z;
+};
+struct LiveSnapshot {
+  std::string map;
+  uint32_t t = 0;  // ms since the match started
+  std::vector<LiveSoldier> soldiers;
+  std::vector<LiveVehicle> vehicles;
+  std::vector<LivePoint> points;
+};
+bool LiveCopy(LiveSnapshot& out, uint32_t max_age_ms = 3000);
+
 // --replay <file>: play it back (replay_view.cpp).
 extern std::string g_replay_file;
 void StartViewer();  // after the command line: host its map with no bots, the free camera on

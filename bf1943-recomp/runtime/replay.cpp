@@ -39,6 +39,12 @@ constexpr uint32_t kVehicle = 0x82013068;      // ServerVehicleEntity
 constexpr uint32_t kCapturePoint = 0x820190D0;  // ServerCapturePointEntity
 constexpr uint32_t kTickMs = 100;
 
+// The live map's latest sample (LiveCopy: the commander's map server reads it).
+std::mutex g_live_mutex;
+LiveSnapshot g_live;
+bool g_live_valid = false;
+std::chrono::steady_clock::time_point g_live_at;
+
 bool Readable(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && IsCommitted(a) && IsCommitted(a + 0x400); }
 float LdF(uint32_t a) {
   uint32_t u = Ld32(a);
@@ -103,6 +109,7 @@ struct Recorder {
   uint32_t frames = 0, kills = 0;
   bool failed = false;
   std::filesystem::path path;
+  std::string map_name;
 
   uint32_t Now() const {
     return uint32_t(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - t0).count());
@@ -119,6 +126,7 @@ struct Recorder {
       if (std::isalnum(static_cast<unsigned char>(c)) || c == '_' || c == '-') safe += c;
     if (safe.empty()) safe = "level";
     path = dir / (safe + "_" + stamp + ".bfrp");
+    map_name = map;
     if (!w.Open(path, map)) {
       RT_WARN("replay: could not write %s", path.string().c_str());
       return false;
@@ -131,6 +139,10 @@ struct Recorder {
     return true;
   }
   void Finish() {
+    {
+      std::lock_guard l(g_live_mutex);  // (no match: no live map)
+      g_live_valid = false;
+    }
     if (!w.IsOpen()) return;
     w.U8(6), w.U32(Now());
     if (!w.Good()) RT_WARN("replay: writing %s failed (disk full?)", path.string().c_str());
@@ -151,7 +163,7 @@ struct Recorder {
       if (uint32_t s = BotPlayerSoldier(i)) bot_soldiers.push_back(s);
     struct S {
       uint16_t id;
-      uint8_t flags, health;
+      uint8_t flags, health, team;
       float p[3], yaw, pitch;
     };
     std::vector<S> soldiers;
@@ -172,6 +184,7 @@ struct Recorder {
       float hp = LdF(so + 0x3C);
       if (!(hp > 0)) continue;  // (dying)
       s.health = uint8_t(std::clamp(hp, 0.0f, 100.0f) * 2.55f);
+      s.team = uint8_t(team);
       s.flags = (Ld32(so + 0x34C) >> 24) == 0 ? 1 : 0;  // seated
       auto it = player_ids.find(sp);
       if (it == player_ids.end()) {
@@ -244,18 +257,32 @@ struct Recorder {
       for (float c : v.p) w.F32(c);
       w.F32(v.yaw), w.F32(v.pitch);
     }
-    // Flags changing hands.
+    // Flags changing hands (and, for the live map, every flag's place and owner).
+    std::vector<LivePoint> live_points;
     for (uint32_t o : points) {
       if (!Readable(o) || Ld32(o) != kCapturePoint) continue;
       uint32_t spatial = Ld32(o + 0x14);
       if (!Readable(spatial)) continue;
       int owner = int(Ld32(o + 0x80));
       auto [it, added] = point_ids.emplace(o, uint16_t(point_ids.size()));
+      live_points.push_back({it->second, uint8_t(owner), LdF(spatial + 0x60), LdF(spatial + 0x68)});
       auto own = point_owner.find(o);
       if (own != point_owner.end() && own->second == owner) continue;
       point_owner[o] = owner;
       w.U8(5), w.U32(t), w.U16(it->second), w.U8(uint8_t(owner));
       w.F32(LdF(spatial + 0x60)), w.F32(LdF(spatial + 0x64)), w.F32(LdF(spatial + 0x68));
+    }
+    {
+      std::lock_guard l(g_live_mutex);
+      g_live.map = map_name, g_live.t = t;
+      g_live.soldiers.clear();
+      for (const S& s : soldiers)
+        g_live.soldiers.push_back({s.id, s.team, s.health, uint8_t(s.flags & 1), s.p[0], s.p[2], s.yaw});
+      g_live.vehicles.clear();
+      for (const V& v : vs) g_live.vehicles.push_back({v.id, v.p[0], v.p[2], v.yaw});
+      g_live.points = live_points;
+      g_live_valid = true;
+      g_live_at = std::chrono::steady_clock::now();
     }
     if (++frames % 50 == 0) w.Flush();
     if (!w.Good()) {
@@ -350,6 +377,15 @@ void Killed(uint32_t victim, uint32_t killer) {
   g_rec.w.U8(4), g_rec.w.U32(g_rec.Now()), g_rec.w.U16(id(victim)), g_rec.w.U16(killer ? id(killer) : 0xFFFF);
   g_rec.w.F32(LdF(victim + 0x180)), g_rec.w.F32(LdF(victim + 0x184)), g_rec.w.F32(LdF(victim + 0x188));
   ++g_rec.kills;
+}
+
+bool LiveCopy(LiveSnapshot& out, uint32_t max_age_ms) {
+  std::lock_guard l(g_live_mutex);
+  if (!g_live_valid) return false;
+  const auto age = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - g_live_at);
+  if (age.count() > max_age_ms) return false;
+  out = g_live;
+  return true;
 }
 
 // ---- loading ----------------------------------------------------------------

@@ -38,6 +38,8 @@ bool ChatBlocked(uint32_t ip, uint16_t chat_port);
 int HumanPlayerCount();
 // The chat's packets (admin.cpp). Host: a joiner's hello ("<game port>|<id>|<name>").
 void OnHello(uint32_t ip, uint16_t chat_port, const std::string& body);
+// Host: a joiner's name from its hellos ("a player" if none yet): the commander seats' (commander.h).
+std::string PlayerName(uint32_t ip, uint16_t chat_port);
 // Joiner: its hello.
 std::string HelloBody();
 // Joiner: the host's notices (kicked; the map changes; the new map is up).

@@ -376,6 +376,12 @@ bool ChatBlocked(uint32_t ip, uint16_t chat_port) {
   return game_port && Blocked(ip, htons(game_port));  // (a local player's block: by its game port)
 }
 
+std::string PlayerName(uint32_t ip, uint16_t chat_port) {
+  std::lock_guard lock(g_mutex);
+  auto it = g_players.find(std::make_pair(ip, chat_port));
+  return it == g_players.end() || it->second.name.empty() ? "a player" : it->second.name;
+}
+
 void OnHello(uint32_t ip, uint16_t chat_port, const std::string& body) {
   // "<game port>|<id>|<name>"
   size_t a = body.find('|'), b = a == std::string::npos ? a : body.find('|', a + 1);
