@@ -600,8 +600,13 @@ View Build() {
       if (*kMaps[g_map].desc) v.lines = {kMaps[g_map].desc, L""};
       v.lines.push_back(L"Players on your network will see this game in their SERVER BROWSER.");
       v.lines.push_back(L"SERVER NAME is what it is listed as. With a PASSWORD, only players who type it can join.");
-      v.lines.push_back(L"BOTS are computer players, half on each team. HARDCORE: no HUD or crosshair for anyone in "
-                        L"your game, and soldiers die in fewer hits.");
+      // (on the WEATHER / TIME OF DAY rows only: the panel has room for so many lines)
+      if (g_sel == 3 || g_sel == 4)
+        v.lines.push_back(L"WEATHER (rain: puddles, drops on the view, an overcast sky) and TIME OF DAY: everyone "
+                          L"joining gets them, with the scene effects on.");
+      else
+        v.lines.push_back(L"BOTS are computer players, half on each team. HARDCORE: no HUD or crosshair for anyone in "
+                          L"your game, and soldiers die in fewer hits.");
       v.lines.push_back(L"");
       v.lines.push_back(player);
       break;

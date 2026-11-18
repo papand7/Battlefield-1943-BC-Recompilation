@@ -301,6 +301,9 @@ float InterleavedGradientNoise(vec2 pixel, float frame) {
 // plane behind the camera: negative distances and a black band of haze along
 // the horizon); else the eye height's guess.
 float SeaLevel() { return sea.w != 0.0 && sea.x < camera.y - 0.5 ? sea.x : camera.y - water.x; }
+// Whether SeaLevel() is a measured waterline, not the eye height's guess (Bad
+// Company's maps mostly have no sea: no waterline, the guess 20 m under the eye).
+bool SeaMeasured() { return sea.w != 0.0 && sea.x < camera.y - 0.5; }
 
 // Blue or turquoise and coloured: the game's water. Grey-blue concrete and
 // dry stone in the sky's light are not (they took the sea's waves, and their
@@ -2913,9 +2916,13 @@ void main() {
       rain_avg += imageLoad(world_color, clamp(local + o, ivec2(0), size - 1)).rgb;
     }
   }
-  bool rain_water = WaterColor(rain_avg) && world.y < sea_level + 2.0 && !ground_at_sea;
+  // Without a measured sea (Bad Company) no height test: under the guessed
+  // level (ground 20 m below a hill or a helicopter) nothing got wet; water
+  // there is left dry by its colour alone.
+  bool sea_measured = SeaMeasured();
+  bool rain_water = WaterColor(rain_avg) && (world.y < sea_level + 2.0 || !sea_measured) && !ground_at_sea;
   if (water.w > 0.0 && debug == 0u && has_depth && !on_sea && !rain_water && dist < 140.0 &&
-      (world.y > sea_level + 0.25 || ground_at_sea)) {
+      (world.y > sea_level + 0.25 || ground_at_sea || !sea_measured)) {
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
     float rain_amount = water.w;
     vec3 cn = rain_avg / max(dot(rain_avg, lum), 1e-4);
