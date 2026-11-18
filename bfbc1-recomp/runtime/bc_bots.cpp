@@ -1621,6 +1621,13 @@ struct Bot {
   uint32_t use_entity = 0;  // an interaction to use (arm, defuse), from the input copy hook
   uint32_t hit = 0;         // a soldier its shot hit, for the input copy hook to damage
   float hurt_self = 0;      // testing: damage to its own soldier, for the input copy hook
+  // Flying a helicopter (HeliPilot): when the last boarding try was, when it
+  // took off, the place and time of the last sample (its velocity), the
+  // patrol point it flies to.
+  int64_t heli_tried = 0, heli_t0 = 0, heli_sample_at = 0, heli_log = 0;
+  float heli_last[3] = {0, 0, 0}, heli_vel[3] = {0, 0, 0}, heli_goal[3] = {0, 0, 0};
+  int64_t heli_goal_until = 0;
+  uint32_t heli_body = 0, heli_body_for = 0;  // its Havok rigid body (HeliBody), for which vehicle
   uint32_t enter_vehicle = 0;  // a server vehicle to get into (seat 0), from the input copy hook
   uint32_t in_vehicle = 0;     // the server vehicle it is in (this tick)
   uint32_t vehicle = 0;        // the one it got into (until it is out)
@@ -2825,6 +2832,7 @@ static bool VehiclePlace(uint32_t v, float out[3]) {
   }
   return false;
 }
+static int SeatCount(uint32_t v);
 // The server's vehicles (ServerVehicleEntity, 82011AA8), scanned every 3 s.
 static const std::vector<uint32_t>& ServerVehicles() {
   static std::vector<uint32_t> list;
@@ -2834,6 +2842,20 @@ static const std::vector<uint32_t>& ServerVehicles() {
     at = now, list.clear();
     for (uint32_t v : QuickScan(0x82011AA8))
       if (Ld32(v) == 0x82011AA8) list.push_back(v);  // (the scan can be 0.4 s old)
+    // The map's vehicles, once a map (kinds and places, seats).
+    static std::string listed_for;
+    if (!list.empty() && listed_for != g_host_map) {
+      listed_for = g_host_map;
+      std::string s;
+      for (uint32_t v : list) {
+        float p[3] = {0, 0, 0};
+        VehiclePlace(v, p);
+        char buf[80];
+        snprintf(buf, sizeof(buf), " %s(%d seats)@%.0f,%.0f,%.0f", VehicleKind(v).c_str(), SeatCount(v), p[0], p[1], p[2]);
+        s += buf;
+      }
+      RT_INFO("bot vehicles on %s: %zu:%s", g_host_map.c_str(), list.size(), s.c_str());
+    }
   }
   return list;
 }
@@ -2862,6 +2884,39 @@ static bool IsBotPlayer(uint32_t player) {
 static bool Drivable(const std::string& kind) {
   return kind.rfind("Humvee", 0) == 0 || kind.rfind("M1A2", 0) == 0 || kind.rfind("M3A3", 0) == 0 ||
          kind.rfind("Truck", 0) == 0 || kind.rfind("T90", 0) == 0 || kind.rfind("BMD", 0) == 0;
+}
+// Helicopters: Bad Company's AH64 (Oasis, End of the Line; 2 seats, the pilot's 0).
+static bool IsHeli(const std::string& kind) { return kind.rfind("AH64", 0) == 0 || kind.rfind("AH60", 0) == 0; }
+// The pilot's seat (BF_HELI_SEAT=n, testing: another).
+static int HeliPilotSeat() {
+  static const int seat = getenv("BF_HELI_SEAT") ? atoi(getenv("BF_HELI_SEAT")) : 0;
+  return seat;
+}
+// A helicopter's Havok rigid body (vtable 820BDE74: rotation columns +B0
+// right, +C0 up, +D0 forward; translation +E0). The seated pilot's own place
+// (+200) stays where it got in (BF_HELI_PROBE: the bodies near the seat climbed
+// 15 m/s with the collective while the soldier's place never changed). Found
+// as the turned (not identity) body nearest to where it got in (or where the
+// body was last), again when that body goes.
+static uint32_t HeliBody(Bot& b, float sx, float sy, float sz) {
+  uint32_t o = b.heli_body;
+  if (b.heli_body_for == b.in_vehicle && o && IsCommitted(o + 0x140) && Ld32(o) == 0x820BDE74) return o;
+  static int64_t tried = 0;
+  int64_t now = int64_t(GetTickCount64());
+  if (b.heli_body_for == b.in_vehicle && !o && now - tried < 2000) return 0;
+  tried = now;
+  if (b.heli_body_for == b.in_vehicle && o) sx = b.heli_last[0], sy = b.heli_last[1], sz = b.heli_last[2];
+  b.heli_body_for = b.in_vehicle, b.heli_body = 0;
+  float best = 6.0f;
+  for (uint32_t c : QuickScan(0x820BDE74)) {
+    if (!IsCommitted(c + 0x140) || Ld32(c) != 0x820BDE74) continue;
+    if (LdF(c + 0xB0) > 0.9999f && std::fabs(LdF(c + 0xB4)) < 1e-4f && std::fabs(LdF(c + 0xC0)) < 1e-4f) continue;  // (identity: a sensor)
+    float d = std::sqrt((LdF(c + 0xE0) - sx) * (LdF(c + 0xE0) - sx) + (LdF(c + 0xE4) - sy) * (LdF(c + 0xE4) - sy) +
+                        (LdF(c + 0xE8) - sz) * (LdF(c + 0xE8) - sz));
+    if (d < best) best = d, b.heli_body = c;
+  }
+  if (b.heli_body) RT_INFO("bot %d: helicopter body %08X (%.1f m from where it was looked for)", b.index, b.heli_body, best);
+  return b.heli_body;
 }
 static bool IsTank(const std::string& kind) {
   return kind.rfind("M1A2", 0) == 0 || kind.rfind("M3A3", 0) == 0 || kind.rfind("T90", 0) == 0 || kind.rfind("BMD", 0) == 0;
@@ -3216,6 +3271,20 @@ static void BotBrain(Bot& b, uint32_t in) {
   // tank), none another bot is after; walked to, got into within 3.5 m (given
   // up after 40 s, not tried again for 2 minutes).
   static const bool no_vehicles = getenv("BF_BOT_NO_VEHICLES") != nullptr;
+  ServerVehicles();  // (kept fresh; lists the map's vehicles once)
+  // BF_BOT_HELI_TEST=1 (testing): bot 0 is put straight into a free
+  // helicopter's pilot seat (the server's enter call, from anywhere).
+  // (BF_BOT_HELI_TEST=Humvee: that kind instead.)
+  static const char* heli_test = getenv("BF_BOT_HELI_TEST");
+  if (heli_test && b.index == 0 && !b.in_vehicle && !b.vehicle && now - b.heli_tried > 5000 && LdF(so + 0x3C) > 0) {
+    b.heli_tried = now;
+    for (uint32_t v : ServerVehicles())
+      if ((strlen(heli_test) > 1 ? VehicleKind(v).rfind(heli_test, 0) == 0 : IsHeli(VehicleKind(v))) && !SeatOccupant(v, HeliPilotSeat())) {
+        b.enter_vehicle = v, b.enter_seat = HeliPilotSeat(), b.vehicle = v, b.vehicle_in_at = now, b.heli_t0 = 0;
+        RT_INFO("bot %d: heli test: into the %s %08X", b.index, VehicleKind(v).c_str(), v);
+        break;
+      }
+  }
   bool vehicle_press = false;
   if (!no_vehicles && !b.in_vehicle && !b.vehicle) {
     if (!b.vehicle_target && !b.enemy && best > 120.0f && now - b.vehicle_looked > 3000) {
@@ -4045,7 +4114,305 @@ static void BotBrain(Bot& b, uint32_t in) {
   // within 25 m. A tank stops for an enemy in sight and fires its gun at it
   // (the aim +90/+94, fire +28). A gunner (seat 1+) fires at enemies and gets
   // out when the vehicle has no driver or has stood still for 15 s.
-  if (b.in_vehicle) {
+  // A helicopter's pilot flies it (below).
+  bool heli_pilot = b.in_vehicle && b.seat == HeliPilotSeat() && IsHeli(VehicleKind(b.in_vehicle));
+  if (heli_pilot) {
+    if (!b.heli_t0) b.heli_t0 = now;
+    int64_t t = now - b.heli_t0;
+    // Where it is: the seated soldier's place stays where it got in, so the
+    // helicopter's own Havok rigid body (HeliBody) tells: translation +E0,
+    // rotation columns +B0 (right), +C0 (up), +D0 (forward).
+    // (Looked for once seated 0.6 s: its place jumps to the seat a moment after.)
+    uint32_t body = t > 600 ? HeliBody(b, x, y, z) : 0;
+    if (body) x = LdF(body + 0xE0), y = LdF(body + 0xE4), z = LdF(body + 0xE8);
+    float fx = body ? LdF(body + 0xD0) : LdF(so + 0x320), fy = body ? LdF(body + 0xD4) : LdF(so + 0x324);
+    float fz = body ? LdF(body + 0xD8) : LdF(so + 0x328);
+    float heading = std::atan2(fx, fz), pitch = std::asin(std::clamp(fy, -1.0f, 1.0f));
+    float bank = body ? std::atan2(-LdF(body + 0xB4), LdF(body + 0xC4)) : 0.0f;
+    if (body && now - b.heli_sample_at >= 200) {
+      if (b.heli_sample_at && now - b.heli_sample_at < 1000) {
+        float dt = float(now - b.heli_sample_at) / 1000.0f;
+        b.heli_vel[0] = (x - b.heli_last[0]) / dt, b.heli_vel[1] = (y - b.heli_last[1]) / dt, b.heli_vel[2] = (z - b.heli_last[2]) / dt;
+      }
+      b.heli_last[0] = x, b.heli_last[1] = y, b.heli_last[2] = z, b.heli_sample_at = now;
+    }
+    for (uint32_t k = 0; k < 9; ++k) set(0x8 + 4 * k, 0.0f);
+    St32(in + 0x84, 0x1FFu);
+    St32(in + 0x80, (Ld32(in + 0x80) & ~0x100u) | 0x800u);
+    // An analog action for the helicopter: its value and its held time (a half
+    // float per action from +2C, high half first): without the held time the
+    // helicopter did nothing (BF_HELI_SCAN_MODE=air), with it the collective lifted.
+    for (uint32_t hw = 0x2C; hw <= 0x3C; hw += 4) St32(in + hw, 0);
+    auto act_set = [&](int act, float v) {
+      set(0x8 + 4 * uint32_t(act), v);
+      uint32_t hw = 0x2C + 4 * (uint32_t(act) / 2), shift = act % 2 == 0 ? 16 : 0;
+      St32(in + hw, (Ld32(in + hw) & ~(0xFFFFu << shift)) | ((v != 0 ? 0x3C00u : 0u) << shift));
+    };
+    // BF_HELI_ACT_SCAN=1 (testing): each analog action 0-7 at +1 then -1, 3 s
+    // each (after 4 s of nothing), the place and attitude every 0.25 s.
+    static const bool act_scan = getenv("BF_HELI_ACT_SCAN") != nullptr;
+    // BF_HELI_SCAN_MODE=digital: the digital actions 9-39 instead (bit a of
+    // the 64-bit word at +80, read as 1.0 by 8227A6E0), 4 s each.
+    static const char* scan_mode = getenv("BF_HELI_SCAN_MODE");
+    // BF_HELI_SCAN_MODE=a0: the bits of the record's word at +A0 (821BF2A8
+    // copies it to the soldier's input state +18 with the actions 0, 1, 5, 6),
+    // 4 s each.
+    if (act_scan && scan_mode && !strcmp(scan_mode, "a0")) {
+      int phase = t < 4000 ? -1 : int((t - 4000) / 4000);
+      int bit = phase < 0 ? -1 : phase % 32;
+      St32(in + 0xA0, bit < 0 ? 0u : 1u << bit);
+      if (now - b.heli_log >= 500) {
+        b.heli_log = now;
+        RT_INFO("heli scan: t %.2f a0 bit %d: at %.1f %.1f %.1f ground %.1f heading %.2f pitch %.2f bank %.2f", t / 1000.0, bit, x, y,
+                z, TerrainHeight(x, z), heading, pitch, bank);
+      }
+    } else if (act_scan && scan_mode && !strcmp(scan_mode, "digital")) {
+      int phase = t < 4000 ? -1 : int((t - 4000) / 4000);
+      int act = phase < 0 ? -1 : 9 + phase % 31;
+      if (act >= 0) {
+        uint64_t bits = uint64_t(Ld32(in + 0x80)) << 32 | Ld32(in + 0x84);
+        bits |= 1ull << act;
+        St32(in + 0x80, uint32_t(bits >> 32)), St32(in + 0x84, uint32_t(bits));
+      }
+      if (now - b.heli_log >= 500) {
+        b.heli_log = now;
+        RT_INFO("heli scan: t %.2f bit %d: at %.1f %.1f %.1f ground %.1f heading %.2f pitch %.2f bank %.2f", t / 1000.0, act, x, y, z,
+                TerrainHeight(x, z), heading, pitch, bank);
+      }
+    } else if (const char* seq = getenv("BF_HELI_SEQ")) {
+      // BF_HELI_SEQ="a:v:ms,a:v:ms,..." (testing): from boarding, action a at v
+      // for ms (a "-": nothing; "a+b" two actions), then the next; the body's
+      // place, velocity and attitude every 0.25 s.
+      int64_t at = 0;
+      std::string step = "end";
+      for (const char* p = seq; *p;) {
+        const char* e = strchr(p, ',');
+        std::string item(p, e ? size_t(e - p) : strlen(p));
+        p = e ? e + 1 : p + strlen(p);
+        size_t c1 = item.find(':'), c2 = item.rfind(':');
+        if (c1 == std::string::npos || c2 == c1) continue;
+        int64_t ms = atoi(item.c_str() + c2 + 1);
+        if (t >= at && t < at + ms) {
+          step = item;
+          float v = float(atof(item.substr(c1 + 1, c2 - c1 - 1).c_str()));
+          std::string acts = item.substr(0, c1);
+          for (size_t q = 0; q < acts.size();) {
+            size_t plus = acts.find('+', q);
+            std::string one = acts.substr(q, plus == std::string::npos ? std::string::npos : plus - q);
+            if (!one.empty() && one != "-") act_set(atoi(one.c_str()), v);
+            if (plus == std::string::npos) break;
+            q = plus + 1;
+          }
+          break;
+        }
+        at += ms;
+      }
+      if (now - b.heli_log >= 250) {
+        b.heli_log = now;
+        RT_INFO("heli seq: t %.2f [%s]: at %.1f %.1f %.1f (over ground %.1f) vel %.1f %.1f %.1f heading %.2f pitch %.2f bank %.2f",
+                t / 1000.0, step.c_str(), x, y, z, y - TerrainHeight(x, z), b.heli_vel[0], b.heli_vel[1], b.heli_vel[2], heading, pitch,
+                bank);
+      }
+    } else if (act_scan && scan_mode && !strcmp(scan_mode, "air")) {
+      // In the air: 4 s still, 6 s of collective (action 0 +1), then each of
+      // the analog actions the pilot's record reaches (821BF2A8 copies 0, 1, 5,
+      // 6) at +1 and -1 for 2 s with 3 s of nothing after each; the body's
+      // place, velocity and attitude every 0.25 s.
+      static const int kActs[] = {1, 1, 5, 5, 6, 6, 0};
+      static const float kVals[] = {1, -1, 1, -1, 1, -1, -1};
+      static const int64_t idle = getenv("BF_HELI_AIR_IDLE") ? atoi(getenv("BF_HELI_AIR_IDLE")) : 4000;
+      int act = -1;
+      float val = 0;
+      if (t >= idle && t < idle + 6000) act = 0, val = 1;
+      else if (t >= idle + 6000) {
+        int64_t u = (t - idle - 6000) % (5000 * 7);
+        int i = int(u / 5000);
+        if (u % 5000 < 2000) act = kActs[i], val = kVals[i];
+      }
+      if (act >= 0) act_set(act, val);
+      if (now - b.heli_log >= 250) {
+        b.heli_log = now;
+        RT_INFO("heli air: t %.2f act %d %+.0f: at %.1f %.1f %.1f (over ground %.1f) vel %.1f %.1f %.1f heading %.2f pitch %.2f bank %.2f",
+                t / 1000.0, act, val, x, y, z, y - TerrainHeight(x, z), b.heli_vel[0], b.heli_vel[1], b.heli_vel[2], heading, pitch, bank);
+      }
+    } else if (act_scan) {
+      int phase = t < 4000 ? -1 : int((t - 4000) / 3000);
+      int act = phase < 0 ? -1 : (phase / 2) % 8;
+      float val = phase < 0 ? 0.0f : phase % 2 == 0 ? 1.0f : -1.0f;
+      if (act >= 0) {
+        set(0x8 + 4 * uint32_t(act), val);
+        // its held time (a half float per action from +2C, high half first) and its bit in +84
+        static const char* mode = getenv("BF_HELI_SCAN_MODE");  // "bits": 0x163 | its bit; else 0x1FF
+        uint32_t hw = 0x2C + 4 * (uint32_t(act) / 2), shift = act % 2 == 0 ? 16 : 0;
+        St32(in + hw, (Ld32(in + hw) & ~(0xFFFFu << shift)) | (0x3C00u << shift));
+        if (mode && !strcmp(mode, "bits")) St32(in + 0x84, 0x163u | (1u << act));
+      }
+      if (now - b.heli_log >= 250) {
+        b.heli_log = now;
+        RT_INFO("heli scan: t %.2f act %d %+.0f: at %.1f %.1f %.1f ground %.1f heading %.2f pitch %.2f bank %.2f", t / 1000.0, act, val,
+                x, y, z, TerrainHeight(x, z), heading, pitch, bank);
+      }
+    }
+    // BF_HELI_PROBE=1 (testing): 2 s after boarding, the float triplets within
+    // 15 m of the seat in the vehicle and the objects it points at (0x800
+    // bytes each, two levels); then every 2 s the first 24 of them again.
+    static const bool probe = getenv("BF_HELI_PROBE") != nullptr;
+    if (probe) {
+      // The Havok rigid bodies (820BDE74; translation +E0) within 8 m of the
+      // seat: their first 0x140 bytes once, then their translation.
+      static std::vector<uint32_t> bodies;
+      static uint32_t bodies_for = 0;
+      static int64_t blog = 0;
+      if (bodies_for != b.in_vehicle && t > 2000) {
+        bodies_for = b.in_vehicle, bodies.clear();
+        for (uint32_t o : Scan(0x820BDE74)) {
+          if (!IsCommitted(o + 0x140)) continue;
+          float bx = LdF(o + 0xE0), by = LdF(o + 0xE4), bz = LdF(o + 0xE8);
+          if (std::fabs(bx - x) > 8 || std::fabs(by - y) > 8 || std::fabs(bz - z) > 8) continue;
+          bodies.push_back(o);
+          std::string w;
+          for (uint32_t k = 0; k < 0x140; k += 4) {
+            char buf[16];
+            snprintf(buf, sizeof(buf), "%s%08X", k % 32 ? " " : " |", Ld32(o + k));
+            w += buf;
+          }
+          RT_INFO("heli probe: body %08X at %.1f %.1f %.1f:%s", o, bx, by, bz, w.c_str());
+        }
+        RT_INFO("heli probe: %zu bodies near the seat", bodies.size());
+      }
+      if (!bodies.empty() && now - blog > 2000) {
+        blog = now;
+        std::string s;
+        for (uint32_t o : bodies) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), " %08X:%.2f,%.2f,%.2f", o, LdF(o + 0xE0), LdF(o + 0xE4), LdF(o + 0xE8));
+          s += buf;
+        }
+        RT_INFO("heli probe bodies t %.0f:%s", t / 1000.0, s.c_str());
+      }
+      static std::vector<std::pair<uint32_t, std::string>> spots;
+      static uint32_t probed_for = 0;
+      static int64_t plog = 0;
+      if (probed_for != b.in_vehicle && t > 2000) {
+        probed_for = b.in_vehicle, spots.clear();
+        std::set<uint32_t> seen;
+        std::function<void(uint32_t, int, const std::string&)> walk = [&](uint32_t o, int depth, const std::string& path) {
+          if (!seen.insert(o).second) return;
+          for (uint32_t k = 0; k + 12 <= 0x800 && IsCommitted(o + k + 12); k += 4) {
+            float a = LdF(o + k), c = LdF(o + k + 4), d = LdF(o + k + 8);
+            if (std::isfinite(a) && std::isfinite(d) && std::fabs(a - x) < 15 && std::fabs(c - y) < 15 && std::fabs(d - z) < 15 &&
+                std::fabs(a) > 1 && spots.size() < 200) {
+              char buf[32];
+              snprintf(buf, sizeof(buf), "+%X", k);
+              spots.push_back({o + k, path + buf + "(" + TypeName(o) + ")"});
+            }
+            uint32_t q = Ld32(o + k);
+            if (depth < 2 && Ptr(q) && IsCommitted(q + 0x800) && Ld32(q) >= 0x82000000 && Ld32(q) < 0x83000000) {
+              char buf[32];
+              snprintf(buf, sizeof(buf), "+%X>", k);
+              walk(q, depth + 1, path + buf);
+            }
+          }
+        };
+        walk(b.in_vehicle, 0, "");
+        std::string s;
+        for (auto& [a, p] : spots) {
+          char buf[96];
+          snprintf(buf, sizeof(buf), " %s=%.1f,%.1f,%.1f", p.c_str(), LdF(a), LdF(a + 4), LdF(a + 8));
+          s += buf;
+        }
+        RT_INFO("heli probe: %zu triplets near %.1f %.1f %.1f:%s", spots.size(), x, y, z, s.substr(0, 6000).c_str());
+      }
+      if (!spots.empty() && now - plog > 2000) {
+        plog = now;
+        std::string s;
+        for (size_t i = 0; i < spots.size() && i < 40; ++i) {
+          char buf[64];
+          snprintf(buf, sizeof(buf), " [%zu]%.1f,%.1f,%.1f", i, LdF(spots[i].first), LdF(spots[i].first + 4), LdF(spots[i].first + 8));
+          s += buf;
+        }
+        RT_INFO("heli probe t %.0f:%s", t / 1000.0, s.c_str());
+      }
+    }
+    // BF_HELI_INPUTS=1 (testing): every second, the input states (vtable
+    // 82010C98: +4 its owner, +8 turn, +C look, +10 strafe, +14 forward, +18
+    // buttons) with their owner's class, and which is the bot's (b.input).
+    static const bool inputs_log = getenv("BF_HELI_INPUTS") != nullptr;
+    if (inputs_log) {
+      static int64_t ilog = 0;
+      if (now - ilog > 1000) {
+        ilog = now;
+        std::string s;
+        for (uint32_t o : QuickScan(0x82010C98)) {
+          if (!IsCommitted(o + 0x20) || Ld32(o) != 0x82010C98) continue;
+          char buf[160];
+          snprintf(buf, sizeof(buf), " [%08X%s own %08X %s: %.2f %.2f %.2f %.2f %08X]", o, o == b.input ? "*" : "", Ld32(o + 4),
+                   TypeName(Ld32(o + 4)).c_str(), LdF(o + 8), LdF(o + 0xC), LdF(o + 0x10), LdF(o + 0x14), Ld32(o + 0x18));
+          s += buf;
+        }
+        RT_INFO("heli inputs t %.1f:%s", t / 1000.0, s.c_str());
+      }
+    }
+    // BF_HELI_DIFF=<analog action> (testing): that action held at +1; the
+    // words reachable from the vehicle (two pointer levels, 0x800 bytes each)
+    // at 5 s and at 25 s, the floats that changed.
+    static const char* diff = getenv("BF_HELI_DIFF");
+    if (diff) {
+      int act = atoi(diff);
+      if (act >= 0 && act < 9) {
+        set(0x8 + 4 * uint32_t(act), 1.0f);
+        uint32_t hw = 0x2C + 4 * (uint32_t(act) / 2), shift = act % 2 == 0 ? 16 : 0;
+        St32(in + hw, (Ld32(in + hw) & ~(0xFFFFu << shift)) | (0x3C00u << shift));
+      }
+      static std::map<uint32_t, uint32_t> snap;
+      static std::map<uint32_t, std::string> where;
+      static int stage = 0;
+      auto collect = [&](std::map<uint32_t, uint32_t>& out) {
+        out.clear();
+        std::set<uint32_t> seen;
+        std::function<void(uint32_t, int, const std::string&)> walk = [&](uint32_t o, int depth, const std::string& path) {
+          if (!seen.insert(o).second) return;
+          for (uint32_t k = 0; k < 0x800 && IsCommitted(o + k + 4); k += 4) {
+            out[o + k] = Ld32(o + k);
+            if (!where.count(o + k)) {
+              char buf[24];
+              snprintf(buf, sizeof(buf), "+%X", k);
+              where[o + k] = path + buf + "(" + TypeName(o) + ")";
+            }
+            uint32_t q = Ld32(o + k);
+            if (depth < 2 && Ptr(q) && IsCommitted(q + 0x800) && Ld32(q) >= 0x82000000 && Ld32(q) < 0x83000000) {
+              char buf[24];
+              snprintf(buf, sizeof(buf), "+%X>", k);
+              walk(q, depth + 1, path + buf);
+            }
+          }
+        };
+        walk(b.in_vehicle, 0, "");
+      };
+      if (stage == 0 && t > 5000) stage = 1, collect(snap), RT_INFO("heli diff: %zu words at 5 s", snap.size());
+      if (stage == 1 && t > 25000) {
+        stage = 2;
+        std::map<uint32_t, uint32_t> later;
+        collect(later);
+        std::string s;
+        int n = 0;
+        for (auto& [a, v] : snap) {
+          auto it = later.find(a);
+          if (it == later.end() || it->second == v) continue;
+          float f0, f1;
+          memcpy(&f0, &v, 4), memcpy(&f1, &it->second, 4);
+          if (!std::isfinite(f0) || !std::isfinite(f1) || std::fabs(f0) > 1e5f || std::fabs(f1) > 1e5f) continue;
+          ++n;
+          char buf[120];
+          snprintf(buf, sizeof(buf), " %s %.3f>%.3f", where[a].c_str(), f0, f1);
+          if (s.size() < 8000) s += buf;
+        }
+        RT_INFO("heli diff: %d floats changed:%s", n, s.c_str());
+      }
+    }
+    b.exit_vehicle = false;
+  }
+  if (b.in_vehicle && !heli_pilot) {
     std::string kind = VehicleKind(b.in_vehicle);
     // Its heading: the soldier's forward row rides with the vehicle (it agrees
     // with the way it moves, BF_BOT_DRIVE_TEST).
