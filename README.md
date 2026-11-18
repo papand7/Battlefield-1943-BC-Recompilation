@@ -18,7 +18,7 @@ The latest version of the launcher can be found in the [Releases](https://github
 **Linux:** `BattlefieldLauncher-<version>-x86_64.AppImage` works the same way: `chmod +x` it, put it next to your game files and start it. It builds the games with `bf1943-recomp/build_linux.sh` and lists the packages to install if any are missing. **macOS:** experimental and untested, built from source (see [Building](#macos-experimental-untested)).
 
 ## Original vs Ultra
-Left the original look (`Stock`), right the **Enhanced** look with every effect at **Ultra** and the HD texture pack, from the same spawn.
+Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced** look with every effect at its highest setting, ray tracing and the HD texture pack, from the same spawn.
 
 | Original | Ultra |
 |---|---|
@@ -28,6 +28,16 @@ Left the original look (`Stock`), right the **Enhanced** look with every effect 
 | <img alt="Guadalcanal, original" src="docs/images/cmp_guadalcanal_original.jpg" /> | <img alt="Guadalcanal, ultra" src="docs/images/cmp_guadalcanal_ultra.jpg" /> |
 
 <img width="960" alt="Guadalcanal on Ultra, the palms in the wind" src="docs/images/bf1943_ultra.gif" />
+
+**Rain** (`/weather rain`, or `--weather rain` on a server): falling rain, drops on the lens, an overcast sky, and puddles on flat ground that mirror what stands over them.
+
+| Guadalcanal | Wake Island |
+|---|---|
+| <img alt="Rain on Guadalcanal's airfield" src="docs/images/rain_guadalcanal.jpg" /> | <img alt="Rain on a Wake Island carrier" src="docs/images/rain_wake.jpg" /> |
+
+**Looks**: the same view in each of the looks (**Settings → Graphics → Look**).
+
+<img width="960" alt="The looks: Enhanced, Vivid, Toon, Noir and WW2" src="docs/images/bf1943_looks.gif" />
 
 ## Features
 ### Display
@@ -72,7 +82,7 @@ Left the original look (`Stock`), right the **Enhanced** look with every effect 
 - **List on the Internet** - Shows a server in everyone's **Join Game** list through the master server: `PUBLISH=1` in the start script, `--publish`, or **List on the internet** when hosting from the game. The router must pass UDP ports 1003 and 19430 to the server.
 - **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They go in squads of four to the same flag, the first leading and the others staying with it. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
 - **Hardcore** - A server setting (**HOST GAME**, the launcher's **SERVER** page, or `--hardcore`): no HUD or crosshair for anyone, and fewer hits to kill. Hardcore servers are marked in **JOIN GAME**.
-- **Chat and Admin Commands** - <kbd>T</kbd> opens a chat line. The host (or a dedicated server's console) can type `/players`, `/kick`, `/ban`, `/unban`, `/map`, `/bots`, `/weather` and `/time`; joiners can use them after `/login <admin password>` (`--admin-password`). `/help` lists them all.
+- **Chat and Admin Commands** - <kbd>T</kbd> opens a chat line. The host (or a dedicated server's console) can type `/players`, `/kick`, `/ban`, `/unban`, `/map`, `/bots`, `/weather clear|rain` and `/time dawn|day|sunset|night|<hours>` (everyone in the match sees the change); joiners can use them after `/login <admin password>` (`--admin-password`). `/help` lists them all.
 - **Spectate** - <kbd>F4</kbd> (or `--spectate`) watches the match on the host's PC: <kbd>N</kbd> / <kbd>B</kbd> to follow the next or previous player, <kbd>Space</kbd> for a free camera, the wheel to zoom.
 - **Match Replays** - A host records every match to `replays/`. Play one back with `--replay <file>`, and fly around it with a free camera or follow a player, paused, rewound or up to 16x faster.
 - **Learning Bots** - Every server learns from its matches where players go, where they die and where they win fights, per map. Bots use it to hold good spots at a flag and to watch where enemies usually come from, and what servers learned can be merged into the next version (`tools/bot_knowledge.py`).
