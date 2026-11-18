@@ -171,10 +171,29 @@ void AskWeather(uint32_t address) {
   float rain = 0.0f, hours = 12.0f;
   if (sscanf(buf + 6, "%f|%f", &rain, &hours) != 2) return;
   if (!std::isfinite(rain) || !std::isfinite(hours) || rain < 0.0f || rain > 1.0f || hours < 0.0f || hours > 24.0f) return;
-  g_weather = rain > 0.5f ? 1 : 0;
-  g_time_of_day = std::clamp(hours, 0.0f, 24.0f);
+  const int weather = rain > 0.5f ? 1 : 0;
+  hours = std::clamp(hours, 0.0f, 24.0f);
+  static bool known = false;
+  if (known && weather == g_weather && std::fabs(hours - g_time_of_day) < 0.01f) return;
+  known = true;
+  g_weather = weather;
+  g_time_of_day = hours;
   xgpu::SetWeather(rain, g_time_of_day);
   RT_INFO("lan: the host's weather: %s, %.1f h", g_weather ? "rain" : "clear", g_time_of_day);
+}
+
+// While joined: the host's weather and time asked again every 10 s, so its
+// /weather and /time (admin.cpp) reach players already in the match.
+void FollowHostWeather() {
+  static std::atomic<bool> started{false};
+  if (started.exchange(true)) return;
+  std::thread([] {
+    for (;;) {
+      std::this_thread::sleep_for(std::chrono::seconds(10));
+      const uint32_t host = g_join_address;
+      if (host && g_lan_host && !g_admin_host && !g_dedicated) AskWeather(host);
+    }
+  }).detach();
 }
 
 
@@ -553,6 +572,7 @@ bool PrepareJoin(const std::string& address_port, const std::string& map, const 
   g_join_address = local ? htonl(INADDR_LOOPBACK) : ip.s_addr;
   g_admin_host = false;
   AskWeather(g_join_address);
+  FollowHostWeather();
   RT_INFO("lan: joining %s (%s)%s", address.c_str(), map.c_str(), local ? " on this PC" : "");
   AskHardcore(g_join_address);
   return true;

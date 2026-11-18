@@ -1905,15 +1905,10 @@ float RainFlat(ivec2 local, ivec2 size, float dist) {
     q[i] = RelativeAt(p, d);
   }
   vec3 n = normalize(cross(q[3] - q[2], q[0] - q[1]));
-  // Soft, so the coarse depth far out does not dot the edges: level, and
-  // each point on the plane through the pixel (within a little of its spread).
-  float flat_ = smoothstep(0.93, 0.97, abs(n.y));
-  float worst = 0.0;
-  for (int i = 0; i < 4; ++i) {
-    vec3 e = q[i] - at;
-    worst = max(worst, abs(dot(e, n)) / (0.05 * length(e) + 0.015 + 0.003 * dist));
-  }
-  return flat_ * (1.0 - smoothstep(0.7, 1.3, worst));
+  // Only how level the surface is: a test of how well the neighbours lie on
+  // one plane changed with the view (the pixels' spacing on the ground grows
+  // with distance and slant), so puddles came and went as the player moved.
+  return smoothstep(0.88, 0.95, abs(n.y));
 }
 
 // What a puddle mirrors along r from p: the screen's own picture where the
@@ -2935,11 +2930,11 @@ void main() {
     color.rgb *= 1.0 - wet * (green ? 0.08 : 0.12 + 0.12 * up);
     color.rgb = mix(color.rgb, sky_r0, wet * up * f0 * (green ? 0.15 : 0.35));
     // (The wide test only: the pixel's own normal is noisy at a slant.)
-    float flat_here = !green && normal.y > 0.3 && dist < 55.0 ? RainFlat(local, size, dist) : 0.0;
+    float flat_here = !green && normal.y > 0.3 && dist < 90.0 ? RainFlat(local, size, dist) : 0.0;
     if (flat_here > 0.0) {
       float blob = CloudNoise2(world.xz * 0.11 + vec2(11.3, 4.7)) * 0.65 +
                    CloudNoise2(world.xz * 0.37 + vec2(2.9, 8.1)) * 0.35;
-      float near = 1.0 - smoothstep(35.0, 55.0, dist);
+      float near = 1.0 - smoothstep(60.0, 90.0, dist);
       // Damp, darker rims around them.
       color.rgb *= 1.0 - 0.18 * smoothstep(0.40, 0.50, blob) * wet * near * flat_here;
       float puddle = smoothstep(0.50, 0.56, blob) * rain_amount * near * flat_here;
