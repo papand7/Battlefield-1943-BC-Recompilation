@@ -13,13 +13,31 @@ The latest version of the launcher can be found in the [Releases](https://github
 - Run it, pick a game at the top and press **INSTALL** (or **Choose game files…** first, if your files are somewhere else). It checks your files, installs the free build tools it needs through winget, and compiles the game's code for your PC, which takes about 5 to 60 minutes and only happens once.
 - Press **Play**. Settings can be adjusted in the launcher, or in game under **Settings**, opened with <kbd>F10</kbd> at any time.
 
+<img width="825" alt="The launcher's settings page" src="docs/images/launcher.png" />
+
 **Linux:** `BattlefieldLauncher-<version>-x86_64.AppImage` works the same way: `chmod +x` it, put it next to your game files and start it. It builds the games with `bf1943-recomp/build_linux.sh` and lists the packages to install if any are missing. **macOS:** experimental and untested, built from source (see [Building](#macos-experimental-untested)).
+
+## Original vs Ultra
+Left the original look (`Stock`), right the **Enhanced** look with every effect at **Ultra** and the HD texture pack, from the same spawn.
+
+| Original | Ultra |
+|---|---|
+| <img alt="Wake Island, original" src="docs/images/cmp_wake_original.jpg" /> | <img alt="Wake Island, ultra" src="docs/images/cmp_wake_ultra.jpg" /> |
+| <img alt="Coral Sea, original" src="docs/images/cmp_coral_original.jpg" /> | <img alt="Coral Sea, ultra" src="docs/images/cmp_coral_ultra.jpg" /> |
+| <img alt="Iwo Jima, original" src="docs/images/cmp_iwo_original.jpg" /> | <img alt="Iwo Jima, ultra" src="docs/images/cmp_iwo_ultra.jpg" /> |
+| <img alt="Guadalcanal, original" src="docs/images/cmp_guadalcanal_original.jpg" /> | <img alt="Guadalcanal, ultra" src="docs/images/cmp_guadalcanal_ultra.jpg" /> |
+
+<img width="960" alt="Guadalcanal on Ultra, the palms in the wind" src="docs/images/bf1943_ultra.gif" />
 
 ## Features
 ### Display
 - **Resolution** - Up to 4K, with a resolution scale of 1x, 2x or 3x.
-- **Upscaling** - AMD FSR.
+- **Upscaling** - AMD FSR, FSR 3 and NVIDIA DLSS (on RTX cards), or **Auto** to pick the best your GPU has, with a **Sharpness** setting.
+- **Frame Generation** - AMD FSR 3.1 frame generation, roughly doubling the frames shown on any Vulkan GPU (needs the scene effects on).
 - **Max Frame Rate** - 60, 120, 144, 165, 240 or unlimited, with the game running smoothly at them.
+- **Adaptive Quality** - Optional: keeps 60 (or 30) fps by easing the heaviest effects when a scene gets busy, and bringing them back when it calms down.
+- **Ultrawide** - 21:9 and wider without bars, with the HUD moved out to the screen's edges (or kept in the middle), or stretched, or the original 16:9 with bars.
+- **Motion Blur** - The game's own (explosions, low health), or a low or high camera blur as you turn and move.
 - **HDR Output** - On HDR monitors.
 
 ### Graphics
@@ -29,6 +47,8 @@ The latest version of the launcher can be found in the [Releases](https://github
 - **Water** - Foam along ships and beaches, clear turquoise shallows, and waves that bend what's below.
 - **Surface Depth** - Parallax, and small details like pebbles and cracks on bare ground.
 - **Muzzle Flash** - A realistic flash that lights only what's near your gun.
+- **Living Plants** - Palms, grass and bushes sway in gusts of wind, and their ray-traced shadows sway with them.
+- **Air** - Optional drifting leaves and dust motes in the sunlight.
 - **Looks** - Enhanced, Toon, Noir and WW2 newsreel film, or Stock for the original.
 - **Blood and Gore** - Optional.
 
@@ -36,7 +56,7 @@ The latest version of the launcher can be found in the [Releases](https://github
 - **HD Texture Pack** - Realistic materials: metal shines, wood and rust look rough.
 
 ### Input
-- **Mouse and Keyboard** - Full keyboard and mouse support, with every key rebindable under **Settings → Keys**.
+- **Mouse and Keyboard** - Full keyboard and mouse support, with every key rebindable under **Settings → Keys**. The mouse turns the view directly (raw input, not an emulated stick), and also works over Remote Desktop.
 - **Vehicles on the Keyboard** - W and S for throttle and brake, A and D to steer, the arrow keys to fly planes, Space to fire and C to change the camera view, with a separate plane mouse sensitivity.
 - **Controller** - A connected controller works too.
 
@@ -51,6 +71,10 @@ The latest version of the launcher can be found in the [Releases](https://github
 - **Dedicated Server** - Runs with no graphics, from the launcher's **SERVER** page or a console window, on Windows (`start_server.bat`) or Linux (`start_server.sh`).
 - **List on the Internet** - Shows a server in everyone's **Join Game** list through the master server: `PUBLISH=1` in the start script, `--publish`, or **List on the internet** when hosting from the game. The router must pass UDP ports 1003 and 19430 to the server.
 - **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They go in squads of four to the same flag, the first leading and the others staying with it. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
+- **Hardcore** - A server setting (**HOST GAME**, the launcher's **SERVER** page, or `--hardcore`): no HUD or crosshair for anyone, and fewer hits to kill. Hardcore servers are marked in **JOIN GAME**.
+- **Chat and Admin Commands** - <kbd>T</kbd> opens a chat line. The host (or a dedicated server's console) can type `/players`, `/kick`, `/ban`, `/unban`, `/map`, `/bots`, `/weather` and `/time`; joiners can use them after `/login <admin password>` (`--admin-password`). `/help` lists them all.
+- **Spectate** - <kbd>F4</kbd> (or `--spectate`) watches the match on the host's PC: <kbd>N</kbd> / <kbd>B</kbd> to follow the next or previous player, <kbd>Space</kbd> for a free camera, the wheel to zoom.
+- **Match Replays** - A host records every match to `replays/`. Play one back with `--replay <file>`, and fly around it with a free camera or follow a player, paused, rewound or up to 16x faster.
 - **Learning Bots** - Every server learns from its matches where players go, where they die and where they win fights, per map. Bots use it to hold good spots at a flag and to watch where enemies usually come from, and what servers learned can be merged into the next version (`tools/bot_knowledge.py`).
 
 ### Dedicated Server
@@ -72,11 +96,16 @@ The same recompiler is being used for Battlefield: Bad Company (Xbox 360). Insta
 - **Ports** - UDP 1500-1503 and 19431, so it can host on the same PC as Battlefield 1943.
 - **Bots** - On a Bad Company server (the launcher's **SERVER** page, or `--bots N`): mixed kits, sprinting, crouching, grenades and vehicles, in squads of four to the same crate, the first leading. Like 1943's bots, they learn from their matches where to hold a crate and where enemies come from.
 - **Dedicated Server** - From the launcher's **SERVER** page or `server_gui.bat` / `server_gui.sh`, on Windows and Linux.
+- **Shared With 1943** - The scene effects, PBR materials, upscalers (FSR, FSR 3, DLSS), FSR 3.1 frame generation, motion blur, adaptive quality, raw mouse aim, chat and admin commands (`/players`, `/kick`, `/ban`, `/map`, `/bots` ...), and the server's **Hardcore** setting (no HUD or crosshair, fewer hits to kill).
 - **Only Gold Rush** - The disc has no Conquest; that came later in an update.
 - **Idle Players** - A player who stays on the spawn screen for about two minutes without deploying is sent back to the menu (the game's own rule).
 - **Not Done Yet** - Playing online and ray-traced shadows (they stall the opening cutscene). Bots still get stuck in some places. Saving the campaign hasn't been checked yet.
 
-<img width="1920" alt="Bad Company, the first mission" src="docs/images/bfbc1_gameplay.png" />
+| Original | Ultra |
+|---|---|
+| <img alt="Bad Company, Oasis, original" src="docs/images/bfbc1_original.jpg" /> | <img alt="Bad Company, Oasis, ultra" src="docs/images/bfbc1_ultra.jpg" /> |
+
+<img width="960" alt="Bad Company, Oasis on Ultra" src="docs/images/bfbc1_ultra.gif" />
 
 ## System Requirements
 ### Minimum
