@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <set>
+#include <thread>
 #include <string>
 #include <unordered_map>
 
@@ -321,7 +322,7 @@ constexpr uint32_t kSlots = 8;
 constexpr VkDeviceSize kSlotSize = 4096;
 constexpr VkDeviceSize kHorizonSize = (66 + 128) * 16;
 struct Pipeline {
-  bool tried = false, ok = false;
+  bool tried = false, ok = false, pipeline_ok = false;
   bool rt = false;  // the ray query variant, with the TLAS in binding 6
   uint32_t rt_instances = 0;
   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
@@ -846,6 +847,21 @@ void VulkanRenderTargetCache::ApplySceneFx(
     uint32_t dump_row_length_used, uint32_t dump_rows, uint32_t dump_pitch) {
   using namespace scenefx;
   if (!Enabled()) return;
+  // The pipeline (and the ray tracer's) takes seconds to build; built on the
+  // first resolve, in a menu, on a thread of its own, instead of at the first
+  // world frame, where the stall made the game draw the low vegetation LOD.
+  static std::thread warm;
+  static bool warm_started = false;
+  if (!warm_started) {
+    warm_started = true;
+    const ui::vulkan::VulkanDevice* wdevice = command_processor_.GetVulkanDevice();
+    warm = std::thread([wdevice] {
+      int64_t t0 = NowMs();
+      vk.rt = GetSettings().rt > 0.0f && rt::Init(wdevice);
+      vk.pipeline_ok = CreatePipeline(wdevice);
+      XELOGI("scenefx: pipeline built ahead in {} ms", NowMs() - t0);
+    });
+  }
   // Two passes: when the game copies the world's depth out (it clears it
   // afterwards for the first-person weapon) the depth is saved; when it
   // resolves the finished HDR scene (with the sky, sea and particles drawn)
@@ -933,8 +949,8 @@ void VulkanRenderTargetCache::ApplySceneFx(
   const auto& dfn = device->functions();
   if (!vk.tried) {
     vk.tried = true;
-    vk.rt = GetSettings().rt > 0.0f && rt::Init(device);
-    vk.ok = CreatePipeline(device) && CreateSavedDepth(device, width, height);
+    if (warm.joinable()) warm.join();
+    vk.ok = vk.pipeline_ok && CreateSavedDepth(device, width, height);
     XELOGI("scenefx: pipeline {} ({}x{}){}", vk.ok ? "ready" : "FAILED", width,
            height, vk.rt ? ", ray-traced shadows" : "");
   }
