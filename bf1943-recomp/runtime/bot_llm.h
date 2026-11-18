@@ -52,6 +52,11 @@ struct MapView {
 // from above); the highest wins. Both games' sight grids keep theirs.
 void TopsOfTriangles(const std::vector<std::array<float, 9>>& tris, float x0, float z0, float mpp, int n,
                      std::vector<float>& top);
+// The map as a PNG, n pixels each way (bot_map.cpp; Ask and SetLevelMap draw
+// theirs with it): over `picture`, the game's own picture of the level
+// (bot_minimap.h), where there is one; else the ground tinted by height.
+namespace minimap { struct Image; }
+std::vector<uint8_t> DrawMap(const MapView& m, int n, const minimap::Image* picture);
 
 // Asks for bot `bot` (one question at a time each; not again within
 // `cooldown_ms` of the last). The map is drawn here (call it on the thread that
