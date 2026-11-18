@@ -1180,13 +1180,17 @@ void VulkanRenderTargetCache::ApplySceneFx(
   {
     static const auto cloud_start = std::chrono::steady_clock::now();
     p.cloud[0] = s.clouds;
+    // Rain: an overcast layer (more cover, thicker and darker underneath),
+    // its shadow over most of the ground. Only where the clouds are on.
+    if (s.clouds > 0.0f && s.rain > 0.0f)
+      p.cloud[0] = std::max(s.clouds, s.clouds + (0.85f - s.clouds) * s.rain);
     p.cloud[1] = s.cloud_base;
     p.cloud[2] = s.cloud_thickness;
     p.cloud[3] = std::fmod(
         std::chrono::duration<float>(std::chrono::steady_clock::now() - cloud_start).count(),
         20000.0f);
     p.cloud2[0] = float(s.cloud_steps);
-    p.cloud2[1] = s.cloud_density;
+    p.cloud2[1] = s.cloud_density * (1.0f + 0.8f * s.rain);
     p.cloud2[2] = s.cloud_wind;
     p.cloud2[3] = s.cloud_shadows;
   }

@@ -1888,6 +1888,117 @@ void MotionBlur() {
   imageStore(scene, pixel, vec4(sum / weight, alpha));
 }
 
+float RainHash(vec2 p) { return fract(sin(dot(p, vec2(12.9898, 78.233))) * 43758.5453); }
+
+// Rain: whether the surface around a pixel is one flat, level plane over a
+// dozen pixels (ground, a deck, a road), not leaves or grass tufts whose
+// normal from the depth happens to face up at the pixel itself.
+float RainFlat(ivec2 local, ivec2 size, float dist) {
+  const int r = 6;
+  vec3 at = RelativeAt(local, imageLoad(saved_depth, local).r);
+  ivec2 o[4] = ivec2[4](ivec2(r, 0), ivec2(-r, 0), ivec2(0, r), ivec2(0, -r));
+  vec3 q[4];
+  for (int i = 0; i < 4; ++i) {
+    ivec2 p = clamp(local + o[i], ivec2(0), size - 1);
+    float d = imageLoad(saved_depth, p).r;
+    if (IsSky(d)) return 0.0;
+    q[i] = RelativeAt(p, d);
+  }
+  vec3 n = normalize(cross(q[3] - q[2], q[0] - q[1]));
+  // Soft, so the coarse depth far out does not dot the edges: level, and
+  // each point on the plane through the pixel (within a little of its spread).
+  float flat_ = smoothstep(0.93, 0.97, abs(n.y));
+  float worst = 0.0;
+  for (int i = 0; i < 4; ++i) {
+    vec3 e = q[i] - at;
+    worst = max(worst, abs(dot(e, n)) / (0.05 * length(e) + 0.015 + 0.003 * dist));
+  }
+  return flat_ * (1.0 - smoothstep(0.7, 1.3, worst));
+}
+
+// What a puddle mirrors along r from p: the screen's own picture where the
+// reflected ray goes behind something on it (the plane, trees, buildings),
+// else nothing (hit 0) and the caller's sky.
+vec3 PuddleMirror(vec3 p, vec3 r, ivec2 size, float jitter, out float hit) {
+  hit = 0.0;
+  vec4 c0 = view_proj * vec4(p, 1.0);
+  vec4 dc = view_proj * vec4(r, 0.0);
+  float t = 0.2 + 0.15 * jitter;
+  for (int i = 0; i < 18; ++i) {
+    vec4 c = c0 + dc * t;
+    if (c.w <= 1e-6) break;
+    vec2 ndc = c.xy / c.w;
+    if (any(greaterThan(abs(ndc), vec2(1.0)))) break;
+    ivec2 at = clamp(ivec2(vec2(ndc.x * 0.5 + 0.5, 0.5 - ndc.y * 0.5) * vec2(size)), ivec2(0), size - 1);
+    float d = imageLoad(saved_depth, at).r;
+    if (!IsSky(d)) {
+      float behind = length(p + r * t - camera.xyz) - length(RelativeAt(at, d));
+      if (behind > 0.02 && behind < 0.3 + 0.4 * t) {
+        // Back to where the ray went behind (a few halvings of the step).
+        float lo = (t - 0.12) / 1.33, hi = t;
+        for (int k = 0; k < 4; ++k) {
+          float mid = 0.5 * (lo + hi);
+          vec4 cm = c0 + dc * mid;
+          vec2 nm = cm.xy / max(cm.w, 1e-6);
+          ivec2 am = clamp(ivec2(vec2(nm.x * 0.5 + 0.5, 0.5 - nm.y * 0.5) * vec2(size)), ivec2(0), size - 1);
+          float dm = imageLoad(saved_depth, am).r;
+          bool past = !IsSky(dm) && length(p + r * mid - camera.xyz) > length(RelativeAt(am, dm)) + 0.02;
+          if (past) hi = mid, at = am, ndc = nm; else lo = mid;
+        }
+        // The game's sky dome has a depth: far away is the sky (its colour
+        // here is the game's, before the clouds and the overcast).
+        if (length(RelativeAt(at, imageLoad(saved_depth, at).r)) > 1000.0) return vec3(0.0);
+        vec2 e = abs(ndc);
+        hit = (1.0 - smoothstep(0.85, 1.0, max(e.x, e.y))) * (1.0 - smoothstep(30.0, 60.0, t));
+        return imageLoad(world_color, at).rgb;
+      }
+    }
+    t = t * 1.33 + 0.12;
+  }
+  return vec3(0.0);
+}
+
+// Falling rain: streaks on a few cylinders around the eye (their radius the
+// layer's distance), vertical in the world and drifting with the wind, so
+// they turn with the view; a layer only in front of the surface. Width at
+// least a pixel (thinner drops further out are fainter instead).
+float RainStreaks(vec3 dir, float reach, float px_angle, float time) {
+  float hz = max(length(dir.xz), 0.05);
+  float az = atan(dir.z, dir.x);
+  float tan_el = dir.y / hz;
+  float sum = 0.0;
+  float d = 1.0;
+  for (int i = 0; i < 6; ++i) {
+    if (d > reach) break;
+    float in_front = clamp((reach - d) / (0.25 * d + 0.2), 0.0, 1.0);
+    float px_m = px_angle * d / hz;           // one pixel there, in metres
+    float len = 0.14 + 0.035 * d;             // streak length (m)
+    float n_around = max(floor(6.2831853 * d / max(26.0 * px_m, 0.025)), 8.0);
+    float cw = 6.2831853 * d / n_around;      // cell width (m), whole cells around
+    float ch = len * 2.6;
+    float height = d * tan_el;
+    float v = height + camera.y + time * 8.5 + float(i) * 17.3;
+    float u = az * d + height * 0.12;         // a little slant with the wind
+    vec2 g = vec2(u / cw, v / ch);
+    vec2 cell = floor(g), f = g - cell;
+    cell.x = mod(cell.x, n_around);
+    float h = RainHash(cell + vec2(float(i) * 37.1, float(i) * 11.7));
+    if (h < 0.62) {
+      float x0 = 0.15 + 0.7 * fract(h * 17.31);
+      float du = (f.x - x0) * cw;
+      float w = 0.0011;                        // half the drop's width (m)
+      float wp = max(w, 0.6 * px_m);
+      float line = exp(-du * du / (wp * wp)) * min(w / wp, 1.0);
+      float y0 = fract(h * 31.7) * (1.0 - len / ch);
+      float fy = (f.y - y0) * ch / len;
+      float along = smoothstep(0.0, 0.25, fy) * (1.0 - smoothstep(0.6, 1.0, fy));
+      sum += line * along * in_front * mix(1.0, 0.5, float(i) / 5.0);
+    }
+    d *= 1.8;
+  }
+  return sum;
+}
+
 void main() {
   if (pass_mode == 9u) {
     MotionVectors();
@@ -2153,16 +2264,23 @@ void main() {
   }
   // Cloud shadows: the sun's share lost under the clouds (where the sun still
   // reached the surface).
+  // Rain (water.w): an overcast sky takes most of the sun everywhere.
   float cloud_sun = 1.0;
-  if (cloud.x > 0.0 && cloud2.w > 0.0 && has_depth && !on_sea && debug == 0u) {
-    cloud_sun = CloudSunlight(world);
+  if ((cloud.x > 0.0 && cloud2.w > 0.0 || water.w > 0.0) && has_depth && !on_sea && debug == 0u) {
+    float lost = 0.0;
+    if (cloud.x > 0.0 && cloud2.w > 0.0) {
+      cloud_sun = CloudSunlight(world);
+      lost = (1.0 - cloud_sun) * cloud2.w;
+    }
+    lost = max(lost, 0.6 * water.w);
+    cloud_sun = min(cloud_sun, 1.0 - 0.6 * water.w);
     const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
     float sun_l = dot(sun_color.rgb, lum) * max(n_dot_l, 0.0);
     float amb_l = dot(ambient.rgb, lum);
     float shadowed = clamp(amb_l / max(sun_l + amb_l, 1e-4), 0.2, 1.0);
     float reach = (own ? 1.0 : game_lit) * (1.0 - min(occluded, 1.0)) *
                   smoothstep(0.02, 0.12, n_dot_l);
-    color.rgb *= mix(1.0, shadowed, (1.0 - cloud_sun) * cloud2.w * reach);
+    color.rgb *= mix(1.0, shadowed, lost * reach);
   }
   // Water: shallow water clearer and turquoise over the seabed, foam where
   // the sea meets hulls and shores. The surface point is where the eye ray
@@ -2786,12 +2904,84 @@ void main() {
       color.rgb = color.rgb * (1.0 - c.a) + c.rgb;
     }
   }
+  // Rain (water.w) on the ground: everything wet is darker and catches the
+  // overcast sky at a slant; puddles lie only on flat, level, not green
+  // ground (sand, dirt, decks, roads, over a dozen pixels: not slopes, grass
+  // or leaves) above the sea: darker still, mirroring what stands over them
+  // (from the screen) and the sky, with rings where drops fall.
+  // The colour tests on the game's picture around the pixel (single pixels
+  // of a blue-grey deck passed for water or grass: stripes of dry planks).
+  vec3 rain_avg = vec3(0.0);
+  if (water.w > 0.0 && debug == 0u && has_depth && !on_sea && dist < 140.0) {
+    for (int k = 0; k < 5; ++k) {
+      ivec2 o = k == 0 ? ivec2(0) : ivec2(k == 1 ? 3 : k == 2 ? -3 : 0, k == 3 ? 3 : k == 4 ? -3 : 0);
+      rain_avg += imageLoad(world_color, clamp(local + o, ivec2(0), size - 1)).rgb;
+    }
+  }
+  bool rain_water = WaterColor(rain_avg) && world.y < sea_level + 2.0 && !ground_at_sea;
+  if (water.w > 0.0 && debug == 0u && has_depth && !on_sea && !rain_water && dist < 140.0 &&
+      (world.y > sea_level + 0.25 || ground_at_sea)) {
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
+    float rain_amount = water.w;
+    vec3 cn = rain_avg / max(dot(rain_avg, lum), 1e-4);
+    bool green = cn.g >= cn.r * 0.97 && cn.g > cn.b * 1.2;
+    float up = smoothstep(0.55, 0.92, normal.y);
+    float wet = rain_amount * (1.0 - smoothstep(80.0, 140.0, dist));
+    vec3 r0 = reflect(dir, normal);
+    vec3 sky_r0 = SkyColor(normalize(vec3(r0.x, max(r0.y, 0.02), r0.z)));
+    sky_r0 = mix(sky_r0, vec3(dot(sky_r0, lum)), 0.65);
+    float cos0 = clamp(dot(normal, -dir), 0.0, 1.0);
+    float f0 = pow(1.0 - cos0, 5.0);
+    color.rgb *= 1.0 - wet * (green ? 0.08 : 0.12 + 0.12 * up);
+    color.rgb = mix(color.rgb, sky_r0, wet * up * f0 * (green ? 0.15 : 0.35));
+    // (The wide test only: the pixel's own normal is noisy at a slant.)
+    float flat_here = !green && normal.y > 0.3 && dist < 55.0 ? RainFlat(local, size, dist) : 0.0;
+    if (flat_here > 0.0) {
+      float blob = CloudNoise2(world.xz * 0.11 + vec2(11.3, 4.7)) * 0.65 +
+                   CloudNoise2(world.xz * 0.37 + vec2(2.9, 8.1)) * 0.35;
+      float near = 1.0 - smoothstep(35.0, 55.0, dist);
+      // Damp, darker rims around them.
+      color.rgb *= 1.0 - 0.18 * smoothstep(0.40, 0.50, blob) * wet * near * flat_here;
+      float puddle = smoothstep(0.50, 0.56, blob) * rain_amount * near * flat_here;
+      if (puddle > 0.002) {
+        // Rings: two staggered grids, one drop per cell at a random time.
+        vec2 tilt = vec2(0.0);
+        float ripple_fade = 1.0 - smoothstep(8.0, 25.0, dist);
+        if (ripple_fade > 0.0) {
+          for (int k = 0; k < 2; ++k) {
+            vec2 gp = world.xz * 2.4 + vec2(0.37, 0.61) * float(k);
+            vec2 pc = floor(gp), pf = fract(gp) - 0.5;
+            float ph = RainHash(pc + float(k) * 7.3);
+            vec2 centre = (vec2(ph, fract(ph * 23.7)) - 0.5) * 0.4;
+            float age = fract(refl.z * 0.8 + ph * 3.1);
+            vec2 off = pf - centre;
+            float rr = length(off);
+            float wave = sin((rr - age * 0.42) * 70.0) * exp(-pow((rr - age * 0.42) / 0.05, 2.0)) *
+                         (1.0 - age) * (1.0 - age);
+            tilt += off / max(rr, 1e-3) * wave;
+          }
+        }
+        vec3 rn = normalize(vec3(tilt.x * 0.35 * ripple_fade, 1.0, tilt.y * 0.35 * ripple_fade));
+        vec3 r = reflect(dir, rn);
+        vec3 sky_r = SkyColor(normalize(vec3(r.x, max(r.y, 0.02), r.z)));
+        sky_r = mix(sky_r, vec3(dot(sky_r, lum)), 0.85) * 1.05;
+        float hit;
+        vec3 mirrored = PuddleMirror(world + vec3(0.0, 0.03, 0.0), r, size, 0.5, hit);
+        mirrored = mix(mirrored, vec3(dot(mirrored, lum)), 0.3 * rain_amount) * 0.8;
+        vec3 refl_c = mix(sky_r, mirrored, hit);
+        float cosv = clamp(dot(rn, -dir), 0.0, 1.0);
+        float fres = mix(0.35, 0.85, pow(1.0 - cosv, 3.0));
+        vec3 under = color.rgb * 0.55;
+        color.rgb = mix(color.rgb, mix(under, refl_c, fres), puddle);
+      }
+    }
+  }
   vec3 haze = HazeColor(dir);
   float scattered, optical;
   if (!HazeAt(local, dist, sky, scattered, optical)) HazeMarch(dir, len, sky, jitter, scattered, optical);
   float transmittance = exp(-optical);
   color.rgb = color.rgb * transmittance + haze * scattered;
-  if (sky2.z > 0.0 && debug == 0u) {
+  if (sky2.z > 0.0 && debug == 0u && water.w < 0.5) {
     float motes_reach = sky ? 25.0 : min(dist, 25.0);
     color.rgb += DustMotes(dir, motes_reach, jitter, dot(haze, vec3(0.2126, 0.7152, 0.0722)));
   }
@@ -2799,60 +2989,76 @@ void main() {
     float leaves_reach = sky ? 28.0 : min(dist, 28.0);
     color.rgb += DriftLeaves(dir, leaves_reach, jitter, dot(haze, vec3(0.2126, 0.7152, 0.0722)));
   }
-  // Rain (water.w): drops in a grid fixed in the world (they don't follow the
-  // camera; only the spawn volume around the eye does), falling with the wind;
-  // the eye ray is marched through them. On the ground, puddles: flat places
-  // darken, mirror the sky and carry slow rings where drops fall; and drops on
-  // the view itself (the screen is the lens), more towards its edges.
+  // Rain (water.w) in the air and on the lens: an overcast grade (the sky
+  // grey, the colours flatter, the distance greyer), streaks falling past the
+  // eye (RainStreaks) and drops on the view itself (the screen is the lens):
+  // a few beads at a time, each showing the scene upside down through it,
+  // coming and going, more towards the edges.
   if (water.w > 0.0 && debug == 0u) {
+    const vec3 lum = vec3(0.2126, 0.7152, 0.0722);
     float rain_amount = water.w;
-    if (has_depth && !on_sea && !sky && normal.y > 0.85 && dist < 70.0) {
-      float blob = CloudNoise2(world.xz * 0.07 + vec2(11.3, 4.7)) * 0.7 +
-                   CloudNoise2(world.xz * 0.23 + vec2(2.9, 8.1)) * 0.3;
-      float puddle = smoothstep(0.55, 0.66, blob) * rain_amount * (1.0 - smoothstep(40.0, 70.0, dist));
-      if (puddle > 0.002) {
-        vec2 pc = floor(world.xz * 1.7), pf = fract(world.xz * 1.7) - 0.5;
-        float ph = fract(sin(dot(pc, vec2(12.9898, 78.233))) * 43758.5453);
-        float ring = sin((length(pf) - fract(refl.z * 1.4 + ph)) * 42.0) *
-                     smoothstep(0.5, 0.0, length(pf));
-        vec3 rn = normalize(vec3(normal.x - pf.x * 0.4 - ring * 0.15, 1.0, normal.z - pf.y * 0.4));
-        vec3 r = reflect(dir, rn);
-        float fres = 0.02 + 0.98 * pow(1.0 - clamp(dot(rn, -dir), 0.0, 1.0), 5.0);
-        color.rgb = mix(color.rgb * 0.82, HazeColor(r), clamp(puddle * (0.25 + fres), 0.0, 0.8));
+    float l = dot(color.rgb, lum);
+    vec3 grey = vec3(l) * vec3(0.93, 0.97, 1.04);
+    // (The game's sky dome has a depth: far and above the horizon is sky too.)
+    if (sky || (dir.y > 0.02 && dist > 1500.0)) {
+      color.rgb = mix(color.rgb, grey * 0.85, 0.75 * rain_amount);
+    } else {
+      // The sea keeps more of its colour (grey-blue, not milky).
+      bool sea_here = on_sea || !has_depth || WaterColor(color.rgb);
+      color.rgb = mix(color.rgb, grey, (sea_here ? 0.18 : 0.3) * rain_amount) * (1.0 - 0.05 * rain_amount);
+      float far = smoothstep(80.0, 900.0, dist) * (sea_here ? 0.3 : 0.4) * rain_amount;
+      vec3 fog = vec3(dot(haze, lum)) * vec3(0.72, 0.76, 0.82);
+      color.rgb = mix(color.rgb, fog, far);
+      // What the game drew over the world (put back below) the same way:
+      // the sea drawn over a hull's waterline stood out bright blue.
+      overlay = mix(overlay, vec3(dot(overlay, lum)), 0.3 * rain_amount) * (1.0 - far);
+    }
+    float px_angle = length(ViewDir(vec2(local) + vec2(1.0, 0.0)) - dir);
+    float reach = sky ? 30.0 : min(dist, 30.0);
+    float streaks = RainStreaks(dir, reach, px_angle, refl.z);
+    float bg = dot(color.rgb, lum);
+    vec3 drop_c = vec3(max(dot(haze, lum) * 1.1, bg * 1.25 + 0.03)) * vec3(0.92, 0.96, 1.04);
+    color.rgb = mix(color.rgb, drop_c, clamp(streaks * 0.45 * rain_amount, 0.0, 0.6));
+    // The lens.
+    float aspect = screen.w / screen.z;  // width / height
+    vec2 lens = uv * vec2(aspect, 1.0) * 6.0;
+    vec2 lc = floor(lens), lf = fract(lens) - 0.5;
+    float lh = RainHash(lc + vec2(3.7, 1.9));
+    // Each cell's bead lives a few seconds, then another comes elsewhere.
+    float period = 5.0 + 4.0 * lh;
+    float age = (refl.z + lh * 37.0) / period;
+    float epoch = floor(age);
+    age -= epoch;
+    float eh = RainHash(lc * 1.31 + vec2(epoch * 0.71, epoch * 1.37));
+    float edge = smoothstep(0.15, 0.55, length((uv - 0.5) * vec2(aspect, 1.0)) / aspect);
+    if (eh < 0.08 + 0.22 * edge) {
+      float radius = 0.06 + 0.1 * fract(eh * 53.1);
+      vec2 centre = (vec2(fract(eh * 17.3), fract(eh * 29.9)) - 0.5) * (0.9 - 2.0 * radius);
+      centre.y += age * 0.25 * radius;  // the big ones slide a little
+      vec2 o = (lf - centre) / radius;
+      o.y *= 1.0 + 0.25 * smoothstep(0.0, 1.0, o.y);  // heavier at the bottom
+      float rr = length(o);
+      float life = smoothstep(0.0, 0.08, age) * (1.0 - smoothstep(0.7, 1.0, age));
+      if (rr < 1.0 && life > 0.0) {
+        float body = 1.0 - smoothstep(0.85, 1.0, rr);
+        // Through the drop: the scene around it, flipped and shrunk.
+        float cell_px = 1.0 / (6.0 * screen.w);
+        vec2 look = -o * radius * cell_px * 2.5;
+        ivec2 at = clamp(local + ivec2(look), ivec2(0), size - 1);
+        // (The game's picture, brought to this pixel's brightness after the
+        // effects: its sky is deep blue before the clouds and the overcast.)
+        vec3 seen = imageLoad(world_color, at).rgb;
+        float raw_l = dot(imageLoad(world_color, local).rgb, lum);
+        seen *= clamp(dot(color.rgb, lum) / max(raw_l, 1e-3), 0.4, 2.0);
+        seen = mix(seen, vec3(dot(seen, lum)), 0.6 * rain_amount);
+        vec3 inside = mix(seen, color.rgb, 0.35);
+        // A darker rim and a highlight towards the top left.
+        inside *= 1.0 - 0.35 * smoothstep(0.65, 1.0, rr);
+        float spec = exp(-dot(o - vec2(-0.35, -0.4), o - vec2(-0.35, -0.4)) * 30.0);
+        inside += vec3(0.9, 0.93, 1.0) * spec * 0.35 * max(dot(haze, lum), 0.3);
+        color.rgb = mix(color.rgb, inside, body * life * rain_amount * 0.75);
       }
     }
-    float t_end = sky ? 42.0 : min(dist, 42.0);
-    float dither = InterleavedGradientNoise(vec2(pixel), march.w);
-    float t = 0.6 + dither * 0.8;
-    float sum = 0.0;
-    for (int i = 0; i < 26; ++i) {
-      if (t > t_end) break;
-      vec3 p = camera.xyz + dir * t;
-      // About two drops per cubic metre; cells 1.1 m wide, 2.4 m tall.
-      vec3 q = vec3(p.x + refl.z * 2.6, p.y + refl.z * 15.0, p.z + refl.z * 1.1) / vec3(1.1, 2.4, 1.1);
-      vec3 cell = floor(q), f = fract(q);
-      float h = fract(sin(dot(cell, vec3(12.9898, 78.233, 37.719))) * 43758.5453);
-      float g = fract(h * 43.17);
-      float dx = f.x - (0.15 + 0.7 * h), dz = f.z - (0.15 + 0.7 * g);
-      float thin = exp(-(dx * dx + dz * dz) * 3000.0);
-      float along = smoothstep(0.0, 0.25, f.y) * smoothstep(1.0, 0.7, f.y);
-      sum += thin * along * (1.0 - t / (t_end + 2.0)) * smoothstep(0.4, 1.2, t);
-      t += 0.8 + t * 0.05;
-    }
-    color.rgb += vec3(0.58, 0.64, 0.74) * (sum * rain_amount * 0.16);
-    // Drops on the view (the screen is the lens): beads with a bright rim,
-    // sliding down slowly, more in the corners.
-    vec2 lens = uv * vec2(screen.w / screen.z, 1.0) * 7.0;  // width / height
-    lens.y += refl.z * 0.28;
-    vec2 lc = floor(lens), lf = fract(lens) - 0.5;
-    float lh = fract(sin(dot(lc, vec2(27.61, 57.13))) * 4137.13);
-    float lg = fract(lh * 91.7);
-    float d = length(lf - vec2((lh - 0.5) * 0.5, (lg - 0.5) * 0.5));
-    float bead = smoothstep(0.30, 0.22, d);
-    float rim = smoothstep(0.36, 0.28, d) - bead;
-    float edge = 0.55 + 0.45 * smoothstep(0.3, 0.9, length(uv - 0.5) * 1.6);
-    color.rgb = mix(color.rgb, color.rgb * 0.92 + vec3(0.09, 0.11, 0.13), bead * rain_amount * 0.35 * edge);
-    color.rgb += vec3(0.5, 0.55, 0.62) * (rim * rain_amount * 0.12 * edge);
   }
   if (tod.w > 0.0) color.rgb *= mix(vec3(1.0), tod.rgb, tod.w);
   color.rgb = max(color.rgb + overlay * transmittance, vec3(0.0));
