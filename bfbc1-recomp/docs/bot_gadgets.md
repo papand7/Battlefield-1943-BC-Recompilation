@@ -3,8 +3,9 @@
 Findings from running Valley Run (mp_harbour_day1) as a dedicated server with
 bots (`--dedicated --maps mp_harbour_day1 --bots N`), the test options
 `BF_BOT_STRING_SCAN`, `BF_BOT_WEAPON_DUMP`, `BF_BOT_KIT_DUMP`,
-`BF_BOT_GRENADE_TEST`, and `BF_BOT_CLASS`. (`BF_BOT_NAV_RECORD=0` avoids a
-start-up crash of the trail recorder thread, which can run before guest memory exists.)
+`BF_BOT_GRENADE_TEST`, and `BF_BOT_CLASS`. (The trail recorder thread's start-up
+crash, before guest memory existed, is fixed: it waits for `GuestMemoryReady()`, and
+`IsCommitted` is false until then.)
 
 ## Which kit carries what
 
@@ -67,6 +68,32 @@ threw), and bot 2 at health 78 threw one at itself and was at 88 four seconds la
 Bags don't expire quickly (8 alive after 8 throws), and a second throw at the same place
 25 s later sometimes made no new bag: the medkit seems to be limited (a cooldown or a
 few uses), not studied further.
+
+## The Assault's auto injector: not available to the bots (blocked)
+
+Tried with `BF_BOT_INJECT_SCAN=1` (bot 0 alone, so no enemy; every 7 s it is hurt down to
+40 through the server's damage call 822D1AA0 with no attacker, then one candidate button of
++84/+80 is tapped at 0.5 s, fire held 1.8-2.6 s, the button again at 4 s, and its health
+compared at 6.8 s; bit -1 presses nothing):
+
+* Health does not come back by itself (the control phases stayed at 40 for minutes).
+* **Support** (control): the bit 18 phase healed 40 -> 55 (its medkit), no other phase did.
+  So the method sees a heal.
+* **Assault**: no phase healed (bits 18, 19, 20, 17, 29-36, 10, 22, 24-28, 11, 12, 14), also
+  not with the injector's SoldierWeaponData forced as the spawn's weapon choice (+1D8,
+  `BF_BOT_WEAPON_PICK=AutoInjector`).
+
+The loadout text says why: "AUTO INJECTOR **(UNLOCK)**", the kit's unlock slot, still locked
+(like the Support's MORTAR STRIKE, the Recon's LASER DESIGNATOR...). Unlocks came from the
+player's online stats; nobody here has them, and the bots get the kit's defaults. The weapon
+data of the unlockables has a `PersistentWeapon` at +100 (a stats record: a short name such as
+'m16', 'pwtl'); no unlock flag was found in it. Giving the bots the injector needs the game's
+unlock check found first (where a soldier's weapons are built from its kit). Until then no
+Assault behaviour was added (bit 18 on an Assault would take out its grenade launcher).
+
+Test options kept: `BF_BOT_INJECT_SCAN`, `BF_BOT_WEAPON_PICK=<anim tree name part>` (Assault
+bots' +1D8), `BF_BOT_WEAPON_REFS` (the weapon datas' PersistentWeapon words and who points at
+the injector's and medkit's data), and with `BF_BC_KITS` every SoldierWeaponData's assets.
 
 ## BF1943
 
