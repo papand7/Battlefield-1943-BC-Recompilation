@@ -20,6 +20,7 @@ struct Server {
 // The game's 4-letter tag in browser packets and the beacon's UDP port
 // (bf1943: "BF43", 19430), so two games on one network don't list each other.
 void SetGame(const char* tag, uint16_t beacon_port);
+const char* GameTag();  // ("BF43", or Bad Company's "BFBC")
 // Searches the network for hosts (in the background, about a second).
 void Refresh();
 bool Browsing();

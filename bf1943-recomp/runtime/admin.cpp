@@ -18,6 +18,7 @@
 #include "xenia_bridge.h"
 #include "admin_server.h"
 #include "bot_llm.h"
+#include "commander.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -149,6 +150,16 @@ void BroadcastChat(const std::string& text) {
   PrunePeersLocked();
   for (auto& [ip, peer] : g_peers) SendTo(ip, peer.first, text);
 }
+// Host: a player's commander packet ("s", "l", "k", "t <team>": commander.h).
+// The answer: "BF43M!h<team>" or "BF43M!n" to it, and a chat line (to
+// everyone if a seat changed hands).
+void OnCommanderPacket(uint32_t ip, uint16_t peer_port, const std::string& body) {
+  if (body.empty() || !commander::Available()) return;
+  const commander::Reply r = commander::Request(ip, peer_port, PlayerName(ip, peer_port), body, false);
+  SendRaw(ip, peer_port, r.holds ? "BF43M!h" + std::to_string(r.holds) : std::string("BF43M!n"));
+  if (r.changed) BroadcastChat("[commander] " + r.text);
+  else if (!r.text.empty() && body[0] != 'k') SendTo(ip, peer_port, "[commander] " + r.text);
+}
 void ChatNetThread() {
   WSADATA wsa;
   WSAStartup(MAKEWORD(2, 2), &wsa);
@@ -184,6 +195,9 @@ void ChatNetThread() {
       next_hello = std::chrono::steady_clock::now() + std::chrono::seconds(5);
       SendRaw(g_join_address, HostChatPort(), "BF43H!" + std::to_string(g_chat_port.load()) + "|" + HelloBody());
     }
+    // A joiner holding a commander seat: its keep-alive (while it has input).
+    if (!Host() && g_join_address && commander::KeepAliveDue())
+      SendRaw(g_join_address, HostChatPort(), "BF43M!" + std::to_string(g_chat_port.load()) + "|k");
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(g_chat_socket, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
@@ -191,9 +205,9 @@ void ChatNetThread() {
     const char kind = buf[4];
     std::string body(buf + 6, size_t(n) - 6);
     if (kind != 'C') {
-      if (Host() && (kind == 'H' || kind == 'A')) {
-        // "<chat port>|...": a joiner's hello, or a remote admin's command
-        // ("<chat port>|<password>|<line>").
+      if (Host() && (kind == 'H' || kind == 'A' || kind == 'M')) {
+        // "<chat port>|...": a joiner's hello, a remote admin's command
+        // ("<chat port>|<password>|<line>") or a commander request.
         size_t bar = body.find('|');
         const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
         if (!peer_port) continue;
@@ -202,6 +216,10 @@ void ChatNetThread() {
         body = body.substr(bar + 1);
         if (kind == 'H') {
           OnHello(from.sin_addr.s_addr, peer_port, body);
+          continue;
+        }
+        if (kind == 'M') {
+          OnCommanderPacket(from.sin_addr.s_addr, peer_port, body);
           continue;
         }
         size_t bar2 = body.find('|');
@@ -229,6 +247,7 @@ void ChatNetThread() {
         if (kind == 'K') AddLine(Wide(body)), OnKicked(body), g_sent_away = true;
         else if (kind == 'N') AddLine(L"The host changes the map to " + Wide(body) + L"."), OnMapChanging(body);
         else if (kind == 'R') OnMapReady(body);
+        else if (kind == 'M') commander::OnHostReply(body);  // (which seat this game holds)
       }
       continue;
     }
@@ -259,6 +278,42 @@ void ChatNetThread() {
 }
 #endif
 
+// /commander us|japan, leave, cooldown <s> (the host), alone: the seats. Any
+// player's: a joiner's goes to the host, which decides (commander.h).
+void CommanderCommand(const std::string& arg) {
+  std::string word = arg.substr(0, arg.find(' '));
+  const std::string rest = Trim(arg.substr(word.size()));
+  std::transform(word.begin(), word.end(), word.begin(), [](unsigned char c) { return char(tolower(c)); });
+  std::string body;
+  if (word.empty()) body = "s";
+  else if (word == "leave") body = "l";
+  else if (word == "cooldown") body = "c " + rest;
+  else if (commander::ParseTeam(word)) body = "t " + word;
+  else {
+    AddLine(L"COMMANDER: /commander us|japan takes a seat, leave gives it up, alone shows them (host: cooldown <s>)");
+    return;
+  }
+  if (!Host()) {
+    if (body[0] == 'c') {
+      AddLine(L"COMMANDER: the host sets the cooldown");
+      return;
+    }
+#ifdef _WIN32
+    SendRaw(g_join_address, HostChatPort(), "BF43M!" + std::to_string(g_chat_port.load()) + "|" + body);
+#endif
+    return;
+  }
+  const commander::Reply r = commander::Request(0, 0, g_dedicated ? "the server" : "the host", body, true);
+  if (r.text.empty()) return;
+#ifdef _WIN32
+  if (r.changed) {
+    BroadcastChat("[commander] " + r.text);
+    return;
+  }
+#endif
+  AddLine(Wide("[commander] " + r.text));
+}
+
 void Command(const std::string& line) {
   std::string cmd = line.substr(1), arg;
   size_t sp = cmd.find(' ');
@@ -268,6 +323,7 @@ void Command(const std::string& line) {
   if (cmd == "help") {
     AddLine(L"/weather clear|rain  /time dawn|day|sunset|night  /name <text>  /password <text>  /bottalk on|off  /say <text>");
     AddLine(Wide(ServerHelp()) + (Host() ? L"" : L"  /login <admin password>"));
+    if (commander::Available()) AddLine(L"/commander us|japan|leave (anyone: the team's commander seat)");
     return;
   }
   if (cmd == "login") {
@@ -282,6 +338,10 @@ void Command(const std::string& line) {
 #else
     if (!arg.empty()) AddLine(L"> " + Wide(arg));
 #endif
+    return;
+  }
+  if (cmd == "commander" && commander::Available()) {  // (any player's, not only the host's)
+    CommanderCommand(arg);
     return;
   }
   if (!Host()) {
@@ -435,6 +495,13 @@ void ConsoleThread() {
 
 void Start() {
   if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
+  commander::Start([](const std::string& note) {  // (a seat freed: everyone hears it)
+#ifdef _WIN32
+    if (Host()) BroadcastChat("[commander] " + note);
+#else
+    AddLine(Wide("[commander] " + note));
+#endif
+  });
 #ifdef _WIN32
   std::thread(ChatThread).detach();
   std::thread(ChatNetThread).detach();
@@ -468,7 +535,7 @@ void Execute(const std::string& raw, bool console) {
   // The console takes commands without their '/' too ("kick Bob").
   if (console && line[0] != '/') {
     static const char* const kWords[] = {"help", "players", "who", "kick", "ban", "unban", "map", "bots", "weather",
-                                         "time", "name", "password", "bottalk", "say", "quit", "clear"};
+                                         "time", "name", "password", "bottalk", "say", "quit", "clear", "commander"};
     std::string first = line.substr(0, line.find(' '));
     std::transform(first.begin(), first.end(), first.begin(), [](unsigned char c) { return char(tolower(c)); });
     for (const char* w : kWords)

@@ -285,6 +285,7 @@ void SetGame(const char* tag, uint16_t beacon_port) {
   snprintf(g_tag, sizeof(g_tag), "%.4s", tag);
   kBeaconPort = beacon_port;
 }
+const char* GameTag() { return g_tag; }
 
 // The directed broadcast address of each of this PC's IPv4 networks (host
 // order): 255.255.255.255 leaves through one adapter only, often a virtual one
