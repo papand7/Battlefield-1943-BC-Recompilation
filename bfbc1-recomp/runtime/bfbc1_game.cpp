@@ -1246,3 +1246,7 @@ int rt::LocalVehicle() {
                         .count();
   return g_local_vehicle.load(std::memory_order_relaxed);
 }
+// The camera view in a vehicle: the right stick click in the tank, car, boat
+// and gunner layouts (objects/vehicles/common/input/*vehicleinput.dbx; the
+// artillery has none).
+uint16_t rt::VehicleCameraButton() { return XINPUT_GAMEPAD_RIGHT_THUMB; }

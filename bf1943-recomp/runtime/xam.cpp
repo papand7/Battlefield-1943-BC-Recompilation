@@ -764,12 +764,23 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
     if (menus || !moving || LocalVehicle() != kOnFoot) on = false;
     if (g_sprint_toggle && on) g.wButtons |= XINPUT_GAMEPAD_LEFT_THUMB;
   }
+  // The vehicle the player is in (none in menus): the keys drive it.
+  int vehicle = menus ? kOnFoot : LocalVehicle();
+  g_local_flying = vehicle == kFlying;
+  // In a vehicle (any seat) the jump key fires, as the fire key does (below),
+  // and not A: that is the throttle in Bad Company's layouts and the seat
+  // switch in BF1943's. The crouch keys (C) change the camera view.
+  bool jump_fires = false;
   for (const Bind& b : kBinds) {
     if (b.action == pcset::kSprint && g_sprint_toggle) continue;  // (above)
+    WORD button = b.button;
+    if (vehicle != kOnFoot && b.action == pcset::kCrouch) button = VehicleCameraButton();
     for (int slot = 0; slot < 2; ++slot) {
       int vk = Key(b.action, slot);
       // Mouse buttons in menus are select and back (below).
-      if (vk && Down(vk) && !(menus && (vk == VK_LBUTTON || vk == VK_RBUTTON))) g.wButtons |= b.button;
+      if (!vk || !Down(vk) || (menus && (vk == VK_LBUTTON || vk == VK_RBUTTON))) continue;
+      if (vehicle != kOnFoot && b.action == pcset::kJump) jump_fires = true;
+      else g.wButtons |= button;
     }
   }
   if (!g_in_menus && !pcset::WaitRelease()) {
@@ -781,9 +792,6 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
       {VK_RETURN, XINPUT_GAMEPAD_A},       {VK_BACK, XINPUT_GAMEPAD_B},
       {VK_UP, XINPUT_GAMEPAD_DPAD_UP},     {VK_DOWN, XINPUT_GAMEPAD_DPAD_DOWN},
       {VK_LEFT, XINPUT_GAMEPAD_DPAD_LEFT}, {VK_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT}};
-  // The vehicle the player is in (none in menus): the keys drive it.
-  int vehicle = menus ? kOnFoot : LocalVehicle();
-  g_local_flying = vehicle == kFlying;
   for (const Map& m : kMenuKeys) {
     bool arrow = m.vk == VK_UP || m.vk == VK_DOWN || m.vk == VK_LEFT || m.vk == VK_RIGHT;
     if (Down(m.vk) && !(arrow && vehicle == kFlying)) g.wButtons |= m.button;
@@ -909,7 +917,7 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
   if (!free_cursor) {
     // Mouse movement must count as pad activity (the packet number changes).
     if (look.rx || look.ry) g.sThumbRX ^= 1;
-    if (held(pcset::kFire) && !buttons_held) g.bRightTrigger = 255;
+    if ((held(pcset::kFire) && !buttons_held) || jump_fires) g.bRightTrigger = 255;
     // Aim: held, or (the CONTROLS page) switched on and off with a press;
     // a vehicle or sprinting ends it.
     bool aim_key = held(pcset::kZoom) && !buttons_held && vehicle != kFlying;

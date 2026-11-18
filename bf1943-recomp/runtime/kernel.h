@@ -149,6 +149,10 @@ extern bool g_plane_mouse_invert;        // PC settings: mouse forward pulls up 
 // The local player's vehicle (bots.cpp; none in games without the probe).
 enum LocalVehicleKind { kOnFoot = 0, kDriving = 1, kFlying = 2, kGunner = 3 };
 int LocalVehicle();
+// The pad button that switches a vehicle's camera between first and third
+// person in this game's vehicle input layouts (bots.cpp, bfbc1_game.cpp): the
+// crouch keys give it in a vehicle (xam.cpp).
+uint16_t VehicleCameraButton();
 // Mouse aim (xam.cpp, turned into the aim by game_patches.cpp): the mouse's
 // counts, given to the local soldier's aim update; dropped when the look stops
 // (menus, Alt, a vehicle).

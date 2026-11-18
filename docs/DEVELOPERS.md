@@ -73,7 +73,9 @@ type), animated, for mouse, keyboard and controller alike.
   still turns through the game's stick, and `BF_NO_MOUSE_AIM=1` puts the mouse back
   on the stick.
 - **Vehicle keys**: W/S throttle and brake, A/D steering or rudder, arrow keys pitch and
-  roll planes, separate **plane mouse sensitivity** and invert.
+  roll planes, Space fires (as the fire key; not A there), C (the crouch keys) changes the
+  camera view (BF1943: D-pad up, Bad Company: right stick click, as in the games' vehicle
+  input layouts), separate **plane mouse sensitivity** and invert.
 - **PRESS ANY KEY** title; any key or mouse button starts.
 - **New main menu** (HOST GAME, JOIN GAME, SETTINGS, QUIT) replacing the game's: its
   buttons call the game's own code directly (`hostMultiplayerLocal`), the game's front end

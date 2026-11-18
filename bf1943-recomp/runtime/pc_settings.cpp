@@ -108,7 +108,7 @@ const ActionInfo kActions[kActionCount] = {
     {L"MOVE FORWARD", 'W', 0},       {L"MOVE BACK", 'S', 0},
     {L"MOVE LEFT", 'A', 0},          {L"MOVE RIGHT", 'D', 0},
     {L"FIRE", VK_LBUTTON, 0},        {L"ZOOM / AIM", VK_RBUTTON, 0},
-    {L"JUMP", VK_SPACE, 0},          {L"CROUCH", VK_CONTROL, 'C'},
+    {L"JUMP / VEHICLE FIRE", VK_SPACE, 0}, {L"CROUCH / VEHICLE VIEW", VK_CONTROL, 'C'},
     {L"SPRINT", VK_SHIFT, 0},        {L"RELOAD", 'R', 0},
     {L"ENTER / USE", 'E', 0},        {L"KNIFE", 'F', 'V'},
     {L"GRENADE", 'G', VK_MBUTTON},   {L"SWITCH WEAPON", '1', '2'},
@@ -383,7 +383,11 @@ void Build() {
     static std::string keys[kActionCount];
     keys[a] = "key_" + std::to_string(a);
     s.key = keys[a].c_str();
-    s.desc = L"Enter or click, then press a key or mouse button (Esc cancels).";
+    s.desc = a == kJump ? L"In a vehicle this key fires, like the fire key. Enter or click, then press a key or mouse "
+                          L"button (Esc cancels)."
+             : a == kCrouch ? L"In a vehicle this key changes the camera view (first or third person). Enter or click, "
+                              L"then press a key or mouse button (Esc cancels)."
+                            : L"Enter or click, then press a key or mouse button (Esc cancels).";
     v.push_back(s);
   }
   // Profile.

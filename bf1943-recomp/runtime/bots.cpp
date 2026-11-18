@@ -930,4 +930,10 @@ void StartBotDirector() {
 // nothing for BF1943 (its bots are players on the server, not pads).
 bool AddBotInput(XINPUT_GAMEPAD&) { return false; }
 
+// The camera view in a vehicle: D-pad up in every vehicle and aircraft layout
+// (objects/vehicles/common/input/default*vehicleinput.dbx, the same action
+// slot as the right stick click in Bad Company's; the plane HUD's own prompt
+// reads "up: CHANGE CAMERAS").
+uint16_t VehicleCameraButton() { return XINPUT_GAMEPAD_DPAD_UP; }
+
 }  // namespace rt

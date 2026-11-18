@@ -37,7 +37,7 @@ The latest version of the launcher can be found in the [Releases](https://github
 
 ### Input
 - **Mouse and Keyboard** - Full keyboard and mouse support, with every key rebindable under **Settings → Keys**.
-- **Vehicles on the Keyboard** - W and S for throttle and brake, A and D to steer, and the arrow keys to fly planes, with a separate plane mouse sensitivity.
+- **Vehicles on the Keyboard** - W and S for throttle and brake, A and D to steer, the arrow keys to fly planes, Space to fire and C to change the camera view, with a separate plane mouse sensitivity.
 - **Controller** - A connected controller works too.
 
 ### Menus
