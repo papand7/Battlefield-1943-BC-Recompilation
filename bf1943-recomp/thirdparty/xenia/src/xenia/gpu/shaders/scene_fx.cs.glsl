@@ -2251,9 +2251,13 @@ void main() {
   // The sea drawn without depth over a sea bed (the game's sea does not write
   // depth): what is seen beyond the sea plane is seen through the water.
   float bed_depth = 0.0;
+  // (The cheap tests first: only a pixel seen beyond the sea plane and under
+  // it is traced. Tracing every pixel looking down cost a third of the frame
+  // rate, and the game then drew its trees at a lower detail.)
+  float t_p0 = dir.y < -1e-4 ? (sea_level - camera.y) / dir.y : 0.0;
   if (!sea_px && has_depth && level_ok && camera.y > sea_level + 0.5 &&
-      dir.y < -1e-4 && !ground_at_sea) {
-    float t_p = (sea_level - camera.y) / dir.y;
+      dir.y < -1e-4 && !ground_at_sea && world.y < sea_level - 0.3 && dist > t_p0 + 0.5 + 0.01 * t_p0) {
+    float t_p = t_p0;
     vec3 cb = color.rgb / max(dot(color.rgb, vec3(0.2126, 0.7152, 0.0722)), 1e-4);
     bool blue = cb.b > cb.r * 1.15 || (cb.g > cb.r * 1.15 && cb.b > cb.r);
     // Not blue (the game's far sea is fogged grey-beige): the traced terrain along
