@@ -13,14 +13,14 @@ const path = require('path');
 const settingsFile = path.join(app.getPath('appData'), 'BF1943Launcher', 'settings.json');
 const defaults = {
   name: process.env.USERNAME || process.env.USER || 'Player',
-  resolution: '2',      // --res-scale
-  upscaling: 'auto',    // --sharpen (temporal: DLSS on RTX, else FSR 3)
-  frameRate: '120',     // --max-fps (0 = no limit)
+  resolution: '1',      // --res-scale (low: 1x)
+  upscaling: 'off',     // --sharpen (off: no upscaling; auto = temporal DLSS / FSR 3)
+  frameRate: '0',       // --max-fps (0 = no limit)
   window: '1920x1080',
   display: 'windowed',  // --display (fullscreen: borderless on the monitor)
   upscaleQuality: 'off',  // --upscale-quality (with FSR 3 / DLSS / auto)
   frameGen: 'off',      // --frame-gen (AMD FSR 3.1 frame generation, with FSR 3 / DLSS / auto)
-  shadowDetail: 'high',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
+  shadowDetail: 'low',   // --shadowmap / --shadow-distance (the game's SHADOW DETAIL)
   fov: '0',             // --fov (0: the game's own)
   aspect: '2',            // ASPECT RATIO on a screen wider than 16:9: 0 bars, 1 stretch, 2 ultrawide
   wideHud: '1',           // ULTRAWIDE HUD: 1 corner parts at the edges, 0 all in the 16:9 middle
@@ -28,7 +28,7 @@ const defaults = {
   textures: true,
   collectShaders: false,  // --dump-shaders: the shaders the game draws, for the PBR table
   collectTextures: false, // --log-textures: textures the pack has no replacement for
-  preset: 'enhanced',   // --preset stock|enhanced|vivid|toon|noir|ww2
+  preset: 'stock',      // --preset stock|enhanced|vivid|toon|noir|ww2 (stock: the game's own look, low cost)
   blood: false,         // --blood (blood on hits, bodies torn apart by explosions)
   hdr: false,           // --hdr (HDR10 output when Windows HDR is on)
   game: 'bf1943',       // which tab: bf1943 | bfbc1

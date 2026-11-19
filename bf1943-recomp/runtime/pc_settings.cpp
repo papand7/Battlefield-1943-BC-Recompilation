@@ -132,7 +132,7 @@ void Build() {
                      L"Enhanced: every effect. Vivid is enhanced, brighter and more colourful; Toon, Noir and WW2 are enhanced with a film look. "
                      L"Stock: the game as it was (from stock or to it on the next start).",
                      {L"STOCK", L"ENHANCED", L"VIVID", L"TOON", L"NOIR", L"WW2"},
-                     {"stock", "enhanced", "vivid", "toon", "noir", "ww2"}, 1, false, "preset"));
+                     {"stock", "enhanced", "vivid", "toon", "noir", "ww2"}, 0, false, "preset"));
   v.push_back(Choice(kGraphics, "resolution", L"RESOLUTION SCALE",
                      L"The game drawn at 1, 2 or 3 times its own 1280x720.",
                      {L"1X (720P)", L"2X (1440P)", L"3X (2160P)"}, {"1", "2", "3"}, 1, true,
@@ -141,7 +141,7 @@ void Build() {
                      L"How the frame is fitted to the window. FSR 3 and DLSS (NVIDIA RTX; AUTO picks): "
                      L"temporal, from the resolution scale up to a larger window (1X to 1440P or 4K).",
                      {L"FSR", L"CAS SHARPEN", L"BILINEAR", L"FSR 3", L"DLSS", L"AUTO (DLSS / FSR 3)"},
-                     {"fsr", "cas", "none", "fsr3", "dlss", "auto"}, 5, true,
+                     {"fsr", "cas", "none", "fsr3", "dlss", "auto"}, 2, true,
                      "upscaling"));
   v.push_back(Choice(kGraphics, "upscale_quality", L"UPSCALE QUALITY",
                      L"With FSR 3, DLSS or AUTO: picks the resolution scale for your window or screen. "
@@ -183,7 +183,7 @@ void Build() {
                      {L"OFF", L"GAME", L"LOW", L"HIGH"}, {"0", "1", "low", "high"}, 1, false, "motionBlur"));
   v.push_back(Choice(kGraphics, "fps", L"FRAME RATE LIMIT", L"Most frames a second.",
                      {L"30", L"60", L"90", L"120", L"144", L"150", L"165", L"180", L"240", L"UNLIMITED"},
-                     {"30", "60", "90", "120", "144", "150", "165", "180", "240", "0"}, 3, false, "frameRate"));
+                     {"30", "60", "90", "120", "144", "150", "165", "180", "240", "0"}, 9, false, "frameRate"));
   v.push_back(Choice(kGraphics, "skip_intro", L"SKIP INTRO",
                      L"Fast-forwards the logos and cards before the title screen.", kOffOn, {"0", "1"}, 1));
   v.push_back(Choice(kGraphics, "fps_overlay", L"FPS COUNTER",
