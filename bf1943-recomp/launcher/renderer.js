@@ -165,6 +165,7 @@ function selectGame(key) {
   document.querySelectorAll('.game').forEach((t) => t.classList.toggle('on', t.dataset.game === key));
   $('year').textContent = key === 'bfbc1' ? 'BAD COMPANY' : '1943';
   $('year').classList.toggle('long', key === 'bfbc1');
+  document.body.dataset.game = key;  // (the per-game look: styles.css; the title typed again: nav.js)
   showTextures(key);
   refreshCollect();
   document.title = g.title;
@@ -343,7 +344,7 @@ $('shaderopen').onclick = () => window.launcher.collectOpen(settings.game, 'shad
 $('texmissopen').onclick = () => window.launcher.collectOpen(settings.game, 'textures');
 $('texmake2').onclick = () => $('texmake').click();
 $('pbrrebuild').onclick = async () => {
-  $('shaderhint').textContent = 'Rebuilding the PBR table from the collected shaders�';
+  $('shaderhint').textContent = 'Rebuilding the PBR table from the collected shaders…';
   const r = await window.launcher.pbrRebuild(settings.game);
   $('shaderhint').textContent = r.error ? r.error
     : `Added ${r.added} shader(s) of ${r.found} found (${r.total} in the table). Restart the game.`;
