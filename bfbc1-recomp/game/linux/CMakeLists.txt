@@ -126,7 +126,7 @@ if(BFBC1_CLIENT)
   # GDI+; stb_truetype; the fonts copied next to the exe).
   add_executable(bfbc1 ${RUNTIME_SOURCES} ${PC_UI_SOURCES} ${BC_RUNTIME_SOURCES} ${BC}/runtime/bc_mp_menu.cpp
                  ${DETOUR_SOURCES} ${STUBS})
-  target_include_directories(bfbc1 PRIVATE ${ROOT}/runtime ${ROOT}/runtime/xenia_shims
+  target_include_directories(bfbc1 PRIVATE ${ROOT}/runtime ${ROOT}/tools/msvc_compat ${ROOT}/runtime/xenia_shims
                              ${ROOT}/thirdparty/recastnavigation/Detour/Include ${ROOT}/thirdparty/stb)
   add_custom_command(TARGET bfbc1 POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory ${ROOT}/data/fonts $<TARGET_FILE_DIR:bfbc1>/fonts)

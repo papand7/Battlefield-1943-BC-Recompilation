@@ -49,7 +49,7 @@ add_custom_command(OUTPUT ${STUBS}
   DEPENDS ${RUNTIME_SOURCES} ${ROOT}/tools/gen_import_stubs.py ${BC}/generated/ppc/ppc_recomp_shared.h)
 
 add_executable(bfbc1 ${RUNTIME_SOURCES} ${BC_RUNTIME_SOURCES} ${STUBS})
-target_include_directories(bfbc1 PRIVATE ${ROOT}/runtime ${ROOT}/thirdparty/recastnavigation/Detour/Include)
+target_include_directories(bfbc1 PRIVATE ${ROOT}/runtime ${ROOT}/tools/msvc_compat ${ROOT}/thirdparty/recastnavigation/Detour/Include)
 target_compile_options(bfbc1 PRIVATE -march=x86-64-v3 -fno-strict-aliasing /Z7)
 target_link_libraries(bfbc1 PRIVATE bfbc1_ppc bfbc1_xexload xenia_gpu xinput dbghelp shcore dwmapi winmm bcrypt ws2_32 synchronization)
 target_link_options(bfbc1 PRIVATE /DEBUG /OPT:REF /OPT:ICF)

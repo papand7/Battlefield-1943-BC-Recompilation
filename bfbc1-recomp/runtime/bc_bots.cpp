@@ -44,7 +44,7 @@ int SetActiveBots(int n);
 #include "DetourNavMesh.h"
 #include "DetourNavMeshQuery.h"
 #include "DetourCommon.h"
-#include "../../bf1943-recomp/tools/msvc_compat/crash_diag.h"  // PrintStack
+#include "crash_diag.h"  // PrintStack
 
 #include <setjmp.h>
 #include <algorithm>
