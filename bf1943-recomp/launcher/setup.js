@@ -18,6 +18,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
+const { openBuildLog } = require('./buildlog');
 
 const kGames = {
   bf1943: {
@@ -213,13 +214,15 @@ const kToolNames = {
 };
 
 // ---- running things -------------------------------------------------------------------
-function run(cmd, args, opts, onLine) {
+// sink(line), if given, gets every line (the build's full log), onLine the ones shown.
+function run(cmd, args, opts, onLine, sink) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { windowsHide: true, ...opts });
     let tail = [];
     const feed = (buf) => {
       for (const line of buf.toString().split(/\r?\n/)) {
         if (!line.trim()) continue;
+        if (sink) sink(line);
         tail.push(line);
         if (tail.length > 30) tail.shift();
         onLine(line);
@@ -339,11 +342,22 @@ async function setup(launcherDir, game, gamePath, send) {
         (p.tree !== p.src ? ` "-DROOT=${p.src.replace(/\\/g, '/')}"` : '') + ' || exit /b 1',
       'cmake --build build\\game || exit /b 1',
     ].join('\r\n'));
-    await run('cmd.exe', ['/d', '/c', bat], {}, (line) => {
-      const m = /^\[(\d+)\/(\d+)\]/.exec(line);
-      if (m) send({ progress: Number(m[1]) / Number(m[2]) });
-      if (!m || Number(m[1]) % 25 === 0) log(line.length > 160 ? line.slice(0, 160) + '…' : line);
-    });
+    // All of the output goes to <root>/logs/build-<game>.log; a failure shows the
+    // first FAILED: line and the first errors from it (ninja's own last line,
+    // "build stopped: subcommand failed.", says nothing), and where the log is.
+    const blog = openBuildLog(p.root, game);
+    log(`Build log: ${blog.path}`);
+    try {
+      await run('cmd.exe', ['/d', '/c', bat], {}, (line) => {
+        const m = /^\[(\d+)\/(\d+)\]/.exec(line);
+        if (m) send({ progress: Number(m[1]) / Number(m[2]) });
+        if (!m || Number(m[1]) % 25 === 0) log(line.length > 160 ? line.slice(0, 160) + '…' : line);
+      }, blog.write);
+    } catch (e) {
+      blog.write(e.message);
+      throw new Error('The build failed.\n' + blog.explain());
+    }
+    blog.close();
     const built = path.join(p.tree, 'build', 'game');
     fs.mkdirSync(p.gameDir, { recursive: true });
     fs.copyFileSync(path.join(built, p.game.exe), path.join(p.gameDir, p.game.exe));

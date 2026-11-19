@@ -27,4 +27,9 @@ set -- --tickrate "$TICKRATE" --weather "$WEATHER" --time "$TIME"
 [ "$HARDCORE" = "1" ] && set -- "$@" --hardcore
 [ "$PUBLISH" = "1" ] && set -- "$@" --publish
 cd "$(dirname "$0")" || exit 1
-exec build/linux-bfbc1-server/game/bfbc1_server --game "$GAME" --user server_data --dedicated --name "$NAME" --servername "$SERVERNAME" --maps "$MAPS" --bots "$BOTS" "$@"
+# the game files build_server.sh set up, and its build
+[ -f original/bfbc1/default.xex ] && GAME=original/bfbc1
+BIN=build/linux-bfbc1-server/game/bfbc1_server
+[ -x "$BIN" ] || BIN=build/macos-bfbc1-server/game/bfbc1_server
+[ -x "$BIN" ] || { echo "The server is not built yet: run build_server.sh --bfbc1 (see README-SERVER.txt)"; exit 1; }
+exec "$BIN"--game "$GAME" --user server_data --dedicated --name "$NAME" --servername "$SERVERNAME" --maps "$MAPS" --bots "$BOTS" "$@"

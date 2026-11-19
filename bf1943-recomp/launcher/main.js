@@ -2,7 +2,7 @@
 // Also runs the dedicated server (the SERVER page; --server opens on it).
 const { app, BrowserWindow, ipcMain, dialog, shell } = require('electron');
 // (Linux: its own first-run setup, build_linux.sh; the game files found as on Windows.)
-const setup = require(process.platform === 'linux' ? './setup_linux' : './setup');
+const setup = require(process.platform === 'linux' || process.platform === 'darwin' ? './setup_linux' : './setup');
 const update = require('./update');
 const { spawn, execFile, execFileSync } = require('child_process');
 const { pathToFileURL } = require('url');
@@ -37,9 +37,20 @@ const defaults = {
 
 // The folder the player put the launcher (and their game files) in: the
 // single-exe release (electron-builder portable) runs from a temporary copy.
-// (Linux: the AppImage runs mounted elsewhere; $APPIMAGE is the file itself.)
+// (Linux: the AppImage runs mounted elsewhere; $APPIMAGE is the file itself.
+// macOS: the folder of the .app, unless that is /Applications, the disk image or the
+// randomised folder Gatekeeper runs a downloaded app from: then ~/Battlefield.)
+function macPlayerDir() {
+  const dir = path.dirname(path.resolve(process.execPath, '..', '..', '..'));
+  if (/^\/(Applications|Volumes|private)(\/|$)/.test(dir) || dir === '/') {
+    const home = path.join(require('os').homedir(), 'Battlefield');
+    fs.mkdirSync(home, { recursive: true });
+    return home;
+  }
+  return dir;
+}
 const playerDir = process.env.PORTABLE_EXECUTABLE_DIR || (process.env.APPIMAGE && path.dirname(process.env.APPIMAGE))
-  || (app.isPackaged ? path.dirname(process.execPath) : null);
+  || (app.isPackaged ? (process.platform === 'darwin' ? macPlayerDir() : path.dirname(process.execPath)) : null);
 // That exe has the build trees inside (resources/source): the games are built
 // and installed in <its folder>/BattlefieldRecomp, where the build trees are
 // copied when a new version first starts.

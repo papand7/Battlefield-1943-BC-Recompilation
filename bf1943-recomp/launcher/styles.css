@@ -131,6 +131,7 @@ input[type=text]:focus { border-color: var(--accent); }
 #barfill { display: block; height: 100%; width: 0; background: var(--grad); border-radius: 4px; transition: width 0.3s; box-shadow: 0 0 12px rgba(232, 160, 60, 0.6); }
 .log { margin: 0; padding: 12px 14px; background: rgba(0, 0, 0, 0.45); border: 1px solid var(--line-2); border-radius: 4px; font: 12px/1.5 Consolas, monospace; color: #c3c8cd; white-space: pre-wrap; user-select: text; overflow: auto; }
 .log.small { height: 150px; }
+.log.small.failed { height: 300px; }
 .log.small:empty { display: none; }
 
 /* ---- settings */

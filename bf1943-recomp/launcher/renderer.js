@@ -256,6 +256,7 @@ $('pick').onclick = async () => {
 $('install').onclick = async () => {
   $('install').disabled = $('pick').disabled = true;
   $('install').textContent = 'INSTALLING…';
+  $('setuplog').classList.remove('failed');
   setStatus('Setting up… keep the launcher open.');
   setupBusy = true;
   document.querySelectorAll('.game').forEach((t) => (t.disabled = true));  // one setup at a time
@@ -263,7 +264,13 @@ $('install').onclick = async () => {
   setupBusy = false;
   document.querySelectorAll('.game').forEach((t) => (t.disabled = false));
   if (r.error) {
-    setStatus(r.error, true);
+    // The whole text in the log box (a failed build: its first FAILED:/error: lines and the
+    // log's path), selectable; the status line has its first line.
+    logLines.length = 0;
+    $('setuplog').textContent = r.error;
+    $('setuplog').classList.add('failed');
+    $('setuplog').scrollTop = 0;
+    setStatus(r.error.split('\n')[0] + (r.error.includes('\n') ? ' (details above)' : ''), true);
     $('install').textContent = 'TRY AGAIN';
     $('install').disabled = $('pick').disabled = false;
     return;
