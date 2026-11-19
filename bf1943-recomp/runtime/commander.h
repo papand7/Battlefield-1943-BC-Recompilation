@@ -106,9 +106,37 @@ void OnServerUpdate();
 void QueueDrop(int team, const std::string& kind, float x, float z,
                std::function<void(bool ok, const std::string& text)> done);
 // Whether a supply drop is still working, for the page: (team, x, z, seconds left).
+// kind 1 heal, 2 ammo; y (has_y: the ground there, when the map's heights are read).
 struct SupplyZone {
   int team;
   float x, z, left;
+  int kind = 1;
+  float y = 0;
+  bool has_y = false;
 };
 std::vector<SupplyZone> SupplyZones();
+// An airstrike called and not yet dropped: its point and the seconds to the blast.
+struct StrikeWarning {
+  int team;
+  float x, z, left;
+  float y = 0;
+  bool has_y = false;
+};
+std::vector<StrikeWarning> PendingStrikes();
+
+// This game's seat team (the host's own player's team, or a joiner's seat); 0 none.
+int MyTeam();
+// Sends a whole packet ("BF43Z!..." markers, "BF43X!..." blasts) to a player's
+// chat address (the host's answer path; admin.cpp).
+void SetRawSender(std::function<void(uint32_t ip, uint16_t port, const std::string& packet)> raw);
+// Host (the server's thread): an airstrike's blast at x, y, z: its smoke and
+// debris in this game and, by "BF43X!x,y,z", in every player's.
+void OnBlast(float x, float y, float z);
+// A game: the blast's effect from that packet's body (or the host's own).
+void ShowBlast(const std::string& body);
+// A chat line for the live map's log: team 0 all talk, else that team's line.
+void LogChat(int team, const std::string& text);
+// The host, once a second: each team's zones, order and airstrike warning, to
+// its players ("BF43Z!"; commander_hud.cpp) and to this game's own view.
+void HudSync();
 }  // namespace rt::commander

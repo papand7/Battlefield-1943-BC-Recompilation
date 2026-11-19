@@ -160,14 +160,14 @@ done (no free jeep, water, the ground not read yet) gives its cooldown back.
 - **Players**: each player of the team whose soldier the host knows gets a chat line with the
   way from where it stands, e.g. `[commander] ATTACK the Japanese flag 230 m north-east of you`
   (north = up on the level's minimap picture). A player the host doesn't know yet gets none.
-  No in-game HUD or minimap marker: not attempted (the chat line is the in-game cue).
+  The order is also on the HUD (phase 3, below).
 
 ### Drops (`commander_world.cpp`, on the server's thread)
 
 The page's drop is queued; `commander::OnServerUpdate` (called from the server update hook in
 `bot_players.cpp`, 82414430) does it between the server's own steps.
 
-- **Supply ("ammo").** BF1943 has no ammo crates in its levels: the engine has
+- **Heal zone (the page's "heal"; phase 2 called it the supply drop, "ammo").** BF1943 has no ammo crates in its levels: the engine has
   `ServerAmmoCrateEntity` / `AmmoCrateEntityData` (seen in the `BF_TYPE_DUMP` list, Bad
   Company's heritage), but BF1943's soldiers never run out of ammunition and heal by
   themselves, and no level places one. So the supply drop heals instead: for 30 s, every half
@@ -197,4 +197,131 @@ The page's drop is queued; `commander::OnServerUpdate` (called from the server u
   level's `ServerVehicleSpawnEntity` (vtable 82018898) moved to the point and made to spawn
   (its transform and its respawn trigger are not found yet); or, simplest fallback, tell the
   team where the nearest free jeep is.
+  Phase 3 found the first half of that: a vehicle's `+EC` is its spawner (vtable 82018898,
+  `BF_VEHICLE_PROBE=1` logs each jeep's; 33 spawners on Guadalcanal) and the spawner's
+  `+310` is where it makes it (the parked jeep's place, or its first place for a jeep that has
+  been driven). Still missing: what makes a spawner make its vehicle again. The way to find
+  it is the game's own respawn after a jeep is destroyed, which needs a destroyed jeep: the
+  vehicles' health is not known (so the airstrike can't do it), and in the scripted test
+  (`BF_CHANGE_PROBE`, the jeep nearest the host watched while the host turned and fired at
+  it) the jeep 5 m away was driven off by a bot before the shots and the probe followed one
+  37 m away: no hit, no health. The drop stays off.
 
+## Phase 3: on screen, heal zones, airstrike, the page's chat
+
+Checked in game (Guadalcanal, a windowed host on port offset 301, 8 bots, the host's player
+on the Japanese team; frames of the window and a headless browser's shot of the page): the
+heal zone's ring and the airstrike's ring on the ground in the first-person view, the panel
+with their seconds, the order's marker and label with the flag's name, the airstrike's damage
+(the host's soldier 7 m from the centre: 100 -> 31, then healed back to 100 by the zone), the
+chat round trip. Not checked: a second PC (the "BF43Z!" / "BF43X!" packets are sent to the
+known joiners but no joiner was there), the airstrike's smoke on a joiner's screen.
+
+### On screen (`commander_hud.cpp`, drawn by the UI overlay in `xenia_shims/bridge.cc`)
+
+- **The host decides, the team sees.** Once a second (the seats' expiry thread) the host sends
+  each team's state to that team's known players only: `BF43Z!` + `zones|order|strike`
+  (`z<kind>,x,y|n,z,left;...`, `o<kind>,x,y|n,z,left,flag,name`, `s x,y|n,z,left`). A joiner
+  keeps the last state for its own team (its seat's team as the host told it); the host's own
+  game keeps its own team's directly. The other team gets nothing: no packet, no ring, no line.
+- **Projection.** `scene_fx` keeps the main view's world -> clip matrix of the last frame
+  (`scenefx::ViewProj`, `xgpu::ViewProjection`; only with the scene effects on, as the
+  enhanced preset has them). Clip y points up (checked: with it the other way a ring 5 m
+  ahead was drawn above one 20 m ahead).
+- **The discs.** A zone is a see-through filled disc on the ground (green heal, amber ammo,
+  red airstrike) with a soft wide edge and a crisp one: 48 sides clipped in clip space at the
+  near plane (standing inside one, the part behind the eye goes, so no line stretches across
+  the screen) and at the window's edges, then filled as a fan. Inside a zone its fill is
+  fainter; past 80 m from its edge it fades, to a third at 400 m. Checked from inside a heal
+  zone, from 30 m off its edge and with the airstrike's 30 m ahead.
+- **Ground height.** The host sends the ground at the point: a soldier's feet within 15 m
+  when there is one (the surface walked on), else the terrain, or the map's collision up to
+  2.5 m above it (a deck; higher is a roof). The players' game uses its own feet's height
+  instead within 60 m when the two are less than 10 m apart. Guadalcanal's airfield shows
+  why: its terrain is 2 m over the apron where the host stood and 8 m under it 45 m on, and
+  the collision there found the sea floor (173) or a hangar roof (196) for a surface at 190;
+  with the terrain alone a zone 45 m ahead was drawn near the player's feet.
+- **What is drawn.** Heal zones: a green disc of 15 m on the ground. The airstrike's warning:
+  a red disc of 12 m until the blast. The order: a square at the flag (red attack, blue
+  defend) with its label (`ATTACK Japanese bunker 2:57 173 m behind`), kept on the window's
+  edge when the flag is off screen and on the bottom edge when it is behind. A panel at the
+  top right lists the zones, the airstrike and their seconds with the distance and the way
+  (ahead, left, right, behind). Text is GDI (Windows only, as the live map).
+
+### Heal and ammo zones
+
+- The page's "Heal zone here" (action `heal`) is phase 2's supply drop (same healing), now
+  shown on the HUD. Its own cooldown key `heal`.
+- **Ammo zones: not working, refused** (`ammo zones are not working yet`). What is known:
+  the HUD shows 30 rounds in the magazine, 3 spare magazines and 2 grenades; firing empties
+  the magazine and a thrown grenade's icon becomes a refill timer (BF1943's grenades come
+  back by themselves), the spare magazines did not change. Where the server keeps the counts
+  was not found:
+  - `BF_AMMO_PROBE=1` (bots fighting, small numbers dropping by 1 to 5): its best path,
+    `[[soldier+18]+50]+94`, is one object shared by every soldier.
+  - `BF_CHANGE_PROBE=1` (this game's own soldier, its words to +600 and two pointers on to
+    +200 and +80, every 500 ms, against scripted presses: about 75 rounds fired in three
+    bursts, a reload, three grenades; `--press 150:rt*2.5,...,168:x,175:lb,...`): no path
+    counts down from 30 or from 2. What changes with the firing are animation states and
+    buffers. The counts are further away (the soldier's weapon objects past those ranges) or
+    only in the client's own soldier (the HUD's), not the server's.
+  Next: the client soldier's weapon (ClientSoldierEntity, what the HUD reads), or the game's
+  reload function found from the reload input.
+
+### Airstrike (action `strike`)
+
+- Called on the page ("Airstrike here"), its own cooldown of 180 s. The calling team's
+  players get a chat line (`AIRSTRIKE in 8 s: 7 m west of you`) and the red ring and seconds
+  on the HUD; the other team gets nothing until the blast.
+- After 8 s the server (`commander_world.cpp`, its update) takes health off every soldier,
+  of both teams, within 12 m: all of it within 4 m, falling to a fifth at the edge. Vehicles
+  are not hurt (their health is not found).
+- Its look: the scene effects' explosion (smoke, dust, debris: `xgpu::ExplosionAt`, what the
+  game's own explosions add), five of them (the centre and 5 m around), in the host's game
+  and in every joiner's (`BF43X!x,y,z`, to both teams: everyone sees a bomb fall). There is
+  no game explosion object (the flash, the sound, the game's own damage): the server makes
+  none. Like the game's own explosions' smoke, it is drawn only with the PC setting
+  EFFECTS > EXPLOSION SMOKE on (off by default; `BF_PARTICLES=1` forces it): checked in game
+  with it on (a smoke column and debris at the point 14 m ahead). With it off the blast is
+  invisible (the warning ring just goes).
+
+### The page
+
+- Restyled as the game's field orders: paper and ink, olive and a stamp red, typewriter text
+  (system fonts: Courier New, Arial Narrow / Black; no files, no web fonts), stamp buttons,
+  the map beside the commander's sheet. The flags carry their names from the level
+  (`MP_XX_The Hill` -> `THE HILL`, the bases `US base` / `Japanese base`: the capture point's
+  data `*(+14)`, its name `+C`; `livemap.json` points have `name`).
+- **The team log and its chat box.** `/api/chat?k=<token>` gives the last 100 lines the
+  commander may see: all talk (`t:"all"`: every line of the game's chat on the host, the
+  bots' too) and the team's own lines (`t:"team"`: the commander's notices to its team, its
+  own lines). `/api/say?k=<token>&t=<text>` (at most 200 bytes, control characters taken
+  out) sends a line to the team's players, as `[commander] Japan team: <name>: <text>`, by the
+  game's chat path, and only to that team. Both check the token's seat on every request.
+
+## Hardening (the bug-hunt pass)
+
+- **The live map binds the host's own LAN address** (the address the game found on its default
+  route, or `--lan-ip`), not every address. `BF_LIVEMAP_PUBLIC=1` binds all of them. If no
+  route is known it binds loopback. Checked: a LAN-bound page answers (200), and a second client
+  that connects and sends nothing does not delay a request (16 ms).
+- **Per-connection handling:** each request has its own thread (8 at once, later ones are
+  dropped); a receive deadline of 3 s for the whole request, send deadline 8 s; the answer is
+  built one request at a time.
+- **Eye packets (`E`) only from a registered player** (one that said hello on that chat port).
+  The team is the soldier's under the eye, never the sender's claim.
+- **Admin password guesses:** 5 wrong per source in 10 s, then refused until the window ends.
+- **Fixed in the second pass:** the chat relay only for a peer that said hello, 10 lines a 2 s
+  per source, the log line cut to 120 bytes; admin commands and seat requests only from a
+  registered peer; the beacon answers 30 queries per 10 s per source; the known-player table
+  forgets a player with no eye packet for 120 s (the cap of 64 stays); the heal zone rescans
+  the soldiers every 10 s (not 2 s; a soldier made in between waits for the next scan); the
+  vehicle drop writes only the body's words (its transform and centres of mass, each checked
+  against the body's vtable), with no memory-wide scan; the release script checks XenonRecomp
+  and the shaders before it copies anything (Windows).
+- **Checked, no change needed:** the pad pointer (every caller holds the pad lock while it uses
+  the pointer).
+- **Vehicle drop (new spawn): not done.** The level's spawner vtable (82018898) was dumped in
+  game (BF_SPAWN_PROBE=1): its methods are readable from the guest image (slot 2 is a short
+  getter, slot 14 and others take an object pointer). Which slot creates a vehicle has not been
+  identified by reading their code; that is the next step. The drop stays off.

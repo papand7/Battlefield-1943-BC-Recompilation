@@ -19,6 +19,7 @@
 #include "admin_server.h"
 #include "bot_llm.h"
 #include "commander.h"
+#include "commander_hud.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -82,6 +83,8 @@ std::string Narrow(const std::wstring& w) {
 void AddLine(std::wstring line) {
   if (t_reply) *t_reply += (t_reply->empty() ? "" : "\n") + Narrow(line);
   if (g_dedicated) RT_INFO("admin> %s", Narrow(line).c_str());  // (no screen: the console's answer)
+  // All talk for the commander's page log (its team lines come from commander.cpp itself).
+  if (line.rfind(L"[commander]", 0) != 0) commander::LogChat(0, Narrow(line));
   std::lock_guard lock(g_lock);
   g_lines.push_back({std::chrono::steady_clock::now(), std::move(line)});
   while (g_lines.size() > kMaxLines) g_lines.pop_front();
@@ -108,6 +111,12 @@ void PrunePeersLocked() {
   for (auto it = g_peers.begin(); it != g_peers.end();)
     if (it->second.second < stale) it = g_peers.erase(it);
     else ++it;
+}
+// A peer that already said hello (its address and chat port are in the table).
+bool KnownPeer(uint32_t ip, uint16_t port) {
+  std::lock_guard lock(g_peers_lock);
+  auto it = g_peers.find(ip);
+  return it != g_peers.end() && it->second.first == port;
 }
 bool RegisterPeer(uint32_t ip, uint16_t port) {  // (false: refused)
   std::lock_guard lock(g_peers_lock);
@@ -218,6 +227,10 @@ void ChatNetThread() {
         const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
         if (!peer_port) continue;
         if (ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
+        // An eye packet only from a registered player (one that said hello): it
+        // is not a way to register. The team it gives is the soldier's, not a claim.
+        // (Admin commands and seat requests too: a sender must have said hello first.)
+        if ((kind == 'E' || kind == 'A' || kind == 'M') && !KnownPeer(from.sin_addr.s_addr, peer_port)) continue;
         if (!RegisterPeer(from.sin_addr.s_addr, peer_port)) continue;  // (it hears the chat from now on)
         body = body.substr(bar + 1);
         if (kind == 'H') {
@@ -236,7 +249,25 @@ void ChatNetThread() {
         if (bar2 == std::string::npos) continue;
         const std::string password = body.substr(0, bar2), line = Trim(body.substr(bar2 + 1));
         std::string reply;
-        if (g_admin_password.empty() || password != g_admin_password) {
+        // Wrong guesses per source: 5 in 10 s, then refused for the rest of that
+        // window (the beacon's own limit, as for the live map).
+        static std::mutex guess_lock;
+        static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> guesses;
+        bool locked_out = false;
+        {
+          std::lock_guard g(guess_lock);
+          auto& gs = guesses[from.sin_addr.s_addr];
+          const auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration<double>(now - gs.first).count() > 10.0) gs = {now, 0};
+          locked_out = gs.second >= 5;
+        }
+        if (locked_out) {
+          reply = "Too many wrong admin passwords: wait 10 s.";
+        } else if (g_admin_password.empty() || password != g_admin_password) {
+          {
+            std::lock_guard g(guess_lock);
+            if (guesses.size() < 512) ++guesses[from.sin_addr.s_addr].second;
+          }
           reply = g_admin_password.empty() ? "This server takes no remote admins." : "Wrong admin password (/login).";
           RT_INFO("admin: a command from %u.%u.%u.%u refused", from.sin_addr.S_un.S_un_b.s_b1,
                   from.sin_addr.S_un.S_un_b.s_b2, from.sin_addr.S_un.S_un_b.s_b3, from.sin_addr.S_un.S_un_b.s_b4);
@@ -259,6 +290,10 @@ void ChatNetThread() {
         else if (kind == 'R') OnMapReady(body);
         else if (kind == 'M') {  // (which seat this game holds; a new seat's page link)
           if (const std::string line = commander::OnHostReply(body); !line.empty()) AddLine(Wide(line));
+        } else if (kind == 'Z') {  // (the commander's markers for this game's team: commander_hud.cpp)
+          if (commander::Available()) commander::hud::OnPacket(body);
+        } else if (kind == 'X') {  // (an airstrike's blast: its smoke and debris here too)
+          if (commander::Available()) commander::ShowBlast(body);
         }
       }
       continue;
@@ -272,7 +307,21 @@ void ChatNetThread() {
         const uint16_t peer_port = uint16_t(atoi(text.substr(0, bar).c_str()));
         text = text.substr(bar + 1);
         if (peer_port && ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
-        if (peer_port && RegisterPeer(from.sin_addr.s_addr, peer_port)) {
+        // Relayed only for a peer that said hello (not any sender), and at most 10 a
+        // 2 s from each address: a flood of lines is dropped, not broadcast.
+        static std::mutex relay_lock;
+        static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> relays;
+        bool relay_ok = false;
+        {
+          std::lock_guard g(relay_lock);
+          auto& rl = relays[from.sin_addr.s_addr];
+          const auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration<double>(now - rl.first).count() > 2.0) rl = {now, 0};
+          relay_ok = ++rl.second <= 10;
+          if (relays.size() > 512) relays.clear();
+        }
+        if (peer_port && relay_ok && KnownPeer(from.sin_addr.s_addr, peer_port) &&
+            RegisterPeer(from.sin_addr.s_addr, peer_port)) {
           std::lock_guard lock(g_peers_lock);
           for (auto& [ip, peer] : g_peers)
             if (ip != from.sin_addr.s_addr) SendTo(ip, peer.first, text);
@@ -281,7 +330,7 @@ void ChatNetThread() {
         // A dedicated server's or host's own line relayed by a player? show it.
       }
       AddLine(L"> " + Wide(text));
-      RT_INFO("chat: %s", text.c_str());
+      RT_INFO("chat: %.120s", text.c_str());  // (the log: a line's first 120 bytes)
       if (g_dedicated) botllm::ChatReplyTo(text);  // (the bots' advisor may answer)
     } else {
       AddLine(L"> " + Wide(text));
@@ -517,6 +566,9 @@ void ConsoleThread() {
 
 void Start() {
   if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
+  commander::SetRawSender([](uint32_t ip, uint16_t port, const std::string& packet) {  // (markers, blasts)
+    SendRaw(ip, port, packet);
+  });
   commander::Start(
       [](const std::string& note) {  // (a seat freed: everyone hears it)
 #ifdef _WIN32

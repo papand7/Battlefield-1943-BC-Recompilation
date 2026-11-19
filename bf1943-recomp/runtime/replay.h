@@ -83,6 +83,7 @@ struct LivePoint {
   uint16_t id;
   uint8_t owner;  // team (0 none)
   float x, z;
+  std::string name;  // the level's name for it ("The Hill"), "" if not read
 };
 struct LiveSnapshot {
   std::string map;

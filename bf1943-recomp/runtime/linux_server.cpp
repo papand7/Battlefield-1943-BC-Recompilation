@@ -39,6 +39,7 @@ void SetHdrWhite(float) {}
 void ApplySceneFx(const char*) {}
 void SetMotionBlurHold(bool) {}
 bool CameraEye(float*) { return false; }
+bool ViewProjection(float*) { return false; }
 int MenuRows(float (*)[4], int, int* selected) {
   if (selected) *selected = -1;
   return 0;

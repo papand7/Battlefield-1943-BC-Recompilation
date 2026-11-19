@@ -1,6 +1,7 @@
 // COMMANDER SEATS, ORDERS and the LIVE MAP (commander.h; the drops are in
 // commander_world.cpp).
 #include "commander.h"
+#include "commander_hud.h"
 
 #include "bot_minimap.h"
 #include "guest.h"
@@ -87,6 +88,15 @@ struct OrderState {
   uint16_t point = 0;
   Clock::time_point at;
 };
+
+// The page's chat: all talk (team 0) and the team's lines, the last 200 kept (the page shows 100).
+constexpr size_t kChatKeep = 200;
+struct ChatLine {
+  int team;
+  std::string text;
+};
+std::mutex g_chat_mu;  // (not g_mu: chat lines come from inside the game's own chat)
+std::deque<ChatLine> g_chat;
 
 std::mutex g_mu;
 Seat g_seat[3];  // by team
@@ -267,10 +277,109 @@ void TellTeam(int team, const std::string& head, float x, float z, const std::st
   }
   for (auto& [k, w] : lines)
     if (g_tell) g_tell(k.first, k.second, "[commander] " + head + " " + w + tail);
+  LogChat(team, "[commander] " + head + tail);
   RT_INFO("commander: %s team: %s at %.0f,%.0f%s (told %zu players)", TeamName(team), head.c_str(), x, z, tail.c_str(),
           lines.size());
 }
 
+}  // namespace
+
+// ---- the commander's markers (commander_hud.cpp) ---------------------------------
+
+std::function<void(uint32_t, uint16_t, const std::string&)> g_raw;  // (SetRawSender)
+
+int MyTeam() {
+  if (g_join_address) return g_joiner_team.load();
+  std::lock_guard l(g_mu);
+  return g_local.team;
+}
+
+void SetRawSender(std::function<void(uint32_t, uint16_t, const std::string&)> raw) {
+  std::lock_guard l(g_mu);
+  g_raw = std::move(raw);
+}
+
+void LogChat(int team, const std::string& text) {
+  std::lock_guard l(g_chat_mu);
+  g_chat.push_back({team, text});
+  while (g_chat.size() > kChatKeep) g_chat.pop_front();
+}
+
+void HudSync() {
+  if (g_join_address) return;  // (a joiner keeps what the host sent)
+  const auto zones = SupplyZones();
+  const auto strikes = PendingStrikes();
+  replay::LiveSnapshot sample;  // (the flags' names)
+  const bool live = replay::LiveCopy(sample);
+  for (int team = kUS; team <= kJapan; ++team) {
+    hud::Snapshot snap;
+    for (const StrikeWarning& w : strikes) {
+      if (w.team != team || snap.strike.left > 0) continue;
+      snap.strike.x = w.x, snap.strike.z = w.z, snap.strike.left = w.left, snap.strike.y = w.y, snap.strike.has_y = w.has_y;
+    }
+    for (const SupplyZone& z : zones) {
+      if (z.team != team) continue;
+      hud::Zone h;
+      h.kind = z.kind, h.x = z.x, h.z = z.z, h.left = z.left, h.y = z.y, h.has_y = z.has_y;
+      snap.zones.push_back(h);
+    }
+    const Order cur = CurrentOrder(team);
+    if (cur.kind != kNoOrder) {
+      hud::Order d;
+      std::lock_guard l(g_mu);
+      const OrderState& os = g_order[team];
+      d.kind = cur.kind == kAttack ? 1 : 2, d.x = cur.x, d.z = cur.z;
+      d.left = float(std::max(0.0, kOrderSeconds - Since(os.at, Clock::now())));
+      d.flag = os.point;
+      snap.order = d;
+    }
+    if (snap.order.kind && live)
+      for (const auto& p : sample.points)
+        if (p.id == snap.order.flag) snap.order.name = p.name;
+    hud::Publish(team, snap);
+    const std::string body = hud::Encode(snap);
+    std::vector<std::pair<uint32_t, uint16_t>> targets;
+    std::function<void(uint32_t, uint16_t, const std::string&)> raw;
+    {
+      std::lock_guard l(g_mu);
+      for (const auto& [k, kn] : g_known)
+        if (kn.team == team) targets.push_back(k);
+      raw = g_raw;
+    }
+    if (raw)
+      for (const auto& [ip, port] : targets) raw(ip, port, "BF43Z!" + body);
+  }
+}
+
+void ShowBlast(const std::string& body) {
+  float c[3];
+  if (sscanf(body.c_str(), "%f,%f,%f", &c[0], &c[1], &c[2]) != 3) return;
+  for (float v : c)
+    if (!std::isfinite(v) || std::fabs(v) > 1e5f) return;
+  // A stick of bombs: the centre and four more 5 m around it.
+  static const float kAround[5][2] = {{0, 0}, {5, 0}, {-5, 0}, {0, 5}, {0, -5}};
+  for (const auto& d : kAround) {
+    const float p[3] = {c[0] + d[0], c[1], c[2] + d[1]};
+    xgpu::ExplosionAt(p);
+  }
+}
+
+void OnBlast(float x, float y, float z) {
+  char b[64];
+  snprintf(b, sizeof b, "%.2f,%.2f,%.2f", x, y, z);
+  if (!g_dedicated) ShowBlast(b);
+  std::vector<std::pair<uint32_t, uint16_t>> everyone;  // (the blast is seen by both teams)
+  std::function<void(uint32_t, uint16_t, const std::string&)> raw;
+  {
+    std::lock_guard l(g_mu);
+    for (const auto& [k, kn] : g_known) everyone.push_back(k);
+    raw = g_raw;
+  }
+  if (raw)
+    for (const auto& [ip, port] : everyone) raw(ip, port, std::string("BF43X!") + b);
+}
+
+namespace {
 // ---- the live map (Windows: the game's own HTTP server) -------------------------
 
 std::string Num(double v) {
@@ -348,7 +457,8 @@ std::string LiveJson() {
   o << "],\"points\":[";
   for (size_t i = 0; i < s.points.size(); ++i) {
     const auto& p = s.points[i];
-    o << (i ? "," : "") << "{\"id\":" << p.id << ",\"owner\":" << int(p.owner) << ",\"x\":" << Num(p.x) << ",\"z\":" << Num(p.z) << "}";
+    o << (i ? "," : "") << "{\"id\":" << p.id << ",\"owner\":" << int(p.owner) << ",\"x\":" << Num(p.x) << ",\"z\":" << Num(p.z)
+      << ",\"name\":" << JsonText(p.name) << "}";
   }
   o << "]}";
   cached = o.str(), cached_at = now;
@@ -372,6 +482,54 @@ std::string MinimapPng(const std::string& map) {
 }
 
 // The commander's view for the page (and its poll keeps the seat).
+// ---- the page's chat: all talk and the team's lines (the last 100 of each) -----
+std::string ChatJson(const std::string& token) {
+  int team;
+  {
+    std::lock_guard l(g_mu);
+    team = TeamOfToken(token);
+  }
+  if (!team) return R"J({"ok":false,"error":"this link holds no commander seat (now)"})J";
+  std::lock_guard l(g_chat_mu);
+  std::vector<const ChatLine*> mine;
+  for (const ChatLine& c : g_chat)
+    if (c.team == 0 || c.team == team) mine.push_back(&c);
+  const size_t first = mine.size() > 100 ? mine.size() - 100 : 0;
+  std::string o = "{\"ok\":true,\"team\":" + std::to_string(team) + ",\"lines\":[";
+  for (size_t i = first; i < mine.size(); ++i)
+    o += std::string(i > first ? "," : "") + "{\"t\":\"" + (mine[i]->team ? "team" : "all") + "\",\"s\":" + JsonText(mine[i]->text) + "}";
+  return o + "]}";
+}
+
+// The commander's line to the team: its players and this game's own screen when it is this team.
+std::string SayJson(const std::string& token, std::string text) {
+  int team;
+  std::string name;
+  {
+    std::lock_guard l(g_mu);
+    team = TeamOfToken(token);
+    if (team) name = g_seat[team].name;
+  }
+  if (!team) return R"J({"ok":false,"error":"this link holds no commander seat (now)"})J";
+  for (char& ch : text)
+    if (static_cast<unsigned char>(ch) < 32) ch = ' ';
+  while (!text.empty() && text.front() == ' ') text.erase(0, 1);
+  while (!text.empty() && text.back() == ' ') text.pop_back();
+  if (text.empty()) return R"J({"ok":false,"error":"say something"})J";
+  const std::string line = "[commander] " + std::string(TeamName(team)) + " team: " + name + ": " + text;
+  LogChat(team, line);
+  std::vector<std::pair<uint32_t, uint16_t>> targets;
+  {
+    std::lock_guard l(g_mu);
+    for (const auto& [k, kn] : g_known)
+      if (kn.team == team) targets.push_back(k);
+    if (g_local.team == team && !g_dedicated) targets.push_back({0, 0});
+  }
+  if (g_tell)
+    for (const auto& [ip, port] : targets) g_tell(ip, port, line);
+  return R"({"ok":true})";
+}
+
 std::string StateJson(const std::string& token) {
   std::lock_guard l(g_mu);
   const int team = TeamOfToken(token);
@@ -384,11 +542,11 @@ std::string StateJson(const std::string& token) {
   else if (auto it = g_known.find({s.ip, s.port}); it != g_known.end()) me = it->second.id;
   std::ostringstream o;
   o << "{\"ok\":true,\"team\":" << team << ",\"name\":" << JsonText(s.name) << ",\"me\":" << me << ",\"wait\":{";
-  const char* actions[] = {"order", "ammo", "vehicle"};
-  for (int i = 0; i < 3; ++i)
+  const char* actions[] = {"order", "heal", "strike", "vehicle"};
+  for (int i = 0; i < 4; ++i)
     o << (i ? "," : "") << "\"" << actions[i] << "\":" << Num(WaitLocked(team, actions[i]));
   o << "},\"cooldown\":{";
-  for (int i = 0; i < 3; ++i) o << (i ? "," : "") << "\"" << actions[i] << "\":" << CooldownFor(actions[i]);
+  for (int i = 0; i < 4; ++i) o << (i ? "," : "") << "\"" << actions[i] << "\":" << CooldownFor(actions[i]);
   o << "},\"vehicle_drop\":" << (VehicleDropOn() ? "true" : "false") << ",\"notes\":[";
   for (size_t i = 0; i < g_notes[team].size(); ++i) o << (i ? "," : "") << JsonText(g_notes[team][i]);
   o << "]}";
@@ -412,7 +570,7 @@ bool ParseNum(const std::string& s, float* out) {
 // The page's action: a = attack, defend, cancel (orders), ammo, vehicle (drops);
 // x, z where it clicked.
 std::string Act(const std::string& token, const std::string& action, const std::string& xs, const std::string& zs) {
-  static const char* kActions[] = {"attack", "defend", "cancel", "ammo", "vehicle"};
+  static const char* kActions[] = {"attack", "defend", "cancel", "heal", "strike", "ammo", "vehicle"};
   if (std::find_if(std::begin(kActions), std::end(kActions), [&](const char* a) { return action == a; }) == std::end(kActions))
     return FailJson("unknown action");
   int team;
@@ -455,18 +613,23 @@ std::string Act(const std::string& token, const std::string& action, const std::
     const int enemy = team == kUS ? kJapan : kUS;
     const std::string flag = best->owner == team ? "our flag" : best->owner == enemy ? (enemy == kUS ? "the US flag" : "the Japanese flag")
                                                                                       : "the neutral flag";
-    TellTeam(team, std::string(kind == kAttack ? "ATTACK " : "DEFEND ") + flag, best->x, best->z, "");
-    return std::string("{\"ok\":true,\"text\":") + JsonText(std::string(kind == kAttack ? "attack " : "defend ") + flag) + "}";
+    const std::string named = best->name.empty() ? flag : best->name + " (" + flag + ")";
+    TellTeam(team, std::string(kind == kAttack ? "ATTACK " : "DEFEND ") + named, best->x, best->z, "");
+    return std::string("{\"ok\":true,\"text\":") + JsonText(std::string(kind == kAttack ? "attack " : "defend ") + named) + "}";
   }
   // The vehicle drop moves the server's jeep but the players' games keep
   // drawing it where it stood (docs/COMMANDER.md): off unless testing.
   if (action == "vehicle" && !VehicleDropOn()) return FailJson("vehicle drops are not working yet (BF_VEHICLE_DROP=1 to test)");
+  // Ammo zones: the soldiers' ammunition is not found in memory yet (docs/COMMANDER.md).
+  if (action == "ammo") return FailJson("ammo zones are not working yet");
+  // (An airstrike: the warning goes to the team's screens, the blast after 8 s; commander_world.cpp.)
   // A drop: its cooldown now (given back if it can't be done).
   double wait = 0;
   {
     std::lock_guard l(g_mu);
-    if (!ActLocked(team, action, &wait)) return FailJson(action == "ammo" ? "supply drops wait" : "vehicle drops wait", wait);
-    Note(team, std::string(action == "ammo" ? "supply" : "vehicle") + " drop called");
+    if (!ActLocked(team, action, &wait))
+      return FailJson(action == "heal" ? "heal zones wait" : action == "strike" ? "airstrikes wait" : "vehicle drops wait", wait);
+    Note(team, action == "strike" ? "airstrike called" : std::string(action == "heal" ? "heal zone" : "vehicle") + " called");
   }
   QueueDrop(team, action, x, z, [team, action, x, z](bool ok, const std::string& text) {
     {
@@ -474,7 +637,8 @@ std::string Act(const std::string& token, const std::string& action, const std::
       Note(team, text);
       if (!ok) g_last_act.erase(std::make_pair(team, action));  // (nothing dropped: no wait)
     }
-    if (ok) TellTeam(team, action == "ammo" ? "SUPPLY DROP:" : "VEHICLE DROP:", x, z, action == "ammo" ? " (heals for 30 s)" : "");
+    if (ok && action == "strike") TellTeam(team, "AIRSTRIKE in 8 s:", x, z, "");
+    else if (ok) TellTeam(team, action == "heal" ? "HEAL ZONE:" : "VEHICLE DROP:", x, z, action == "heal" ? " (heals for 30 s)" : "");
     RT_INFO("commander: %s team's %s drop at %.0f,%.0f: %s", TeamName(team), action.c_str(), x, z, text.c_str());
   });
   return R"({"ok":true,"text":"the drop is on its way"})";
@@ -484,19 +648,40 @@ std::string Act(const std::string& token, const std::string& action, const std::
 // link carries a token (?k=...). ASCII only: no page encoding to set.
 const char* kPage = R"HTML(<!doctype html><html><head><meta charset="utf-8"><title>Live map</title>
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<style>body{margin:0;background:#0b0e14;color:#e8edf7;font:14px system-ui,sans-serif}
-#top{padding:8px 14px;color:#8a96ad}#cmd{padding:6px 14px;display:none;background:#141b29;border-bottom:1px solid #232d42}
-#cmd b{color:#fff}.chip{display:inline-block;margin:0 8px 0 0;padding:2px 8px;border-radius:9px;background:#232d42}
-.ready{background:#1f5130}#notes{color:#8a96ad;font-size:12px;margin-top:4px}
-#wrap{position:relative;width:900px;margin:8px auto}canvas{display:block;background:#131824;border:1px solid #232d42}
-#menu{position:absolute;display:none;background:#1b2334;border:1px solid #3a4866;border-radius:6px;padding:4px;min-width:150px}
-#menu button{display:block;width:100%;margin:2px 0;padding:6px 8px;background:#26314a;color:#e8edf7;border:0;border-radius:4px;text-align:left;cursor:pointer}
-#menu button:disabled{opacity:.4;cursor:default}#menu button:hover:enabled{background:#34446a}
-#msg{min-height:18px;color:#ffd27a}</style>
-</head><body><div id="top">Live map: connecting...</div>
-<div id="cmd"><div>Commander of <b id="team"></b> (<span id="who"></span>). Click a flag for an order, any place for a drop.
-<span id="msg"></span></div><div id="chips"></div><div id="notes"></div></div>
-<div id="wrap"><canvas id="c" width="900" height="900"></canvas><div id="menu"></div></div>
+<style>
+/* The game's field-orders look: paper, ink, olive, a stamp red; typewriter text. */
+body{margin:0;background:#d9cfb4;color:#1d1b16;font:15px "Courier New",Courier,monospace}
+#top{padding:10px 16px;background:#1d1b16;color:#e9e1cc;font-weight:bold;letter-spacing:.04em;text-transform:uppercase;font-family:"Arial Narrow","Arial Black",Arial,sans-serif}
+#layout{display:flex;gap:16px;align-items:flex-start;justify-content:center;padding:14px}
+#wrap{position:relative;width:900px;flex:0 0 900px}
+canvas{display:block;background:#e9e1cc;border:2px solid #1d1b16;box-shadow:4px 4px 0 #1d1b16}
+#side{width:320px;flex:0 0 320px;display:none;background:#efe7d2;border:2px solid #1d1b16;padding:12px 14px;box-shadow:4px 4px 0 #1d1b16}
+#side.on{display:block}
+#side h2{margin:0 0 6px;font:bold 18px "Arial Narrow","Arial Black",Arial,sans-serif;text-transform:uppercase;letter-spacing:.06em;border-bottom:2px solid #1d1b16;padding-bottom:4px}
+#cmd b{color:#1d1b16}.chip{display:inline-block;margin:0 6px 6px 0;padding:3px 8px;border:2px solid #4b5a2c;color:#4b5a2c;font-weight:bold;text-transform:uppercase;font-size:12px}
+.chip.ready{background:#4b5a2c;color:#e9e1cc}
+#notes{color:#4a463c;font-size:12px;margin:6px 0}
+#msg{min-height:18px;color:#9a2f24;font-weight:bold;margin:4px 0}
+#chatlog{height:240px;overflow-y:auto;background:#e9e1cc;border:2px solid #1d1b16;padding:6px;font-size:13px;line-height:1.35}
+#chatlog div{white-space:pre-wrap;word-break:break-word}
+#chatlog .team{color:#4b5a2c;font-weight:bold}#chatlog .all{color:#1d1b16}
+#say{display:flex;gap:6px;margin-top:6px}#say input{flex:1;padding:5px;border:2px solid #1d1b16;background:#f7f2e4;font:inherit}
+#menu{position:absolute;display:none;background:#efe7d2;border:2px solid #1d1b16;padding:6px;min-width:190px;box-shadow:4px 4px 0 #1d1b16}
+button,#menu button{display:block;width:100%;margin:4px 0;padding:7px 10px;background:#efe7d2;color:#1d1b16;border:2px solid #1d1b16;font:bold 13px "Arial Narrow","Arial Black",Arial,sans-serif;text-transform:uppercase;letter-spacing:.05em;text-align:left;cursor:pointer;transform:rotate(-.4deg)}
+button:hover:enabled,#menu button:hover:enabled{background:#4b5a2c;color:#e9e1cc}
+button:disabled,#menu button:disabled{opacity:.45;cursor:default}
+#say button{width:auto;margin:0;padding:5px 12px;background:#9a2f24;color:#e9e1cc;border-color:#9a2f24;transform:none}
+#say button:hover{background:#1d1b16}
+@media (max-width:1280px){#layout{flex-direction:column;align-items:center}#side{width:900px;flex:none}}
+</style>
+</head><body><div id="top">Field orders: live map, connecting...</div>
+<div id="layout"><div id="wrap"><canvas id="c" width="900" height="900"></canvas><div id="menu"></div></div>
+<div id="side"><div id="cmd"><h2>Commander of <b id="team"></b></h2><div>Seat: <span id="who"></span></div>
+<div>Click a flag for an order, any place for a drop, zone or strike.</div>
+<span id="msg"></span><div id="chips"></div><div id="notes"></div></div>
+<h2>Team log</h2><div id="chatlog"></div>
+<form id="say" onsubmit="sendChat();return false;"><input id="sayt" maxlength="120" placeholder="type to your team"><button type="submit">Send</button></form>
+</div></div>
 <script>
 var c=document.getElementById('c'),g=c.getContext('2d'),hdr=document.getElementById('top'),menu=document.getElementById('menu');
 var key=(location.search.match(/[?&]k=([0-9a-fA-F]{16})/)||[])[1]||'';
@@ -523,24 +708,28 @@ function draw(){
   (data.supply||[]).forEach(function(z){var p=P(z.x,z.z);g.beginPath();g.arc(p[0],p[1],15*k,0,6.3);g.fillStyle='rgba(80,220,120,0.25)';g.fill();g.strokeStyle='#50dc78';g.stroke();});
   data.points.forEach(function(p){var q=P(p.x,p.z);
     g.beginPath();g.arc(q[0],q[1],12,0,6.3);g.fillStyle=col[p.owner]||col[0];g.globalAlpha=0.55;g.fill();
-    g.globalAlpha=1;g.strokeStyle=col[p.owner]||col[0];g.lineWidth=2;g.stroke();});
+    g.globalAlpha=1;g.strokeStyle=col[p.owner]||col[0];g.lineWidth=2;g.stroke();
+    if(p.name){var t=p.name.toUpperCase();g.font='bold 12px "Courier New",monospace';var tw=g.measureText(t).width;
+      g.fillStyle='rgba(233,225,204,0.85)';g.fillRect(q[0]+13,q[1]-8,tw+6,15);g.fillStyle='#1d1b16';g.fillText(t,q[0]+16,q[1]+4);}});
   (data.orders||[]).forEach(function(o){var q=P(o.x,o.z);g.beginPath();g.arc(q[0],q[1],22,0,6.3);g.setLineDash([6,4]);g.strokeStyle=col[o.team];g.lineWidth=3;g.stroke();g.setLineDash([]);
-    g.font='bold 13px system-ui';g.fillStyle=col[o.team];g.fillText(tname[o.team]+' '+o.kind.toUpperCase(),q[0]+26,q[1]-10);g.font='14px system-ui';});
-  data.vehicles.forEach(function(v){var q=P(v.x,v.z);g.fillStyle='#e8edf7';g.fillRect(q[0]-4,q[1]-4,8,8);});
+    var ot=tname[o.team]+' '+o.kind.toUpperCase();g.font='bold 13px "Arial Narrow","Arial Black",Arial,sans-serif';var ow=g.measureText(ot).width;
+    g.fillStyle='#1d1b16';g.fillRect(q[0]-ow/2-4,q[1]-44,ow+8,17);g.fillStyle='#e9e1cc';g.fillText(ot,q[0]-ow/2,q[1]-31);g.font='14px system-ui';});
+  data.vehicles.forEach(function(v){var q=P(v.x,v.z);g.fillStyle='#1d1b16';g.fillRect(q[0]-4,q[1]-4,8,8);});
   data.players.forEach(function(p){var q=P(p.x,p.z);g.beginPath();g.arc(q[0],q[1],4,0,6.3);g.fillStyle=col[p.team]||col[0];g.fill();
-    if(state&&state.ok&&state.me===p.id){g.beginPath();g.arc(q[0],q[1],8,0,6.3);g.strokeStyle='#fff';g.lineWidth=2;g.stroke();g.fillStyle='#fff';g.fillText('you',q[0]+10,q[1]+4);}});
+    if(state&&state.ok&&state.me===p.id){g.beginPath();g.arc(q[0],q[1],8,0,6.3);g.strokeStyle='#1d1b16';g.lineWidth=2;g.stroke();g.fillStyle='#1d1b16';g.fillText('you',q[0]+10,q[1]+4);}});
   if(flash&&Date.now()<flash.until){var q=P(flash.x,flash.z);g.beginPath();g.arc(q[0],q[1],8,0,6.3);g.strokeStyle='#ffd27a';g.lineWidth=2;g.stroke();}
   var cm=data.commander;
   hdr.textContent=data.map+' - US commander: '+(cm.us?cm.us_name:'free')+' - Japan commander: '+(cm.japan?cm.japan_name:'free')+(key?'':' - take a seat in the game: /commander us or /commander japan');
 }
 function chips(){
-  var box=document.getElementById('cmd');
-  if(!key){box.style.display='none';return;}
-  box.style.display='block';
+  var box=document.getElementById('side');
+  if(!key){box.className='';return;}
+  box.className='on';
   if(!state||!state.ok){document.getElementById('team').textContent='nobody';document.getElementById('chips').textContent=state?state.error:'';return;}
   document.getElementById('team').textContent=tname[state.team];document.getElementById('who').textContent=state.name;
-  var names={order:'Orders',ammo:'Supply drop',vehicle:'Vehicle drop'},h='';
-  for(var a in names){var w=state.wait[a];h+='<span class="chip'+(w>0?'':' ready')+'">'+names[a]+': '+(w>0?Math.ceil(w)+' s':'ready')+'</span>';}
+  var names={order:'Orders',heal:'Heal zone',strike:'Airstrike',vehicle:'Vehicle drop'},h='';
+  for(var a in names){var w=state.wait[a],off=(a==='vehicle'&&!state.vehicle_drop);
+    h+='<span class="chip'+(w>0||off?'':' ready')+'">'+names[a]+': '+(off?'off':w>0?Math.ceil(w)+' s':'ready')+'</span>';}
   document.getElementById('chips').innerHTML=h;
   document.getElementById('notes').textContent=state.notes.slice(-3).join(' / ');
 }
@@ -555,7 +744,7 @@ c.addEventListener('click',function(e){
   var near=null,d=60;data.points.forEach(function(p){var e2=Math.hypot(p.x-x,p.z-z);if(e2<d){d=e2;near=p;}});
   var ow=state.wait.order>0,h='';
   if(near){h+='<button data-a="attack"'+(ow?' disabled':'')+'>Attack this flag</button><button data-a="defend"'+(ow?' disabled':'')+'>Defend this flag</button>';}
-  h+='<button data-a="ammo"'+(state.wait.ammo>0?' disabled':'')+'>Supply drop here</button><button data-a="vehicle"'+(state.wait.vehicle>0||!state.vehicle_drop?' disabled':'')+'>Vehicle drop here'+(state.vehicle_drop?'':' (not yet)')+'</button>';
+  h+='<button data-a="heal"'+(state.wait.heal>0?' disabled':'')+'>Heal zone here</button><button data-a="strike"'+(state.wait.strike>0?' disabled':'')+'>Airstrike here</button><button data-a="vehicle"'+(state.wait.vehicle>0||!state.vehicle_drop?' disabled':'')+'>Vehicle drop here'+(state.vehicle_drop?'':' (not yet)')+'</button>';
   if((data.orders||[]).some(function(o){return o.team===state.team;}))h+='<button data-a="cancel">Cancel our order</button>';
   h+='<button data-a="close">Close</button>';
   menu.innerHTML=h;menu.style.left=Math.min(px+8,c.width-170)+'px';menu.style.top=Math.min(py+8,c.height-230)+'px';menu.style.display='block';
@@ -565,7 +754,14 @@ c.addEventListener('click',function(e){
   draw();
 });
 function poll(){if(!key)return;fetch('/api/state?k='+key,{cache:'no-store'}).then(function(r){return r.json();}).then(function(s){state=s;chips();}).catch(function(){});}
-function tick(){fetch('/livemap.json',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){data=d;draw();}).catch(function(){hdr.textContent='no answer from the server';});poll();}
+function chatPoll(){if(!key)return;fetch('/api/chat?k='+key,{cache:'no-store'}).then(function(r){return r.json();}).then(function(r){
+  if(!r.ok)return;var box=document.getElementById('chatlog');box.innerHTML='';
+  r.lines.forEach(function(l){var d=document.createElement('div');d.className=l.t;d.textContent=(l.t==='team'?'[team] ':'[all] ')+l.s;box.appendChild(d);});
+  box.scrollTop=box.scrollHeight;}).catch(function(){});}
+function sendChat(){var t=document.getElementById('sayt');if(!key||!t.value.trim())return;
+  fetch('/api/say?k='+key+'&t='+encodeURIComponent(t.value),{cache:'no-store'}).then(function(r){return r.json();})
+  .then(function(r){if(r.ok)t.value='';say(r.ok?'sent to the team':(r.error||'not sent'));chatPoll();}).catch(function(){say('no answer');});}
+function tick(){fetch('/livemap.json',{cache:'no-store'}).then(function(r){return r.json();}).then(function(d){data=d;draw();}).catch(function(){hdr.textContent='no answer from the server';});poll();chatPoll();}
 tick();setInterval(tick,1000);
 </script></body></html>
 )HTML";
@@ -613,12 +809,47 @@ std::string Param(const std::string& query, const char* name) {
   return "";
 }
 
+// A query's free text (%XX and + decoded), up to 200 bytes: the commander's chat line.
+std::string ParamText(const std::string& query, const char* name) {
+  const std::string want = std::string(name) + "=";
+  for (size_t at = 0; at < query.size();) {
+    size_t amp = query.find('&', at);
+    if (amp == std::string::npos) amp = query.size();
+    if (query.compare(at, want.size(), want) == 0) {
+      std::string out;
+      for (size_t i = at + want.size(); i < amp && out.size() < 200; ++i) {
+        const char ch = query[i];
+        if (ch == '+') {
+          out += ' ';
+        } else if (ch == '%' && i + 2 < amp && isxdigit(static_cast<unsigned char>(query[i + 1])) &&
+                   isxdigit(static_cast<unsigned char>(query[i + 2]))) {
+          out += char(strtol(query.substr(i + 1, 2).c_str(), nullptr, 16));
+          i += 2;
+        } else {
+          out += ch;
+        }
+      }
+      return out;
+    }
+    at = amp + 1;
+  }
+  return "";
+}
+
+// One connection (its own short-lived thread: ServeLive): a receive timeout of 1 s
+// each and 3 s for the whole request, a send timeout of 2 s and 5 s for the whole
+// answer, so a slow or stalled client holds only its own thread. What the
+// answer is made of (the game's state, the caches) is made one request at a
+// time (g_serve_mu).
+std::mutex g_serve_mu;
 void Answer(SOCKET c, uint32_t from) {
-  DWORD to = 2000;
-  setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&to), sizeof to);
+  DWORD rto = 1000, sto = 2000;
+  setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rto), sizeof rto);
+  setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sto), sizeof sto);
+  const auto began = Clock::now();
   std::string req;
   char buf[512];
-  while (req.size() < 2048 && req.find("\r\n\r\n") == std::string::npos) {
+  while (req.size() < 2048 && req.find("\r\n\r\n") == std::string::npos && Since(began, Clock::now()) < 3.0) {
     int n = recv(c, buf, sizeof buf, 0);
     if (n <= 0) break;
     req.append(buf, size_t(n));
@@ -627,6 +858,7 @@ void Answer(SOCKET c, uint32_t from) {
   int status = 200;
   const char* type = "text/html; charset=utf-8";
   std::string body;
+  std::unique_lock<std::mutex> compute(g_serve_mu);
   if (line.compare(0, 4, "GET ") != 0) {
     status = 405, type = "text/plain", body = "GET only\n";
   } else {
@@ -649,6 +881,12 @@ void Answer(SOCKET c, uint32_t from) {
     } else if (path == "/api/state") {
       type = "application/json";
       body = StateJson(Param(query, "k"));
+    } else if (path == "/api/chat") {
+      type = "application/json";
+      body = ChatJson(Param(query, "k"));
+    } else if (path == "/api/say") {
+      type = "application/json";
+      body = SayJson(Param(query, "k"), ParamText(query, "t"));
     } else if (action) {
       type = "application/json";
       body = Act(Param(query, "k"), Param(query, "a"), Param(query, "x"), Param(query, "z"));
@@ -656,12 +894,13 @@ void Answer(SOCKET c, uint32_t from) {
       status = 404, type = "text/plain", body = "not found\n";
     }
   }
+  compute.unlock();  // (the sending may be slow: not under the lock)
   const char* reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 429 ? "Too Many Requests" : "Method Not Allowed";
   std::string head = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\nContent-Type: " + type +
                      "\r\nContent-Length: " + std::to_string(body.size()) +
                      "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n";
   head += body;
-  for (size_t at = 0; at < head.size();) {
+  for (size_t at = 0; at < head.size() && Since(began, Clock::now()) < 8.0;) {
     int n = send(c, head.data() + at, int(head.size() - at), 0);
     if (n <= 0) break;
     at += size_t(n);
@@ -687,7 +926,11 @@ void ServeLive() {
       sockaddr_in a{};
       a.sin_family = AF_INET;
       a.sin_port = htons(want);
-      a.sin_addr.s_addr = htonl(INADDR_ANY);
+      // The host's own LAN address only (a PC with other networks, a VPN or the
+      // internet side does not serve it there), or loopback when that is not known;
+      // BF_LIVEMAP_PUBLIC=1 binds every address (docs/COMMANDER.md).
+      static const bool pub = std::getenv("BF_LIVEMAP_PUBLIC") && std::getenv("BF_LIVEMAP_PUBLIC")[0] == '1';
+      a.sin_addr.s_addr = pub ? htonl(INADDR_ANY) : g_lan_ip ? uint32_t(g_lan_ip) : htonl(INADDR_LOOPBACK);
       if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
           listen(listener, 8) != 0) {
         RT_WARN("livemap: TCP port %u is not available (the live map is off)", unsigned(want));
@@ -696,7 +939,14 @@ void ServeLive() {
         continue;
       }
       bound = want;
-      RT_INFO("livemap: http://<this PC's address>:%u/ shows the live map", unsigned(want));
+      {
+        char ip[32] = "?";
+        in_addr ia{};
+        ia.s_addr = a.sin_addr.s_addr;
+        inet_ntop(AF_INET, &ia, ip, sizeof ip);
+        RT_INFO("livemap: http://%s:%u/ shows the live map%s", pub ? "<this PC's address>" : ip, unsigned(want),
+                pub ? " (on every address: BF_LIVEMAP_PUBLIC)" : "");
+      }
     }
     fd_set r;
     FD_ZERO(&r);
@@ -707,8 +957,20 @@ void ServeLive() {
       int len = sizeof from;
       SOCKET c = accept(listener, reinterpret_cast<sockaddr*>(&from), &len);
       if (c != INVALID_SOCKET) {
-        Answer(c, from.sin_addr.s_addr);  // (one at a time: the requests are bounded by that)
-        closesocket(c);
+        // A thread for each connection, at most 8 at once (a stalled client holds
+        // one of them for 8 s at most, never the others' turn); more are dropped.
+        static std::atomic<int> busy{0};
+        if (busy.load() >= 8) {
+          closesocket(c);
+        } else {
+          ++busy;
+          const uint32_t addr = from.sin_addr.s_addr;
+          std::thread([c, addr] {
+            Answer(c, addr);
+            closesocket(c);
+            --busy;
+          }).detach();
+        }
       }
     }
   }
@@ -737,6 +999,10 @@ void Expire() {
         g_last_act.clear(), g_known.clear(), g_local = Known{};
         for (int t = kUS; t <= kJapan; ++t) g_order[t] = OrderState{}, g_notes[t].clear();
       }
+      // Known players that have sent no eye packet for 120 s are forgotten (they
+      // come back with their next one), so the table doesn't hold old joiners.
+      for (auto it = g_known.begin(); it != g_known.end();)
+        it = Since(it->second.seen, now) > 120.0 ? g_known.erase(it) : std::next(it);
       if (local_found) {
         if (g_local.team != team) RT_INFO("commander: this game's player is on the %s team", TeamName(team));
         g_local.id = id, g_local.team = team, g_local.seen = now;
@@ -758,6 +1024,7 @@ void Expire() {
     }
     for (const std::string& n : notes)
       if (g_announce) g_announce(n);
+    HudSync();
   }
 }
 }  // namespace
@@ -963,6 +1230,7 @@ int Cooldown() { return g_cooldown; }
 int CooldownFor(const std::string& action) {
   if (action == "order") return int(kOrderCooldownS);
   if (action == "vehicle") return 2 * g_cooldown;
+  if (action == "strike") return 180;  // the airstrike: its own long wait (about 3 minutes)
   return g_cooldown;
 }
 
