@@ -277,7 +277,7 @@ struct Recorder {
       g_live.map = map_name, g_live.t = t;
       g_live.soldiers.clear();
       for (const S& s : soldiers)
-        g_live.soldiers.push_back({s.id, s.team, s.health, uint8_t(s.flags & 1), s.p[0], s.p[2], s.yaw});
+        g_live.soldiers.push_back({s.id, s.team, s.health, uint8_t(s.flags & 1), s.p[0], s.p[1], s.p[2], s.yaw});
       g_live.vehicles.clear();
       for (const V& v : vs) g_live.vehicles.push_back({v.id, v.p[0], v.p[2], v.yaw});
       g_live.points = live_points;

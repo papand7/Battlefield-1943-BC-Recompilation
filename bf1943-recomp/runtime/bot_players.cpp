@@ -35,6 +35,7 @@
 #include "admin_server.h"
 #include "bot_knowledge.h"
 #include "bot_tuning.h"
+#include "commander.h"
 #include "bot_llm.h"
 #include "bot_players.h"
 #include "replay.h"
@@ -782,6 +783,7 @@ GAME_PATCH(82414430) {
   __imp__sub_82414430(ctx, base);
   if (!g_players.empty()) EnsureThreadAllocator(ctx, base);  // (for the bots' objects only)
   ApplyHits(ctx, base);
+  rt::commander::OnServerUpdate();  // (the commander's drops: between the server's steps)
   // BF_BOT_TICK_TRACE: server updates a second (every 5 s).
   if (getenv("BF_BOT_TICK_TRACE")) {
     static int n = 0;

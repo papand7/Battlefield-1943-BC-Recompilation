@@ -73,7 +73,7 @@ bool Load(const std::string& path, Recording& out, std::string* error = nullptr)
 struct LiveSoldier {
   uint16_t id;
   uint8_t team, health, seated;
-  float x, z, yaw;
+  float x, y, z, yaw;  // (y: the feet)
 };
 struct LiveVehicle {
   uint16_t id;

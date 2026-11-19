@@ -24,6 +24,7 @@
 #include "bot_tuning.h"
 #include "bot_llm.h"
 #include "bot_players.h"
+#include "commander.h"
 #include "bots/bot_api.h"
 #include "bots/nav.h"
 #include "guest.h"
@@ -747,6 +748,15 @@ void StartBotDirector() {
       w.vehicles = d.vehicles.data(), w.vehicle_count = int(d.vehicles.size());
       w.bots = d.bots.data(), w.bot_count = int(d.bots.size());
       w.points_changed = flags_changed;
+      // The commanders' orders (commander.h): the flag at the order's place.
+      for (int team = 1; team <= 2; ++team) {
+        const commander::Order o = commander::CurrentOrder(team);
+        w.order_point[team] = -1, w.order_kind[team] = o.kind, w.order_serial[team] = o.serial;
+        if (o.kind == commander::kNoOrder) continue;
+        float best = 15.0f;
+        for (size_t i = 0; i < d.points.size(); ++i)
+          if (float e = std::hypot(d.points[i].pos.x - o.x, d.points[i].pos.z - o.z); e < best) best = e, w.order_point[team] = int(i);
+      }
       w.scenario = scenario;
       w.result = result;
       w.log = BrainLog;

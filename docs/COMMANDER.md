@@ -1,12 +1,15 @@
 # Commander (Battlefield 1943)
 
 A commander for each team, as in Battlefield 2: one player per team who sees the whole
-battlefield and, in phase 2, gives orders and calls in drops. Phase 1 (this change) has the
-seat, the live map and the cooldown plumbing. All of it is decided on the host (a LAN host or a
-dedicated server); players only send requests.
+battlefield, gives orders and calls in drops. Phase 1 made the seat, the live map and the
+cooldown plumbing; phase 2 the commander's page (orders, drops) and the seat's team check. All
+of it is decided on the host (a LAN host or a dedicated server); players only send requests.
 
-Code: `bf1943-recomp/runtime/commander.h`, `commander.cpp`; hooks in `admin.cpp` (the chat
-command and its packets), `admin_server.cpp` (`PlayerName`), `replay.cpp` (the live sample).
+Code: `bf1943-recomp/runtime/commander.h`, `commander.cpp` (seats, teams, orders, the HTTP
+server and its page), `commander_world.cpp` (the drops, on the server's thread); hooks in
+`admin.cpp` (the chat command and its packets), `admin_server.cpp` (`PlayerName`), `replay.cpp`
+(the live sample), `bot_players.cpp` (the server's update calls `commander::OnServerUpdate`),
+`bots.cpp` and `bots/brain.cpp` (the bots follow the orders).
 Bad Company shares this runtime (its build compiles `bf1943-recomp/runtime/*.cpp`), so all of
 it is gated by `commander::Available()`, which is true only for BF1943's LAN tag (`BF43`). Under
 Bad Company there are no seats, no `/commander` command and no live map server.
@@ -66,7 +69,7 @@ cooldown is the same for every action: 60 s by default, set with `/commander coo
 - For anyone outside the LAN to see it, TCP 19440 must be open in the host's firewall and
   router, as UDP 1003 and 19430 are for joining.
 
-### Known gaps in phase 1
+### Known gaps in phase 1 (the first two are closed by phase 2)
 
 - The seat is not checked against the requester's team: a joiner's chat address can't yet be
   tied to its soldier. Phase 2 needs that link (see below) before orders matter.
@@ -76,45 +79,122 @@ cooldown is the same for every action: 60 s by default, set with `/commander coo
 - No key binding: the chat command is the only way to sit, to avoid taking a key the game uses.
 - The live map server is Windows only. A Linux dedicated server has the seats but no map.
 
-## Phase 2 (not built): orders and drops
+## Phase 2: the commander's page, orders and drops
 
-All of these hook points were **found by reading the code, not verified in game**.
+What was checked in game (Wake Island, port offset 281, 6 bots): on a dedicated server the
+console takes a seat and gets its link; `/api/state`, wrong tokens, unknown actions, a click off
+any flag, the order cooldown, the rate limit (429) all answer as described; an attack order
+makes the team's bots choose that flag (logged "the commander's order: flag 0"); the seat frees
+20 s after the page stops polling. On a windowed host the host's own player was found under its
+camera (Japan), `/commander us` was refused and `/commander japan` taken, `me` pointed at its
+soldier, a defend order sent the Japanese bots to the flag and the supply drop and orders were
+told to the player (log: "told 1 players"; the chat overlay isn't in `--capture` frames). Not
+checked: a second PC joining (the eye packet and the joiner's link are only exercised on the
+host), a soldier actually healed by a supply drop (nobody was hurt in its zone during the test).
 
-### Order markers
+### Teams: which soldier is whose
 
-- A commander's order is a (team, kind, x, z) the host keeps for a while: "attack/defend this
-  flag", "go here". It would come from the map page (a click sends a GET with the position,
-  checked against the seat holder) or from chat (`/commander order <point id>`).
-- For **bots**: the director in `bots.cpp` (`struct Director`, `Refresh`) already chooses
-  flags from `points`. An order would weight the flag choice for that team's bots. The
-  advisor's markers (`m.markers.push_back(... Marker::kObjective ...)`, about line 401, and the
-  level markers about line 800) are where an order marker would also be shown to the bots'
-  LLM advisor. Unverified.
-- For **humans**: the minimap/HUD overlay (`game_patches.cpp`, the HUD drawing near line 293)
-  could draw an order marker. A joiner would need the order sent to it (a `BF43M!o...` notice
-  over the chat port, as the host's other notices are). Unverified.
-- Every order goes through `TryAct(team, ..., "order", ...)`.
+- Every joiner's game sends the host where its camera is, `BF43E!<chat port>|x,y,z`, every 5 s
+  while it is in a level (a new packet kind: older hosts ignore it). The host looks in its live
+  sample (`replay::LiveCopy`, which now has each soldier's height) for a soldier on foot whose
+  feet are 0 to 2.5 m under that eye and within 2 m across (none if soldiers of both teams are
+  there). That soldier's player id (the recorder's, which stays the player's across lives) and
+  team are kept for that chat address until the level ends.
+- The host's own player is found the same way from its own camera, once a second.
+- `/commander us|japan` is refused unless the requester's team is known and is that team ("you
+  play for Japan: /commander japan"; "deploy and walk a few steps on foot first"). The
+  dedicated server's console may take either seat.
+- Limit: the eye is the joiner's own report. A modified client could claim another place; the
+  host only checks that a soldier of that team stands there. A server-side tie (the join's
+  address to its spawner in `bot_players.cpp`'s join hook) would close that; not done.
 
-### Air drops (ammo, vehicles)
+### The seat's token and the page
 
-- **Ammo / supply crate.** No code here creates game entities yet. The engine's own spawning
-  of a supply/ammo entity has not been found. Next step: `BF_TYPE_DUMP` (`type_dump.cpp`) to
-  list engine type names and find the supply and ammo crate classes, then the server function
-  that creates one (a call from the level's spawner entities). Unverified.
-- **Vehicle drop.** Vehicles come from the level's vehicle spawners. The nearest working
-  example of driving the engine's spawn logic from outside is the bots' soldier spawn in
-  `bot_players.cpp` (a bot's spawn object `kSpawnObject` 8201A990 and its move receiver,
-  `St32(b.mover + 0x30, b.spawner)`, about line 865). A drop could move an existing vehicle
-  spawner's position, or respawn an idle vehicle (the vehicles `replay.cpp` already sees) at
-  the commander's point. Both are unverified, and moving server objects must also replicate
-  to the joiners.
-- Each drop goes through `TryAct(team, ..., "ammo"/"vehicle", ...)`, with its own cooldown key.
+- Taking a seat makes a 16-hex-digit secret token. The host answers a joiner
+  `BF43M!h<team>:<token>` (older joiners read only the team); the joiner's game builds the link
+  from the host's address and port offset, `http://<host>:<19440 + offset>/?k=<token>`, shows
+  it in chat, writes it to its log and copies it to the clipboard. The host (or the console)
+  gets its own link with its LAN address. `/commander` alone shows the link again.
+- The page is the live map (same address, one self-contained page, no external files): the
+  level's own minimap picture under it (`/minimap.png`, made from the host's own game files as
+  for the bots' advisor), flags in their owner's colour, soldiers, vehicles, orders (a dashed
+  ring with ATTACK / DEFEND), supply zones, and the commander's own soldier marked "you". With a
+  token it shows the commander's bar: the team, each action's cooldown, the last notes.
+  Clicking a flag offers Attack / Defend; clicking anywhere offers Supply drop / Vehicle drop
+  (and Cancel our order).
+- **Keep-alive.** Once the page has polled `/api/state` (it does once a second) the page keeps
+  the seat: 20 s without a poll frees it ("...'s map page closed", told to everyone), and anyone
+  of that team can take it. Before the page is first opened the game's keep-alives keep it, and
+  a new seat lasts at least 90 s (time to open the link).
 
-### Also needed for phase 2
+### HTTP API (GET, on the live map's port)
 
-- **Seat-to-team check:** match a joiner's hello (its game port) to its server-side player.
-  `net.cpp` knows each connection's address and port, and `bot_players.cpp` shows how a
-  connection's spawner is found. That gives the requester's team, so only a team's own player
-  can command it.
-- The map page needs an authenticated action path (a per-seat token handed to the holder in
-  chat, sent with each click) before it can issue orders.
+- `/api/state?k=<token>`: `{"ok":true,"team":1,"name":...,"me":<player id or -1>,
+  "wait":{"order":s,"ammo":s,"vehicle":s},"cooldown":{...},"notes":[...]}`, or `ok:false` when
+  the token holds no seat (now). It is the page's heartbeat.
+- `/api/act?k=<token>&a=<attack|defend|cancel|ammo|vehicle>&x=<m>&z=<m>`:
+  `{"ok":true,"text"}` or `{"ok":false,"error","wait"?}`.
+- `/livemap.json` gained `frame` (the picture's square and orientation), `orders`
+  (`team, kind, point, x, z, left`), `supply` (`team, x, z, left`) and the commanders' names.
+- **Checks on every request:** the token must be exactly 16 hex digits and a seat's (now);
+  query values are taken only if made of `[0-9A-Za-z.-]` (64 characters at most); the action
+  must be one of the five; x and z must parse whole as finite numbers inside the level's square
+  (the minimap's, else +-1024 m); an order must be within 60 m of a flag. Rate limit per
+  address: 60 requests in 10 s and one action every 0.3 s (else 429); at most 256 addresses are
+  tracked. As before: one request at a time, 2 s timeout, 2 kB request cap.
+
+### Cooldowns
+
+`TryAct` and the page's actions share one check per team and action: orders 10 s, supply drops
+`/commander cooldown <5-600>` (60 s by default), vehicle drops twice that. A drop that can't be
+done (no free jeep, water, the ground not read yet) gives its cooldown back.
+
+### Orders
+
+- Per team: attack or defend a flag, its place, a serial that changes with every new order
+  (and with a cancel or the expiry), 180 s life. In `livemap.json` and on the page.
+- **Bots** (`bots.cpp` -> `botapi::World::order_point/order_kind/order_serial`, bot API
+  version 10): the director maps the order to the flag's index; in `brain.cpp` each bot of that
+  team whose serial differs chooses its flag again, and `ChoosePoint` adds 70 to the ordered
+  flag's worth (the spreading by mates still applies: about half the team goes).
+- **Players**: each player of the team whose soldier the host knows gets a chat line with the
+  way from where it stands, e.g. `[commander] ATTACK the Japanese flag 230 m north-east of you`
+  (north = up on the level's minimap picture). A player the host doesn't know yet gets none.
+  No in-game HUD or minimap marker: not attempted (the chat line is the in-game cue).
+
+### Drops (`commander_world.cpp`, on the server's thread)
+
+The page's drop is queued; `commander::OnServerUpdate` (called from the server update hook in
+`bot_players.cpp`, 82414430) does it between the server's own steps.
+
+- **Supply ("ammo").** BF1943 has no ammo crates in its levels: the engine has
+  `ServerAmmoCrateEntity` / `AmmoCrateEntityData` (seen in the `BF_TYPE_DUMP` list, Bad
+  Company's heritage), but BF1943's soldiers never run out of ammunition and heal by
+  themselves, and no level places one. So the supply drop heals instead: for 30 s, every half
+  second, the team's soldiers within 15 m of the point are set to full health (server soldier
+  +3C).
+- **Vehicle: NOT WORKING, off by default** (`BF_VEHICLE_DROP=1` turns it on for testing; the
+  page shows the button greyed "(not yet)" and the server refuses it otherwise). Tested on a
+  windowed host (Wake Island, the Japanese carrier): the server's jeep record moves (the live
+  map and the vehicle entity read the new place), but the game keeps drawing the jeep where it
+  was parked and nothing is there to enter at the drop point. What was tried:
+  The team's free jeep (`Willys` for the US, `Kurogane` for Japan, else any jeep;
+  free: no soldier within 6 m) nearest the point is moved there. A parked vehicle's Havok body
+  is not simulated (its motion is another class than a driven one's: vtable 820B0AD4 against
+  820B0A04) and there are two physics worlds in a host (the server's and its own client's), so
+  the drop moves every copy of where the jeep stands (16-byte aligned vectors within 5 cm of
+  it: its entity's, both bodies' transforms) and the bodies' centres of mass by the same step,
+  and keeps the jeep's height over the ground (`BF_DROP_HEIGHT` adds metres; default 0.3). The
+  ground there is the terrain or the map's collision above it (a deck, a pier); a point that is
+  blue on the minimap picture is refused as water. The map's ground is read in the background
+  once a seat is taken (the bots' `SightForMap`); a drop before it is ready is refused ("try
+  again in a minute").
+  First try: only the Havok body's transform (+E0, +F0, +100): the body kept the new values but
+  never fell (not simulated) and the entity kept the old place. `BF_DROP_PROBE=1` logs the
+  parked body beside a driven one's (the different motion vtables, the two worlds).
+  **Next steps:** find how a parked vehicle is turned dynamic when someone gets in (the motion
+  type change on entering) and do that before moving it; or respawn it the game's way: the
+  level's `ServerVehicleSpawnEntity` (vtable 82018898) moved to the point and made to spawn
+  (its transform and its respawn trigger are not found yet); or, simplest fallback, tell the
+  team where the nearest free jeep is.
+
