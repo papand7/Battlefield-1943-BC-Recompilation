@@ -8,9 +8,9 @@
   "scripts": {
     "start": "electron .",
     "pack": "electron-packager . BF1943Launcher --platform=win32 --arch=x64 --out=dist --overwrite --asar --ignore=^/dist",
-    "dist": "electron-builder --win portable",
-    "dist:linux": "electron-builder --linux AppImage",
-    "dist:mac": "electron-builder --mac dmg --x64 --arm64"
+    "dist": "electron-builder --win portable --publish never",
+    "dist:linux": "electron-builder --linux AppImage --publish never",
+    "dist:mac": "electron-builder --mac dmg --x64 --arm64 --publish never"
   },
   "devDependencies": {
     "@electron/packager": "^18.3.6",
