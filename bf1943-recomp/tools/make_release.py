@@ -94,6 +94,29 @@ def stage(out):
         sys.exit('XenonRecomp.exe missing: build thirdparty/XenonRecomp first (see the README)')
     os.makedirs(os.path.join(src, 'tools', 'bin'), exist_ok=True)
     shutil.copy2(recomp, os.path.join(src, 'tools', 'bin', 'XenonRecomp.exe'))
+    check_includes(out)
+
+
+def check_includes(out):
+    """Stops the release if a source names the dev repo's folders: the release
+    has src/ and src-bfbc1/ instead of bf1943-recomp/ and bfbc1-recomp/ (an
+    include of ../../bf1943-recomp/... broke Bad Company's build in 0.2.0)."""
+    bad = []
+    for tree in ('src', 'src-bfbc1'):
+        for dirpath, dirnames, files in os.walk(os.path.join(out, tree)):
+            dirnames[:] = [d for d in dirnames if d not in ('thirdparty', 'generated', 'build', 'node_modules')]
+            for f in files:
+                if not f.endswith(('.c', '.cc', '.cpp', '.h', '.hpp', '.inl')):
+                    continue
+                path = os.path.join(dirpath, f)
+                with open(path, encoding='utf-8', errors='replace') as fh:
+                    for n, line in enumerate(fh, 1):
+                        # (CMake's own fallback, set(ROOT ${BC}/../bf1943-recomp), is
+                        # only for the repo: the launcher passes -DROOT.)
+                        if ('bf1943-recomp' in line or 'bfbc1-recomp' in line) and '#include' in line:
+                            bad.append(f'{os.path.relpath(path, out)}:{n}: {line.strip()}')
+    if bad:
+        sys.exit('sources name the repo folders (they are src/ and src-bfbc1/ in the release):\n' + '\n'.join(bad))
 
 
 def main():
