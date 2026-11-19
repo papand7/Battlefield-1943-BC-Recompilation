@@ -311,7 +311,17 @@ known joiners but no joiner was there), the airstrike's smoke on a joiner's scre
 - **Eye packets (`E`) only from a registered player** (one that said hello on that chat port).
   The team is the soldier's under the eye, never the sender's claim.
 - **Admin password guesses:** 5 wrong per source in 10 s, then refused until the window ends.
-- Not done (need a decision or more work): the heal zone's full rescan every half second, the
-  vehicle drop's memory-wide writes (it is off by default), the admin chat source checks, the
-  known-player table's expiry and cap, the relay and log rate limits, the beacon's reply rate
-  limit, and the pad pointer under the lock.
+- **Fixed in the second pass:** the chat relay only for a peer that said hello, 10 lines a 2 s
+  per source, the log line cut to 120 bytes; admin commands and seat requests only from a
+  registered peer; the beacon answers 30 queries per 10 s per source; the known-player table
+  forgets a player with no eye packet for 120 s (the cap of 64 stays); the heal zone rescans
+  the soldiers every 10 s (not 2 s; a soldier made in between waits for the next scan); the
+  vehicle drop writes only the body's words (its transform and centres of mass, each checked
+  against the body's vtable), with no memory-wide scan; the release script checks XenonRecomp
+  and the shaders before it copies anything (Windows).
+- **Checked, no change needed:** the pad pointer (every caller holds the pad lock while it uses
+  the pointer).
+- **Vehicle drop (new spawn): not done.** The level's spawner vtable (82018898) was dumped in
+  game (BF_SPAWN_PROBE=1): its methods are readable from the guest image (slot 2 is a short
+  getter, slot 14 and others take an object pointer). Which slot creates a vehicle has not been
+  identified by reading their code; that is the next step. The drop stays off.

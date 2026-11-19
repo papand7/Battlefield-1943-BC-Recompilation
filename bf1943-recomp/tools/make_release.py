@@ -100,15 +100,18 @@ def stage(out, src_name='src', bc_name='src-bfbc1', binaries=True):
     # (The Linux release: build_linux.sh builds the shaders and XenonRecomp
     # when they aren't there.)
     shaders = os.path.join(ROOT, 'build', 'xenia_shaders')
+    recomp = os.path.join(ROOT, 'build', 'xenonrecomp-clang', 'XenonRecomp', 'XenonRecomp.exe')
+    # Both checks come before anything is staged: a missing tool on Windows must
+    # not leave a half-filled staging folder behind.
+    if os.name == 'nt':
+        if not os.path.isdir(shaders):
+            sys.exit('build/xenia_shaders missing: run tools/build_xenia_shaders.py first')
+        if not os.path.isfile(recomp):
+            sys.exit('XenonRecomp.exe missing: build thirdparty/XenonRecomp first (see the README)')
     if os.path.isdir(shaders):
         shutil.copytree(shaders, os.path.join(src, 'build', 'xenia_shaders'))
-    elif os.name == 'nt':
-        sys.exit('build/xenia_shaders missing: run tools/build_xenia_shaders.py first')
-    recomp = os.path.join(ROOT, 'build', 'xenonrecomp-clang', 'XenonRecomp', 'XenonRecomp.exe')
     if not os.path.isfile(recomp):
-        if os.name != 'nt':
-            return
-        sys.exit('XenonRecomp.exe missing: build thirdparty/XenonRecomp first (see the README)')
+        return
     os.makedirs(os.path.join(src, 'tools', 'bin'), exist_ok=True)
     shutil.copy2(recomp, os.path.join(src, 'tools', 'bin', 'XenonRecomp.exe'))
     check_includes(out)

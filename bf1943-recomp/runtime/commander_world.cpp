@@ -281,35 +281,26 @@ bool DropVehicle(int team, float x, float z, std::string* text) {
   const float from[3] = {best.pos[0], best.pos[1], best.pos[2]};
   const float to[3] = {x, ground + lift, z};
   const float step[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
-  // Every copy of where it stands (its entity's, its physics' in the server's
-  // world and in this game's own client's: 16-byte aligned vectors there
-  // within 5 cm), by the same step.
+  // Only the vehicle's own words: its entity's place (+F0) and its body's
+  // transform (+E0) and centres of mass (+F0, +100), each written only when
+  // the object is the one it should be (the vehicle's kind, the rigid body's
+  // vtable) and the body is the one found above. No memory-wide scan.
   size_t moved = 0;
-  for (uint64_t page = 0x40000000; page < 0xC0000000; page += 0x1000) {
-    if (page >= 0x80000000 && page < 0xA0000000) continue;
-    if (!IsCommitted(uint32_t(page))) continue;
-    for (uint32_t a = uint32_t(page); a < uint32_t(page) + 0x1000; a += 16) {
-      const float p[3] = {LdF(a), LdF(a + 4), LdF(a + 8)};
-      // (written as a test that NaN words fail)
-      if (!(std::fabs(p[0] - from[0]) < 0.05f && std::fabs(p[2] - from[2]) < 0.05f && std::fabs(p[1] - from[1]) < 0.05f))
-        continue;
-      for (int i = 0; i < 3; ++i) StF(a + 4 * i, p[i] + step[i]);
-      static int said = 0;
-      if (said++ < 40) RT_INFO("commander: vehicle drop: moved the vector at %08X", a);
-      ++moved;
-    }
-  }
-  // The rigid bodies' centres of mass (a little off their origin) too.
-  for (uint32_t b : Scan(kRigidBody)) {
-    if (!Readable(b) || Ld32(b) != kRigidBody) continue;
-    if (std::hypot(std::hypot(LdF(b + 0xE0) - to[0], LdF(b + 0xE8) - to[2]), LdF(b + 0xE4) - to[1]) > 0.1f) continue;
+  auto moveVec = [&](uint32_t at, const float s[3]) {
+    if (!Readable(at)) return;
+    for (int i = 0; i < 3; ++i) StF(at + 4 * i, s[i] + step[i]);
+    ++moved;
+  };
+  if (Readable(body) && Ld32(body) == kRigidBody) {
+    const float o[3] = {LdF(body + 0xE0), LdF(body + 0xE4), LdF(body + 0xE8)};
+    if (std::hypot(std::hypot(o[0] - from[0], o[2] - from[2]), o[1] - from[1]) < 0.5f) moveVec(body + 0xE0, o);
     for (uint32_t at : {0xF0u, 0x100u}) {
-      const float p[3] = {LdF(b + at), LdF(b + at + 4), LdF(b + at + 8)};
-      if (std::hypot(std::hypot(p[0] - from[0], p[2] - from[2]), p[1] - from[1]) > 4.0f) continue;
-      for (int i = 0; i < 3; ++i) StF(b + at + 4 * i, p[i] + step[i]);
+      const float p[3] = {LdF(body + at), LdF(body + at + 4), LdF(body + at + 8)};
+      if (std::hypot(std::hypot(p[0] - from[0], p[2] - from[2]), p[1] - from[1]) <= 4.0f) moveVec(body + at, p);
     }
   }
-  RT_INFO("commander: %s team's vehicle drop: the %s (vehicle %08X, body %08X) from %.1f,%.1f,%.1f to %.1f,%.1f,%.1f (ground %.1f), %zu copies moved",
+  static int said = 0;
+  if (said++ < 40) RT_INFO("commander: vehicle drop: %zu words of the body %08X moved", moved, body);  RT_INFO("commander: %s team's vehicle drop: the %s (vehicle %08X, body %08X) from %.1f,%.1f,%.1f to %.1f,%.1f,%.1f (ground %.1f), %zu copies moved",
           TeamName(team), best.kind.c_str(), best.obj, body, from[0], from[1], from[2], to[0], to[1], to[2], ground, moved);
   g_watch.vehicle = best.obj, g_watch.body = body, g_watch.until = Clock::now() + std::chrono::seconds(8);
   g_watch.next = Clock::now();
@@ -359,7 +350,10 @@ void Blast(const Strike& s) {
 
 // Heals the zones' soldiers (every half second; the soldiers found again every 2 s).
 void Heal(const std::vector<Zone>& zones, Clock::time_point now) {
-  if (Since(g_soldiers_at, now) > 2.0) g_soldiers = Scan(kSoldier), g_soldiers_at = now;
+  // The soldiers' list is scanned every 10 s (not every 2): a soldier that dies or
+  // is made in between is only missed for a moment, and the heal checks each
+  // soldier's live health and place anyway (Readable and vtable checks below).
+  if (Since(g_soldiers_at, now) > 10.0) g_soldiers = Scan(kSoldier), g_soldiers_at = now;
   for (uint32_t s : g_soldiers) {
     if (!Readable(s) || Ld32(s) != kSoldier) continue;
     const int team = int(Ld32(s + 0x48));
@@ -688,6 +682,30 @@ void OnServerUpdate() {
         out += b;
       }
       RT_INFO("clip probe:%s", out.c_str());
+    }
+  }
+  // (testing) BF_SPAWN_PROBE: the level's ServerVehicleSpawnEntity vtable (82018898):
+  // its words, once, and for each method the first words of its code (to name
+  // the creation method by what it calls, in the next pass).
+  if (std::getenv("BF_SPAWN_PROBE")) {
+    static int64_t probed = -1;
+    if (probed != g_level) {
+      probed = g_level;
+      std::string w;
+      char b[24];
+      for (uint32_t i = 0; i < 48; ++i) {
+        const uint32_t f = Ld32(0x82018898 + i * 4);
+        snprintf(b, sizeof b, " %X", f);
+        w += b;
+      }
+      RT_INFO("spawn probe: vtable 82018898:%s", w.c_str());
+      for (uint32_t i = 0; i < 48; ++i) {
+        const uint32_t f = Ld32(0x82018898 + i * 4);
+        if (f < 0x82000000 || f >= 0x83000000) continue;
+        std::string c;
+        for (uint32_t k = 0; k < 12; ++k) snprintf(b, sizeof b, " %08X", Ld32(f + k * 4)), c += b;
+        RT_INFO("spawn probe: method %X (slot %u):%s", f, i, c.c_str());
+      }
     }
   }
   // (testing) BF_WEAPON_PROBE: every ServerWeaponComponent (82010500, a

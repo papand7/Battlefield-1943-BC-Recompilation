@@ -999,6 +999,10 @@ void Expire() {
         g_last_act.clear(), g_known.clear(), g_local = Known{};
         for (int t = kUS; t <= kJapan; ++t) g_order[t] = OrderState{}, g_notes[t].clear();
       }
+      // Known players that have sent no eye packet for 120 s are forgotten (they
+      // come back with their next one), so the table doesn't hold old joiners.
+      for (auto it = g_known.begin(); it != g_known.end();)
+        it = Since(it->second.seen, now) > 120.0 ? g_known.erase(it) : std::next(it);
       if (local_found) {
         if (g_local.team != team) RT_INFO("commander: this game's player is on the %s team", TeamName(team));
         g_local.id = id, g_local.team = team, g_local.seen = now;

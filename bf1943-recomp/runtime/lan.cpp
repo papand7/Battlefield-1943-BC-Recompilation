@@ -212,6 +212,16 @@ void Beacon() {
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(s, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
+    // Replies per source: 30 in 10 s (a browser asks a few times a second at most);
+    // the rest are not answered, so a flood can't make this PC send one reply per packet.
+    {
+      static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> replies;
+      const auto t = std::chrono::steady_clock::now();
+      if (replies.size() > 512) replies.clear();
+      auto& [since, count] = replies[from.sin_addr.s_addr];
+      if (t - since > std::chrono::seconds(10)) since = t, count = 0;
+      if (++count > 30) continue;
+    }
     std::string password, server_name, host_map;  // (copies: admin commands change them)
     {
       std::lock_guard lock(g_host_map_mutex);

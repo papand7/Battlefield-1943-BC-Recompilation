@@ -229,7 +229,8 @@ void ChatNetThread() {
         if (ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
         // An eye packet only from a registered player (one that said hello): it
         // is not a way to register. The team it gives is the soldier's, not a claim.
-        if (kind == 'E' && !KnownPeer(from.sin_addr.s_addr, peer_port)) continue;
+        // (Admin commands and seat requests too: a sender must have said hello first.)
+        if ((kind == 'E' || kind == 'A' || kind == 'M') && !KnownPeer(from.sin_addr.s_addr, peer_port)) continue;
         if (!RegisterPeer(from.sin_addr.s_addr, peer_port)) continue;  // (it hears the chat from now on)
         body = body.substr(bar + 1);
         if (kind == 'H') {
@@ -306,7 +307,21 @@ void ChatNetThread() {
         const uint16_t peer_port = uint16_t(atoi(text.substr(0, bar).c_str()));
         text = text.substr(bar + 1);
         if (peer_port && ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
-        if (peer_port && RegisterPeer(from.sin_addr.s_addr, peer_port)) {
+        // Relayed only for a peer that said hello (not any sender), and at most 10 a
+        // 2 s from each address: a flood of lines is dropped, not broadcast.
+        static std::mutex relay_lock;
+        static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> relays;
+        bool relay_ok = false;
+        {
+          std::lock_guard g(relay_lock);
+          auto& rl = relays[from.sin_addr.s_addr];
+          const auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration<double>(now - rl.first).count() > 2.0) rl = {now, 0};
+          relay_ok = ++rl.second <= 10;
+          if (relays.size() > 512) relays.clear();
+        }
+        if (peer_port && relay_ok && KnownPeer(from.sin_addr.s_addr, peer_port) &&
+            RegisterPeer(from.sin_addr.s_addr, peer_port)) {
           std::lock_guard lock(g_peers_lock);
           for (auto& [ip, peer] : g_peers)
             if (ip != from.sin_addr.s_addr) SendTo(ip, peer.first, text);
@@ -315,7 +330,7 @@ void ChatNetThread() {
         // A dedicated server's or host's own line relayed by a player? show it.
       }
       AddLine(L"> " + Wide(text));
-      RT_INFO("chat: %s", text.c_str());
+      RT_INFO("chat: %.120s", text.c_str());  // (the log: a line's first 120 bytes)
       if (g_dedicated) botllm::ChatReplyTo(text);  // (the bots' advisor may answer)
     } else {
       AddLine(L"> " + Wide(text));
