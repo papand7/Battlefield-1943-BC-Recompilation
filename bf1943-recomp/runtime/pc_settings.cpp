@@ -22,6 +22,7 @@
 #else
 #include "posix_gdiplus.h"  // (Linux: key names, XInput, the launcher's folder)
 #endif
+#include "pad.h"
 
 #include <algorithm>
 #include <cctype>
@@ -972,7 +973,9 @@ pcmenu::View BuildView() {
   pcmenu::View v;
   v.pad = g_pad_used;
   v.page = g_page;
-  std::wstring sel = g_pad_used ? L"A" : L"ENTER", back = g_pad_used ? L"B" : L"ESC";
+  const pad::Kind kind = pad::PromptKind(g_prompt_style);
+  std::wstring sel = g_pad_used ? pad::ButtonLabel(kind, "a") : L"ENTER",
+               back = g_pad_used ? pad::ButtonLabel(kind, "b") : L"ESC";
   if (g_puppet.on) {
     v.screen = pcmenu::Screen::kBusy;
     v.desc = g_puppet.row == kExitGameRow ? L"Returning to headquarters" : L"Requesting a new deployment";
@@ -1023,6 +1026,9 @@ pcmenu::View BuildView() {
   v.more_below = g_scroll + pcmenu::kVisibleRows < int(rows.size());
   if (!g_status.empty()) {
     v.desc = g_status;
+  } else if (g_editing && g_pad_used) {
+    v.desc = L"Up and Down change the last letter, Right adds one, Left removes it, Y switches its case. "
+             L"Press A when done.";
   } else if (g_focus == 1 && g_row < int(rows.size())) {
     const Setting& s = Page()[rows[g_row]];
     v.desc = s.desc;
@@ -1030,7 +1036,9 @@ pcmenu::View BuildView() {
   } else {
     v.desc = L"Choose a page. Changes are saved as you make them.";
   }
-  v.prompts = {{sel, L"SELECT"}, {back, L"BACK"}, {g_pad_used ? L"LB RB" : L"< >", g_pad_used ? L"PAGE" : L"CHANGE"}};
+  std::wstring change = L"< >";
+  if (g_pad_used) change = std::wstring(pad::ButtonLabel(kind, "lb")) + L" " + pad::ButtonLabel(kind, "rb");
+  v.prompts = {{sel, L"SELECT"}, {back, L"BACK"}, {change, g_pad_used ? L"PAGE" : L"CHANGE"}};
   return v;
 }
 
@@ -1557,7 +1565,7 @@ bool Update(HWND__* window, bool title_passed) {
   }
   // The pad, read here too: menus answer it, the game doesn't see it.
   XINPUT_STATE pad{};
-  bool have_pad = XInputGetState(0, &pad) == ERROR_SUCCESS;
+  bool have_pad = rt::pad::GetState(0, &pad) == ERROR_SUCCESS;
   static WORD pad_prev = 0;
   static double repeat_at = 0;
   static int repeat_dir = 0;
@@ -1771,7 +1779,45 @@ bool Update(HWND__* window, bool title_passed) {
       }
       changed = true;
     }
-    if (pad_pressed & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B)) g_editing = false, changed = true;
+    // The pad types too: Up and Down step the last letter through the
+    // alphabet (digits and the few marks after it; an address: digits, the
+    // dot and the colon), Right adds a letter, Left takes the last away,
+    // Y switches its case; A or B is done. (BuildView says so.)
+    if (s) {
+      const bool address = !std::strcmp(s->key, "address");
+      const size_t limit = address ? 21u : 15u;
+      const std::string set = address ? "0123456789.:"
+                                      : "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.";
+      auto step = [&](int d) {
+        if (s->text.empty()) {
+          s->text += set[d > 0 ? 0 : set.size() - 1];
+        } else {
+          size_t at = set.find(s->text.back());
+          const int n = int(set.size());
+          int next = at == std::string::npos ? 0 : (int(at) + d + n) % n;
+          s->text.back() = set[next];
+        }
+        s->touched = true;
+        changed = true;
+      };
+      if (pad_pressed & XINPUT_GAMEPAD_DPAD_UP) step(1);
+      if (pad_pressed & XINPUT_GAMEPAD_DPAD_DOWN) step(-1);
+      if ((pad_pressed & XINPUT_GAMEPAD_DPAD_RIGHT) && s->text.size() < limit) {
+        s->text += s->text.empty() ? set[0] : s->text.back();  // (the same letter: Up and Down move it on)
+        s->touched = changed = true;
+      }
+      if ((pad_pressed & XINPUT_GAMEPAD_DPAD_LEFT) && !s->text.empty()) s->text.pop_back(), s->touched = changed = true;
+      if ((pad_pressed & XINPUT_GAMEPAD_Y) && !s->text.empty() && !address) {
+        char& c = s->text.back();
+        c = std::isupper((unsigned char)c) ? char(std::tolower((unsigned char)c)) : char(std::toupper((unsigned char)c));
+        s->touched = changed = true;
+      }
+    }
+    if (pad_pressed & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B)) {
+      g_editing = false, changed = true;
+      if (g_mode == kModeSettings) Save();
+      g_wait_release = true;
+    }
   } else {
     // Mouse: hover, click.
     POINT cursor;

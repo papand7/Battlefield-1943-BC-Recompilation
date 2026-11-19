@@ -22,6 +22,7 @@
 #else
 #include "posix_gdiplus.h"  // (Linux: GDI+, the keys of the game's window)
 #endif
+#include "pad.h"
 
 #include <algorithm>
 #ifdef _WIN32
@@ -36,6 +37,7 @@ using std::min;
 
 #include <atomic>
 #include <chrono>
+#include <cctype>
 #include <cmath>
 #include <condition_variable>
 #include <cstring>
@@ -123,6 +125,8 @@ struct View {
   std::vector<std::wstring> lines;   // and its text (wrapped)
   std::wstring busy_head, busy_text;  // a "please wait" box instead of the rest
   bool can_back = true;
+  bool editing = false;  // a pad is typing in the selected row (up/down change the letter...)
+  rt::pad::Kind kind = rt::pad::Kind::kXbox360;  // the prompts' button names
   int page = 0;  // a new number: the items fade in again
 };
 
@@ -288,7 +292,7 @@ void FillWedge(Graphics& g, Brush& brush, const RectF& box, float start, float s
   g.FillPath(&brush, &path);
 }
 
-void DrawPrompt(Graphics& g, float x, wchar_t letter, Color color, const std::wstring& label, bool enabled) {
+void DrawPrompt(Graphics& g, float x, const std::wstring& l, Color color, const std::wstring& label, bool enabled) {
   BYTE alpha = enabled ? 255 : 90;
   Color c(alpha, color.GetR(), color.GetG(), color.GetB());
   SolidBrush dark(Color(alpha, 22, 22, 22));
@@ -297,7 +301,6 @@ void DrawPrompt(Graphics& g, float x, wchar_t letter, Color color, const std::ws
   DrawCircle(g, ring, RectF(x, kPromptY - 21, 42.0f, 42.0f));
   Font f(g_fonts.bold.get(), 28, FontStyleRegular, UnitPixel);
   SolidBrush lb(c);
-  std::wstring l(1, letter);
   float lw = TextWidth(g, l, f, 0);
   Text(g, l, f, lb, x + 21 - lw / 2, kPromptY - 17, 0);
   Font lf(g_fonts.body.get(), 34, FontStyleRegular, UnitPixel);
@@ -420,8 +423,12 @@ void Draw(Graphics& g, const View& v, Anim& anim, double now, float dt,
     }
   }
 
-  DrawPrompt(g, kRowL + 12, L'A', Color(255, 108, 190, 52), L"SELECT", true);
-  DrawPrompt(g, kRowL + 262, L'B', Color(255, 215, 50, 40), L"BACK", v.can_back);
+  // The pad's own button names (PlayStation: cross and circle, their colours).
+  const bool ps = v.kind == rt::pad::Kind::kPs3 || v.kind == rt::pad::Kind::kPs5;
+  DrawPrompt(g, kRowL + 12, rt::pad::ButtonLabel(v.kind, "a"), ps ? Color(255, 125, 168, 235) : Color(255, 108, 190, 52),
+             v.editing ? L"DONE" : L"SELECT", true);
+  DrawPrompt(g, kRowL + 262, rt::pad::ButtonLabel(v.kind, "b"), ps ? Color(255, 237, 84, 92) : Color(255, 215, 50, 40),
+             v.editing ? L"DONE" : L"BACK", v.can_back);
 }
 
 void RenderThread() {
@@ -552,6 +559,7 @@ std::vector<lan::Server> g_servers;
 bool g_searching = false;
 double g_busy_at = 0;
 std::wstring g_busy_text;
+bool g_pad_edit = false;      // a pad types in the selected text row (A starts it, A or B ends it)
 bool g_wait_release = false;  // after closing: the pad stays ours until let go
 
 const wchar_t* const kMainItems[] = {L"HOST GAME", L"SERVER BROWSER", L"JOIN BY ADDRESS", L"BACK"};
@@ -567,6 +575,8 @@ void Go(Page p, int sel = 0) {
 View Build() {
   View v;
   v.page = g_page_id;
+  v.kind = rt::pad::PromptKind(rt::g_prompt_style);
+  v.editing = g_pad_edit;
   std::wstring player = L"PLAYING AS " + Upper(Wide(g_gamertag));
   switch (g_page) {
     case kMain: {
@@ -636,7 +646,7 @@ View Build() {
                  {L"JOIN GAME"},
                  {L"BACK"}};
       v.head = L"JOIN BY ADDRESS", v.sub = L"IPV4 ADDRESS";
-      v.lines = {L"Type the host's address with the keyboard, for example 192.168.1.20. Add :port when the "
+      v.lines = {L"Type the host's address (on a pad: A on the row), for example 192.168.1.20. Add :port when the "
                  L"host's server isn't on the usual one (" + std::to_wstring(1003 + g_base_port_offset) + L").",
                  L"PASSWORD is only needed for a game that has one; leave it empty for an open game.", L""};
       if (!g_note.empty()) v.lines.push_back(g_note);
@@ -648,6 +658,10 @@ View Build() {
       v.can_back = false;
       break;
   }
+  // A pad typing (A on a text row): how.
+  if (g_pad_edit)
+    v.lines.insert(v.lines.begin(), {L"TYPING: Up and Down change the last letter, Right adds one, Left removes it, "
+                                     L"Y switches its case. Press A or B when done.", L""});
   v.sel = std::clamp(g_sel, 0, std::max(0, int(v.items.size()) - 1));
   return v;
 }
@@ -885,6 +899,39 @@ bool Update(const XINPUT_GAMEPAD& pad) {
   int dh = ((edge & XINPUT_GAMEPAD_DPAD_RIGHT) || pressed[VK_RIGHT]) - ((edge & XINPUT_GAMEPAD_DPAD_LEFT) || pressed[VK_LEFT]);
   bool accept = (edge & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_START)) || pressed[VK_RETURN] || (!typing && pressed[VK_SPACE]);
   bool back = (edge & (XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_BACK)) || pressed[VK_ESCAPE] || (!typing && pressed[VK_BACK]);
+
+  // A pad types too: A on a text row starts it; then Up and Down step the last
+  // letter through the alphabet (an address: digits, dot, colon), Right adds a
+  // letter, Left takes the last away, Y switches its case; A or B is done.
+  if (!typing) g_pad_edit = false;
+  if (typing && g_pad_edit) {
+    const bool address = g_page == kAddress && g_sel == 0;
+    std::string& text = address ? g_address : (g_page == kAddress || g_sel == 2) ? g_password : g_name;
+    const size_t limit = address ? 21 : 24;
+    const std::string set = address ? "0123456789.:"
+                                    : "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 -_.";
+    const int n = int(set.size());
+    auto step = [&](int d) {
+      if (text.empty()) {
+        text += set[d > 0 ? 0 : set.size() - 1];
+      } else {
+        size_t at = set.find(text.back());
+        text.back() = set[at == std::string::npos ? 0 : (int(at) + d + n) % n];
+      }
+    };
+    if (edge & XINPUT_GAMEPAD_DPAD_UP) step(1);
+    if (edge & XINPUT_GAMEPAD_DPAD_DOWN) step(-1);
+    if ((edge & XINPUT_GAMEPAD_DPAD_RIGHT) && text.size() < limit) text += text.empty() ? set[0] : text.back();
+    if ((edge & XINPUT_GAMEPAD_DPAD_LEFT) && !text.empty()) text.pop_back();
+    if ((edge & XINPUT_GAMEPAD_Y) && !text.empty() && !address) {
+      char& c = text.back();
+      c = char(std::isupper((unsigned char)c) ? std::tolower((unsigned char)c) : std::toupper((unsigned char)c));
+    }
+    if (edge & (XINPUT_GAMEPAD_A | XINPUT_GAMEPAD_B | XINPUT_GAMEPAD_START)) g_pad_edit = false;
+    dv = dh = 0, accept = back = false;
+  } else if (typing && !any_key && (edge & XINPUT_GAMEPAD_A)) {
+    g_pad_edit = true, accept = false;
+  }
 
   if (typing) {
     const bool address = g_page == kAddress && g_sel == 0;

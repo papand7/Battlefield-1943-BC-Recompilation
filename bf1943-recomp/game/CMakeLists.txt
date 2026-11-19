@@ -67,6 +67,9 @@ target_compile_definitions(bot_brain PRIVATE BF_BOT_BRAIN_DLL _CRT_SECURE_NO_WAR
 target_compile_options(bot_brain PRIVATE -march=x86-64-v3)
 target_compile_options(bf1943 PRIVATE -march=x86-64-v3 -fno-strict-aliasing)
 target_link_libraries(bf1943 PRIVATE bf1943_ppc bf1943_xexload xenia_gpu xinput dbghelp shcore dwmapi winmm bcrypt ws2_32 synchronization)
+# Controllers beyond XInput (runtime/pad.cpp): SDL3's gamepads.
+include(${CMAKE_CURRENT_SOURCE_DIR}/sdl_pads.cmake)
+bf_sdl_pads(bf1943)
 target_compile_options(bf1943 PRIVATE /Z7)
 target_link_options(bf1943 PRIVATE /DEBUG /OPT:REF /OPT:ICF)
 # ThinLTO across the guest code and the runtime (needs lld-link and llvm-lib,

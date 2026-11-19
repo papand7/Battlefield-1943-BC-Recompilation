@@ -68,7 +68,7 @@ Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced
 ### Input
 - **Mouse and Keyboard** - Full keyboard and mouse support, with every key rebindable under **Settings → Keys**. The mouse turns the view directly (raw input, not an emulated stick), and also works over Remote Desktop.
 - **Vehicles on the Keyboard** - W and S for throttle and brake, A and D to steer, the arrow keys to fly planes, Space to fire and C to change the camera view, with a separate plane mouse sensitivity.
-- **Controller** - A connected controller works too.
+- **Controllers** - Xbox pads through XInput, and PlayStation (DualShock 3/4, DualSense), Nintendo Switch Pro, Steam Deck and other generic pads through SDL3's gamepad support, on Windows, Linux and macOS, with hot-plug and rumble. **Button Prompts: Auto** shows the buttons of the pad you plug in (Xbox, PlayStation, Steam Deck). Every new menu (Host Game, Join Game, Settings, the pause menu) works with a pad alone, typing included: [docs/CONTROLLERS.md](docs/CONTROLLERS.md).
 
 ### Menus
 - **New Menus** - A WW2 field-orders look, animated, and made for mouse, keyboard and controller alike. The original intro and title screen are kept.

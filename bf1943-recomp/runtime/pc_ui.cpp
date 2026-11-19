@@ -13,6 +13,7 @@
 #else
 #include "posix_gdiplus.h"  // (Linux: GDI's text calls, XInput)
 #endif
+#include "pad.h"
 
 #include <algorithm>
 #include <cmath>
@@ -393,14 +394,26 @@ void DrawPadIcon(uint8_t* tex, uint32_t pitch, const Icon& icon, Style style, st
   c.Write(tex, pitch, icon.x0, icon.y0);
 }
 
-// AUTO: the keys, or the Xbox 360's own buttons with a controller plugged in.
+// AUTO: the keys with no controller; with one, the buttons of its make
+// (pad.cpp: Xbox 360 or Series, PlayStation 3 or 4/5, Steam Deck; a Switch
+// pad gets the Series set, any other pad the 360's). The game draws its icon
+// atlases when its textures load: a pad plugged in later shows from the next
+// load (a new level, the front end).
 Style ResolvedStyle() {
   Style style = Style(std::clamp(g_prompt_style, 0, int(kSteamDeck)));
   if (style == kAuto) {
-    XINPUT_STATE pad{};
-    bool connected = false;
-    for (DWORD i = 0; i < 4 && !connected; ++i) connected = XInputGetState(i, &pad) == ERROR_SUCCESS;
-    style = connected ? kXbox360 : kKeys;
+    switch (rt::pad::ActiveKind()) {
+      case rt::pad::Kind::kNone: style = kKeys; break;
+      case rt::pad::Kind::kXboxSeries:
+      case rt::pad::Kind::kSwitch: style = kXboxSeries; break;
+      case rt::pad::Kind::kPs3: style = kPs3; break;
+      case rt::pad::Kind::kPs5: style = kPs5; break;
+      case rt::pad::Kind::kSteamDeck: style = kSteamDeck; break;
+      default: style = kXbox360; break;
+    }
+    RT_INFO("ui: button prompts AUTO -> %s (%s)", style == kKeys ? "keys" : style == kPs3 ? "PlayStation 3"
+            : style == kPs5 ? "PlayStation 5" : style == kSteamDeck ? "Steam Deck"
+            : style == kXboxSeries ? "Xbox Series" : "Xbox 360", rt::pad::ActiveName());
   }
   return style;
 }

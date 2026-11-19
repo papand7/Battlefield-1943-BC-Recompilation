@@ -1,5 +1,5 @@
-// The Linux game's input (BF1943_CLIENT): pads, keys and the mouse through
-// SDL3, behind the few Windows calls xam.cpp's PC controls make
+// The Linux and macOS game's input (BF1943_CLIENT): keys and the mouse through
+// SDL3 (the pads are pad.cpp's), behind the few Windows calls xam.cpp's PC controls make
 // (posix_input.h). Fed from the game window's events on the UI thread
 // (xenia_shims/window_sdl.cc); read from the game's threads.
 #if !defined(_WIN32) && defined(BF1943_CLIENT)
@@ -12,6 +12,7 @@
 #include <mutex>
 
 #include "kernel.h"
+#include "pad.h"
 #include "posix_input.h"
 #include "window_sdl.h"
 
@@ -26,8 +27,6 @@ std::atomic<long> g_cursor_x{0}, g_cursor_y{0}, g_width{1280}, g_height{720};
 std::atomic<int> g_capture_want{0};
 bool g_captured = false;  // (UI thread)
 uint32_t g_wake = 0;      // an event that only wakes the UI loop (to apply the capture)
-std::mutex g_pad_mutex;
-SDL_Gamepad* g_pads[4] = {};
 
 int VkFromScancode(SDL_Scancode sc) {
   if (sc >= SDL_SCANCODE_A && sc <= SDL_SCANCODE_Z) return 'A' + (sc - SDL_SCANCODE_A);
@@ -110,6 +109,7 @@ void ApplyCapture() {
 
 // The game window's events (UI thread).
 void OnEvent(const SDL_Event& e) {
+  rt::pad::OnSdlEvent(e);  // (hot-plug of pads: pad.cpp)
   switch (e.type) {
     case SDL_EVENT_KEY_DOWN:
     case SDL_EVENT_KEY_UP: {
@@ -156,22 +156,6 @@ void OnEvent(const SDL_Event& e) {
       }
       break;
     }
-    case SDL_EVENT_GAMEPAD_ADDED: {
-      std::lock_guard l(g_pad_mutex);
-      for (auto& pad : g_pads)
-        if (!pad) {
-          pad = SDL_OpenGamepad(e.gdevice.which);
-          if (pad) RT_INFO("input: controller %s", SDL_GetGamepadName(pad));
-          break;
-        }
-      break;
-    }
-    case SDL_EVENT_GAMEPAD_REMOVED: {
-      std::lock_guard l(g_pad_mutex);
-      for (auto& pad : g_pads)
-        if (pad && SDL_GetGamepadID(pad) == e.gdevice.which) SDL_CloseGamepad(pad), pad = nullptr;
-      break;
-    }
     default:
       break;
   }
@@ -212,57 +196,5 @@ void TakeMouse(long& dx, long& dy, long& wheel) {
   g_dx -= double(dx), g_dy -= double(dy), g_wheel -= double(wheel);
 }
 }  // namespace rt::linput
-
-// ---- pads (XInput's view) ------------------------------------------------------
-DWORD XInputGetState(DWORD user, XINPUT_STATE* state) {
-  std::lock_guard l(g_pad_mutex);
-  SDL_Gamepad* pad = user < 4 ? g_pads[user] : nullptr;
-  if (!pad) return 1167;  // ERROR_DEVICE_NOT_CONNECTED
-  static DWORD packet[4] = {1, 1, 1, 1};
-  XINPUT_GAMEPAD& g = state->Gamepad;
-  g = {};
-  struct Map { SDL_GamepadButton b; WORD w; };
-  static const Map kButtons[] = {
-      {SDL_GAMEPAD_BUTTON_SOUTH, XINPUT_GAMEPAD_A},         {SDL_GAMEPAD_BUTTON_EAST, XINPUT_GAMEPAD_B},
-      {SDL_GAMEPAD_BUTTON_WEST, XINPUT_GAMEPAD_X},          {SDL_GAMEPAD_BUTTON_NORTH, XINPUT_GAMEPAD_Y},
-      {SDL_GAMEPAD_BUTTON_BACK, XINPUT_GAMEPAD_BACK},       {SDL_GAMEPAD_BUTTON_START, XINPUT_GAMEPAD_START},
-      {SDL_GAMEPAD_BUTTON_LEFT_STICK, XINPUT_GAMEPAD_LEFT_THUMB},
-      {SDL_GAMEPAD_BUTTON_RIGHT_STICK, XINPUT_GAMEPAD_RIGHT_THUMB},
-      {SDL_GAMEPAD_BUTTON_LEFT_SHOULDER, XINPUT_GAMEPAD_LEFT_SHOULDER},
-      {SDL_GAMEPAD_BUTTON_RIGHT_SHOULDER, XINPUT_GAMEPAD_RIGHT_SHOULDER},
-      {SDL_GAMEPAD_BUTTON_DPAD_UP, XINPUT_GAMEPAD_DPAD_UP}, {SDL_GAMEPAD_BUTTON_DPAD_DOWN, XINPUT_GAMEPAD_DPAD_DOWN},
-      {SDL_GAMEPAD_BUTTON_DPAD_LEFT, XINPUT_GAMEPAD_DPAD_LEFT},
-      {SDL_GAMEPAD_BUTTON_DPAD_RIGHT, XINPUT_GAMEPAD_DPAD_RIGHT}};
-  for (const Map& m : kButtons)
-    if (SDL_GetGamepadButton(pad, m.b)) g.wButtons |= m.w;
-  auto axis = [&](SDL_GamepadAxis a) { return SDL_GetGamepadAxis(pad, a); };
-  auto flip = [](int16_t v) { return SHORT(std::clamp(-int(v), -32768, 32767)); };  // (SDL: down is +)
-  g.sThumbLX = axis(SDL_GAMEPAD_AXIS_LEFTX), g.sThumbLY = flip(axis(SDL_GAMEPAD_AXIS_LEFTY));
-  g.sThumbRX = axis(SDL_GAMEPAD_AXIS_RIGHTX), g.sThumbRY = flip(axis(SDL_GAMEPAD_AXIS_RIGHTY));
-  g.bLeftTrigger = BYTE(std::max(0, int(axis(SDL_GAMEPAD_AXIS_LEFT_TRIGGER))) * 255 / 32767);
-  g.bRightTrigger = BYTE(std::max(0, int(axis(SDL_GAMEPAD_AXIS_RIGHT_TRIGGER))) * 255 / 32767);
-  // A new number only when something changed (as XInput: the game takes a
-  // new one with a button held as another press).
-  static XINPUT_GAMEPAD last[4];
-  if (std::memcmp(&last[user], &g, sizeof(g)) != 0) last[user] = g, ++packet[user];
-  state->dwPacketNumber = packet[user];
-  return 0;
-}
-
-DWORD XInputSetState(DWORD user, XINPUT_VIBRATION* v) {
-  std::lock_guard l(g_pad_mutex);
-  SDL_Gamepad* pad = user < 4 ? g_pads[user] : nullptr;
-  if (!pad) return 1167;
-  SDL_RumbleGamepad(pad, v->wLeftMotorSpeed, v->wRightMotorSpeed, SDL_MAX_UINT32);  // (until the game changes it)
-  return 0;
-}
-
-DWORD XInputGetCapabilities(DWORD user, DWORD, XINPUT_CAPABILITIES* caps) {
-  std::lock_guard l(g_pad_mutex);
-  if (user >= 4 || !g_pads[user]) return 1167;
-  *caps = {};
-  caps->Type = 1, caps->SubType = 1;  // a gamepad
-  return 0;
-}
 
 #endif  // !_WIN32 && BF1943_CLIENT
