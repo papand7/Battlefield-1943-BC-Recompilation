@@ -148,6 +148,36 @@ bool IsJeep(const std::string& kind) {
   return k.find("willys") != std::string::npos || k.find("kurogane") != std::string::npos || k.find("jeep") != std::string::npos;
 }
 
+// The ground at a point for the players' rings. The best: a soldier on foot
+// within 15 m (its feet are on the surface walked on). Else the terrain, or the
+// map's collision just above it (a deck, an apron: up to 2.5 m; higher is a
+// roof). Guadalcanal's airfield shows why: its terrain is 2 m over the apron at
+// one place and 8 m under it 45 m on, and the collision there finds the sea
+// floor or a roof. False if nothing is known.
+bool GroundAt(float x, float z, float* y) {
+  float g = TerrainHeight(x, z);
+  std::vector<float> top;
+  const bool deck = CollisionTops(x - 0.5f, z + 0.5f, 1.0f, 1, top) && !top.empty() && std::isfinite(top[0]) &&
+                    top[0] > g && top[0] <= g + 2.5f;
+  if (deck) g = top[0];
+  float feet = 0, best = 15.0f;
+  for (uint32_t s : Scan(kSoldier))
+    if (Readable(s) && Ld32(s) == kSoldier && LdF(s + 0x3C) > 0) {
+      const float d = std::hypot(LdF(s + 0x180) - x, LdF(s + 0x188) - z);
+      if (d < best) best = d, feet = LdF(s + 0x184);
+    }
+  const bool by_feet = best < 15.0f && std::isfinite(feet);
+  RT_INFO("commander: the ground at %.0f,%.0f: %s %.1f (terrain %.1f, collision top %.1f)", x, z,
+          by_feet ? "a soldier's feet" : deck ? "the deck" : "the terrain", by_feet ? feet : g, TerrainHeight(x, z),
+          top.empty() ? -1.0f : top[0]);
+  if (by_feet) {
+    *y = feet;
+    return true;
+  }
+  if (!(g > -1e8f) || !std::isfinite(g)) return false;
+  *y = g;
+  return true;
+}
 // The vehicle drop: true and what was done, or false and why not.
 bool DropVehicle(int team, float x, float z, std::string* text) {
   float ground = TerrainHeight(x, z);
@@ -477,6 +507,85 @@ void OnServerUpdate() {
         if (Readable(sp) && Ld32(sp) == 0x82018898) RT_INFO("vehicle probe: a spawner at %08X", sp);
     }
   }
+  // (testing) BF_CHANGE_PROBE: what changes, rarely, in this game's own soldier
+  // (the one under the camera: 'S') and in the jeep nearest it ('V'), its words
+  // and one and two pointers further, every 250 ms, with the time since the
+  // time of day (UTC): scripted presses (firing, reloading, a grenade, shots at the
+  // jeep) then show where the rounds, the grenades and the jeep's health are.
+  if (std::getenv("BF_CHANGE_PROBE")) {
+    struct Track {
+      uint32_t last = 0;
+      uint16_t changes = 0, said = 0, early = 0;  // early: its changes in the first 100 looks (the baseline)
+    };
+    static std::map<uint64_t, Track> tracks[2];
+    static uint32_t target[2] = {0, 0}, samples[2] = {0, 0};
+    static Clock::time_point next;
+    static int lines = 0;
+    const auto now = Clock::now();
+    float eye[3];
+    if (now >= next && xgpu::CameraEye(eye)) {
+      next = now + std::chrono::milliseconds(500);
+      const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() % 86400000;  // (the time of day, UTC: lined up with the driver's presses)
+      uint32_t pick[2] = {0, 0};
+      float best[2] = {2.5f, 40.0f};
+      for (uint32_t s : Scan(kSoldier))
+        if (Readable(s) && Ld32(s) == kSoldier) {
+          const float d = std::hypot(LdF(s + 0x180) - eye[0], LdF(s + 0x188) - eye[2]);
+          if (d < best[0] && eye[1] - LdF(s + 0x184) > 0 && eye[1] - LdF(s + 0x184) < 2.5f) best[0] = d, pick[0] = s;
+        }
+      for (uint32_t o : Scan(kVehicle)) {
+        Vehicle v;
+        if (!ReadVehicle(o, v) || !IsJeep(v.kind)) continue;
+        const float d = std::hypot(v.pos[0] - eye[0], v.pos[2] - eye[2]);
+        if (d < best[1]) best[1] = d, pick[1] = o;
+      }
+      for (int t = 0; t < 2; ++t) {
+        if (!pick[t]) continue;
+        if (pick[t] != target[t]) {
+          RT_INFO("change probe %lld ms: %c is now %08X (%.1f m)", ms, t ? 'V' : 'S', pick[t], best[t]);
+          target[t] = pick[t], tracks[t].clear(), samples[t] = 0;
+        }
+        ++samples[t];
+        const uint32_t o = pick[t];
+        auto see = [&](uint64_t path, uint32_t v) {
+          Track& k = tracks[t][path];
+          if (samples[t] > 1 && v != k.last) {
+            ++k.changes;
+            if (samples[t] < 100) ++k.early;
+            // Rare changers only (not timers or positions), and not too many lines.
+            float fv, fl;
+            memcpy(&fv, &v, 4), memcpy(&fl, &k.last, 4);
+            // Counts (small whole numbers), or for the jeep a plausible float (its health).
+            const bool count = v <= 300 && k.last <= 300;
+            const bool amount = t == 1 && std::fabs(fl) >= 1.0f && std::fabs(fl) <= 10000.0f && std::fabs(fv) <= 10000.0f && std::isfinite(fv);
+            if (samples[t] >= 100 && k.early <= 2 && (count || amount) && k.said < 24 && lines < 40000) {
+              ++k.said, ++lines;
+              float f;
+              memcpy(&f, &v, 4);
+              float g;
+              memcpy(&g, &k.last, 4);
+              const unsigned a = unsigned(path >> 24), b = unsigned((path >> 12) & 0xFFF), c = unsigned(path & 0xFFF);
+              if (path & (1ull << 40)) RT_INFO("change probe %lld ms %c [+%X]: %u -> %u (%g -> %g)", ms, t ? 'V' : 'S', unsigned(path & 0xFFFFFF), k.last, v, g, f);
+              else if (c == 0xFFF) RT_INFO("change probe %lld ms %c [+%X]+%X: %u -> %u (%g -> %g)", ms, t ? 'V' : 'S', a, b, k.last, v, g, f);
+              else RT_INFO("change probe %lld ms %c [[+%X]+%X]+%X: %u -> %u (%g -> %g)", ms, t ? 'V' : 'S', a, b, c, k.last, v, g, f);
+            }
+          }
+          k.last = v;
+        };
+        for (uint32_t a = 0; a < 0x600; a += 4) {
+          const uint32_t w = Ld32(o + a);
+          see((1ull << 40) | a, w);
+          if (!Readable(w) || (w & 3)) continue;
+          for (uint32_t b = 0; b < 0x200; b += 4) {
+            const uint32_t w2 = Ld32(w + b);
+            see((uint64_t(a) << 24) | (uint64_t(b) << 12) | 0xFFF, w2);
+            if (!Readable(w2) || (w2 & 3)) continue;
+            for (uint32_t c = 0; c < 0x80; c += 4) see((uint64_t(a) << 24) | (uint64_t(b) << 12) | c, Ld32(w2 + c));
+          }
+        }
+      }
+    }
+  }
   // (testing) BF_POINT_PROBE: the strings reachable from each capture point
   // (its object's words and one pointer further), to find the flags' names.
   if (std::getenv("BF_POINT_PROBE")) {
@@ -529,13 +638,11 @@ void OnServerUpdate() {
     for (const Drop& d : queue)
       if (d.kind == "strike") {
         Strike s{d.team, d.x, d.z, 0.0f, false, now + std::chrono::milliseconds(int(kStrikeWarnS * 1000))};
-        const float g = TerrainHeight(d.x, d.z);
-        s.has_y = g > -1e8f && std::isfinite(g), s.y = s.has_y ? g : 0.0f;
+        s.has_y = GroundAt(d.x, d.z, &s.y);
         g_strikes.push_back(s);
       } else if (d.kind == "heal") {
         Zone z{d.team, d.x, d.z, now + std::chrono::milliseconds(int(kSupplySeconds * 1000))};
-        const float g = TerrainHeight(d.x, d.z);  // (the ground there, for the players' rings)
-        z.has_y = g > -1e8f && std::isfinite(g), z.y = z.has_y ? g : 0.0f;
+        z.has_y = GroundAt(d.x, d.z, &z.y);  // (the ground there, for the players' rings)
         g_zones.push_back(z);
       }
     zones = g_zones;

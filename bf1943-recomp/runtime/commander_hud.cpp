@@ -26,7 +26,8 @@
 namespace rt::commander::hud {
 namespace {
 using Clock = std::chrono::steady_clock;
-constexpr float kRingRadius = 15.0f;  // a supply zone's reach (commander_world.cpp)
+constexpr float kRingRadius = 15.0f;    // a supply zone's reach (commander_world.cpp)
+constexpr float kStrikeRadius = 12.0f;  // the airstrike's blast
 constexpr float kEyeToGround = 1.7f;  // the eye's height over the ground, when the ground isn't known
 constexpr int kPanelTexture = 1, kLabelTexture = 2;
 
@@ -256,7 +257,85 @@ void Textured(std::vector<Quad>& out, int tex, float cx, float top, float tw, fl
   out.push_back(q);
 }
 
-uint32_t ZoneColor(int kind) { return kind == 2 ? 0xD040B0E0u : 0xD060E060u; }  // ABGR: amber ammo, green heal
+uint32_t ZoneColor(int kind) { return kind == 2 ? 0x40B0E0u : 0x60E060u; }  // BGR: amber ammo, green heal
+
+// A zone on the ground: a see-through disc with a soft wide edge and a crisp
+// inner one. The circle (48 sides at the ground's height) is clipped in clip
+// space at the near plane (standing inside one: the part behind the eye goes)
+// and on screen at the window's edges, then filled as a fan (it stays convex).
+// rgb: 0xBBGGRR. dist: the eye to the centre, for the fade (a far zone fainter).
+struct ClipV {
+  float v[4];
+  bool edge;  // the side from this vertex to the next is the circle's
+};
+template <typename F>
+std::vector<ClipV> ClipBy(const std::vector<ClipV>& in, F side) {
+  std::vector<ClipV> out;
+  for (size_t i = 0; i < in.size(); ++i) {
+    const ClipV& a = in[i];
+    const ClipV& b = in[(i + 1) % in.size()];
+    const float fa = side(a), fb = side(b);
+    if (fa >= 0) out.push_back(a);
+    if ((fa >= 0) != (fb >= 0)) {
+      const float t = fa / (fa - fb);
+      ClipV c;
+      for (int j = 0; j < 4; ++j) c.v[j] = a.v[j] + (b.v[j] - a.v[j]) * t;
+      c.edge = fa >= 0 ? false : a.edge;  // (leaving: along the cut; entering: the rest of a's side)
+      out.push_back(c);
+    }
+  }
+  return out;
+}
+void Disc(std::vector<Quad>& out, const float m[16], float W, float H, float k, float cx, float cy, float cz, float r,
+          uint32_t rgb, float dist) {
+  const int n = 48;
+  std::vector<ClipV> poly;
+  for (int i = 0; i < n; ++i) {
+    const float a = float(i) * 6.2831853f / n;
+    const float p[4] = {cx + r * std::cos(a), cy, cz + r * std::sin(a), 1.0f};
+    ClipV c;
+    for (int row = 0; row < 4; ++row) {
+      c.v[row] = 0;
+      for (int col = 0; col < 4; ++col) c.v[row] += m[col * 4 + row] * p[col];
+    }
+    c.edge = true;
+    poly.push_back(c);
+  }
+  poly = ClipBy(poly, [](const ClipV& c) { return c.v[3] - 0.05f; });
+  if (poly.size() < 3) return;
+  for (ClipV& c : poly) {  // to window pixels (x, y in v[0], v[1])
+    const float x = (c.v[0] / c.v[3] * 0.5f + 0.5f) * W, y = (0.5f - c.v[1] / c.v[3] * 0.5f) * H;
+    c.v[0] = x, c.v[1] = y, c.v[2] = 0, c.v[3] = 1;
+  }
+  const float pad = 16.0f * k;
+  poly = ClipBy(poly, [&](const ClipV& c) { return c.v[0] + pad; });
+  poly = ClipBy(poly, [&](const ClipV& c) { return W + pad - c.v[0]; });
+  poly = ClipBy(poly, [&](const ClipV& c) { return c.v[1] + pad; });
+  poly = ClipBy(poly, [&](const ClipV& c) { return H + pad - c.v[1]; });
+  if (poly.size() < 3) return;
+  // Inside: fainter (it covers the view), else full up to 80 m, then fading to a third at 400 m.
+  const bool inside = dist <= r;
+  const float edge_d = std::max(0.0f, dist - r);
+  const float fade = std::clamp(1.0f - (edge_d - 80.0f) / 480.0f, 0.35f, 1.0f);
+  auto with = [&](float a) { return (uint32_t(std::clamp(a * fade, 0.0f, 1.0f) * 255.0f + 0.5f) << 24) | rgb; };
+  const uint32_t fill = with(inside ? 0.14f : 0.22f);
+  for (size_t i = 1; i + 1 < poly.size(); ++i) {
+    Quad q;
+    q.x[0] = poly[0].v[0], q.y[0] = poly[0].v[1];
+    q.x[1] = poly[i].v[0], q.y[1] = poly[i].v[1];
+    q.x[2] = poly[i + 1].v[0], q.y[2] = poly[i + 1].v[1];
+    q.x[3] = q.x[2], q.y[3] = q.y[2];
+    q.color = fill;
+    out.push_back(q);
+  }
+  for (size_t i = 0; i < poly.size(); ++i) {
+    if (!poly[i].edge) continue;
+    const ClipV& a = poly[i];
+    const ClipV& b = poly[(i + 1) % poly.size()];
+    Segment(out, a.v[0], a.v[1], b.v[0], b.v[1], 12.0f * k, with(0.22f));  // (the glow)
+    Segment(out, a.v[0], a.v[1], b.v[0], b.v[1], 4.0f * k, with(0.90f));
+  }
+}
 uint32_t OrderColor(int kind) { return kind == 1 ? 0xE04040E0u : 0xE0F09050u; }  // attack red, defend blue
 
 // Keeps a texture's content: returns true (and builds it) when the key changed.
@@ -311,14 +390,14 @@ void Frame(float W, float H, std::vector<Quad>& quads, std::vector<Texture>& tex
   float vp[16] = {};
   const bool has_vp = xgpu::ViewProjection(vp);
   // The ground at a point: the server's terrain height there, but near the
-  // player (60 m) and within 3 m of its own feet its own ground: the level's
+  // player (60 m) and within 10 m of its own feet its own ground: the level's
   // terrain is not always the surface walked on (Guadalcanal's airfield apron
   // is lower: a ring there was drawn at eye height).
   auto ground = [&](bool has_y, float y, float x, float z) {
     if (!has_eye) return has_y ? y : 0.0f;
     const float mine = eye[1] - kEyeToGround;
     if (!has_y) return mine;
-    if (std::hypot(x - eye[0], z - eye[2]) < 60.0f && std::fabs(y - mine) < 3.0f) return mine;
+    if (std::hypot(x - eye[0], z - eye[2]) < 60.0f && std::fabs(y - mine) < 10.0f) return mine;
     return y;
   };
   auto dist = [&](float x, float z) { return has_eye ? std::hypot(x - eye[0], z - eye[2]) : 0.0f; };
@@ -339,19 +418,8 @@ void Frame(float W, float H, std::vector<Quad>& quads, std::vector<Texture>& tex
     panel_key += line;
     panel.push_back(Wide(line));
     if (!has_vp) continue;
-    const float gy = ground(z.has_y, z.y, z.x, z.z);
-    const uint32_t color = ZoneColor(z.kind);
-    const int n = 32;
-    float px[n + 1], py[n + 1];
-    bool ok[n + 1];
-    for (int i = 0; i <= n; ++i) {
-      const float a = float(i % n) * 6.2831853f / n;
-      float cw = 0;
-      ok[i] = Project(vp, z.x + kRingRadius * std::cos(a), gy, z.z + kRingRadius * std::sin(a), W, H, &px[i], &py[i], &cw) &&
-              cw > 0.05f;
-    }
-    for (int i = 0; i < n; ++i)
-      if (ok[i] && ok[i + 1]) Segment(quads, px[i], py[i], px[i + 1], py[i + 1], 3.0f * k, color);
+    Disc(quads, vp, W, H, k, z.x, ground(z.has_y, z.y, z.x, z.z), z.z, kRingRadius, ZoneColor(z.kind),
+         has_eye ? dist(z.x, z.z) : 1e9f);
   }
   // The airstrike's warning: a red ring where the blast will be, and its seconds.
   const float strike_left = s.strike.left - elapsed;
@@ -365,20 +433,9 @@ void Frame(float W, float H, std::vector<Quad>& quads, std::vector<Texture>& tex
     }
     panel_key += line;
     panel.push_back(Wide(line));
-    if (has_vp) {
-      const float gy = ground(s.strike.has_y, s.strike.y, s.strike.x, s.strike.z);
-      const int n = 32;
-      float px[n + 1], py[n + 1];
-      bool ok[n + 1];
-      for (int i = 0; i <= n; ++i) {
-        const float a = float(i % n) * 6.2831853f / n;
-        float cw = 0;
-        ok[i] = Project(vp, s.strike.x + 12.0f * std::cos(a), gy, s.strike.z + 12.0f * std::sin(a), W, H, &px[i], &py[i], &cw) &&
-                cw > 0.05f;
-      }
-      for (int i = 0; i < n; ++i)
-        if (ok[i] && ok[i + 1]) Segment(quads, px[i], py[i], px[i + 1], py[i + 1], 4.0f * k, 0xE03030E0u);
-    }
+    if (has_vp)
+      Disc(quads, vp, W, H, k, s.strike.x, ground(s.strike.has_y, s.strike.y, s.strike.x, s.strike.z), s.strike.z,
+           kStrikeRadius, 0x3030E0u, has_eye ? dist(s.strike.x, s.strike.z) : 1e9f);
   }
   if (panel.empty()) panel_key.clear();
   {

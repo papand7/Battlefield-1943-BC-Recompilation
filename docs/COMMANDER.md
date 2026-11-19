@@ -198,10 +198,14 @@ The page's drop is queued; `commander::OnServerUpdate` (called from the server u
   (its transform and its respawn trigger are not found yet); or, simplest fallback, tell the
   team where the nearest free jeep is.
   Phase 3 found the first half of that: a vehicle's `+EC` is its spawner (vtable 82018898,
-  `BF_VEHICLE_PROBE=1` logs each jeep's) and the spawner's `+310` is where it makes it (the
-  parked jeep's place, or its first place for a jeep that has been driven). Still missing:
-  what makes a spawner make its vehicle again (a destroyed vehicle's respawn; the vehicles'
-  health is not found either), so the drop is still off.
+  `BF_VEHICLE_PROBE=1` logs each jeep's; 33 spawners on Guadalcanal) and the spawner's
+  `+310` is where it makes it (the parked jeep's place, or its first place for a jeep that has
+  been driven). Still missing: what makes a spawner make its vehicle again. The way to find
+  it is the game's own respawn after a jeep is destroyed, which needs a destroyed jeep: the
+  vehicles' health is not known (so the airstrike can't do it), and in the scripted test
+  (`BF_CHANGE_PROBE`, the jeep nearest the host watched while the host turned and fired at
+  it) the jeep 5 m away was driven off by a bot before the shots and the probe followed one
+  37 m away: no hit, no health. The drop stays off.
 
 ## Phase 3: on screen, heal zones, airstrike, the page's chat
 
@@ -223,13 +227,22 @@ known joiners but no joiner was there), the airstrike's smoke on a joiner's scre
 - **Projection.** `scene_fx` keeps the main view's world -> clip matrix of the last frame
   (`scenefx::ViewProj`, `xgpu::ViewProjection`; only with the scene effects on, as the
   enhanced preset has them). Clip y points up (checked: with it the other way a ring 5 m
-  ahead was drawn above one 20 m ahead). The rings are 32 segments, 3 px at 1080 lines.
-- **Ground height.** The server's terrain height at the point (sent with the zone), except
-  near the player (60 m) and within 3 m of its own feet, where its own feet's height is
-  used: Guadalcanal's airfield apron is lower than the terrain there and a ring on it was
-  drawn at eye height.
-- **What is drawn.** Heal zones: a green ring of 15 m on the ground. The airstrike's warning:
-  a red ring of 12 m until the blast. The order: a square at the flag (red attack, blue
+  ahead was drawn above one 20 m ahead).
+- **The discs.** A zone is a see-through filled disc on the ground (green heal, amber ammo,
+  red airstrike) with a soft wide edge and a crisp one: 48 sides clipped in clip space at the
+  near plane (standing inside one, the part behind the eye goes, so no line stretches across
+  the screen) and at the window's edges, then filled as a fan. Inside a zone its fill is
+  fainter; past 80 m from its edge it fades, to a third at 400 m. Checked from inside a heal
+  zone, from 30 m off its edge and with the airstrike's 30 m ahead.
+- **Ground height.** The host sends the ground at the point: a soldier's feet within 15 m
+  when there is one (the surface walked on), else the terrain, or the map's collision up to
+  2.5 m above it (a deck; higher is a roof). The players' game uses its own feet's height
+  instead within 60 m when the two are less than 10 m apart. Guadalcanal's airfield shows
+  why: its terrain is 2 m over the apron where the host stood and 8 m under it 45 m on, and
+  the collision there found the sea floor (173) or a hangar roof (196) for a surface at 190;
+  with the terrain alone a zone 45 m ahead was drawn near the player's feet.
+- **What is drawn.** Heal zones: a green disc of 15 m on the ground. The airstrike's warning:
+  a red disc of 12 m until the blast. The order: a square at the flag (red attack, blue
   defend) with its label (`ATTACK Japanese bunker 2:57 173 m behind`), kept on the window's
   edge when the flag is off screen and on the bottom edge when it is behind. A panel at the
   top right lists the zones, the airstrike and their seconds with the distance and the way
@@ -239,12 +252,21 @@ known joiners but no joiner was there), the airstrike's smoke on a joiner's scre
 
 - The page's "Heal zone here" (action `heal`) is phase 2's supply drop (same healing), now
   shown on the HUD. Its own cooldown key `heal`.
-- **Ammo zones: not working, refused** (`ammo zones are not working yet`). BF1943's soldiers
-  never run out of rounds, and where the magazine is kept was not found: `BF_AMMO_PROBE=1`
-  counts the small whole numbers reachable from each soldier (two pointers deep) that drop by
-  1 to 5 between looks 3 s apart; its best candidate, `[[soldier+18]+50]+94`, turned out to
-  be one object shared by every soldier (not a magazine). Next: the weapon objects of the
-  soldier's kit, or the game's own reload path.
+- **Ammo zones: not working, refused** (`ammo zones are not working yet`). What is known:
+  the HUD shows 30 rounds in the magazine, 3 spare magazines and 2 grenades; firing empties
+  the magazine and a thrown grenade's icon becomes a refill timer (BF1943's grenades come
+  back by themselves), the spare magazines did not change. Where the server keeps the counts
+  was not found:
+  - `BF_AMMO_PROBE=1` (bots fighting, small numbers dropping by 1 to 5): its best path,
+    `[[soldier+18]+50]+94`, is one object shared by every soldier.
+  - `BF_CHANGE_PROBE=1` (this game's own soldier, its words to +600 and two pointers on to
+    +200 and +80, every 500 ms, against scripted presses: about 75 rounds fired in three
+    bursts, a reload, three grenades; `--press 150:rt*2.5,...,168:x,175:lb,...`): no path
+    counts down from 30 or from 2. What changes with the firing are animation states and
+    buffers. The counts are further away (the soldier's weapon objects past those ranges) or
+    only in the client's own soldier (the HUD's), not the server's.
+  Next: the client soldier's weapon (ClientSoldierEntity, what the HUD reads), or the game's
+  reload function found from the reload input.
 
 ### Airstrike (action `strike`)
 
