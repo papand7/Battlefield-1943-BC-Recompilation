@@ -10,7 +10,7 @@
 
 namespace botapi {
 
-constexpr int kVersion = 9;     // bump when a struct here changes
+constexpr int kVersion = 10;     // bump when a struct here changes
 constexpr int kMaxBots = 16;
 constexpr int kMemSize = 1024;   // per-bot brain state
 constexpr float kPi = 3.14159265f;
@@ -116,6 +116,13 @@ struct World {
   // The jeeps' and tanks' mesh (nav/<map>.vnav; null without one): up to max
   // corners of a vehicle's route from a to b (0: no way).
   int (*vroute)(Vec a, Vec b, Vec* corners, int max);
+  // The team's commander's order (runtime/commander.h), by team (1 US, 2
+  // Japan): the flag (an index into points, -1 none), 1 attack or 2 defend,
+  // and a number that changes with each new order (the team's bots choose
+  // their flag again then).
+  int order_point[3];
+  int order_kind[3];
+  uint32_t order_serial[3];
 };
 
 using ThinkFn = void (*)(World*);

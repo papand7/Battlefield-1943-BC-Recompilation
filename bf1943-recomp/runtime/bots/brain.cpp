@@ -134,8 +134,10 @@ struct Bot {
   Vec idle_pos;  // where it has stood since idle_t (within 5 m)
   double idle_t = 0;
   uint32_t fight_asked = 0;  // the enemy it last asked where to fight from (training)
+  uint32_t order_seen = 0;   // the commander's order it chose its flag under (World::order_serial)
 };
 constexpr uint32_t kTag = 0xB7A10000u + sizeof(Bot);
+constexpr float kOrderWorth = 70.0f;  // a commander's flag (ChoosePoint): over any flag's own worth
 static_assert(sizeof(Bot) <= kMemSize, "Bot state too big for BotIO::mem");
 
 Bot& State(BotIO& io) {
@@ -500,6 +502,9 @@ struct Brain {
       const Point& p = w.points[i];
       if (i == self.avoid_point && w.now < self.avoid_until && w.point_count > 1) continue;
       float temp = p.owner == me.team ? 10.0f : (p.owner == 0 ? Setting(io, kFlagNeutral) : Setting(io, kFlagEnemy));
+      // The commander's flag: worth most (the mates going there still spread
+      // the squads: about half the team takes it).
+      if (me.team >= 1 && me.team <= 2 && i == w.order_point[me.team]) temp += kOrderWorth;
       // Enemy soldiers near a point we own make it hot to defend.
       int threats = 0;
       for (int k = 0; k < w.soldier_count; ++k)
@@ -1077,6 +1082,12 @@ struct Brain {
     io.teleport = false;
     if (w.points_changed) b.target_point = -1;
     const Soldier* me = io.soldier ? Find(io.soldier) : nullptr;
+    // A new order from the team's commander: its flag is chosen again.
+    if (const int team = me ? me->team : b.team; team >= 1 && team <= 2 && w.order_serial[team] != b.order_seen) {
+      b.order_seen = w.order_serial[team];
+      if (w.order_point[team] >= 0) Log("bot%d: the commander's order: flag %d", io.slot + 1, w.order_point[team]);
+      b.target_point = -1;
+    }
     if (!me) {
       // Dead or on the spawn screen. When the team holds a flag, first step
       // the spawn choice off the carrier (the spawn screen lists the carrier,

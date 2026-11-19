@@ -156,7 +156,8 @@ void BroadcastChat(const std::string& text) {
 void OnCommanderPacket(uint32_t ip, uint16_t peer_port, const std::string& body) {
   if (body.empty() || !commander::Available()) return;
   const commander::Reply r = commander::Request(ip, peer_port, PlayerName(ip, peer_port), body, false);
-  SendRaw(ip, peer_port, r.holds ? "BF43M!h" + std::to_string(r.holds) : std::string("BF43M!n"));
+  // (its token too: its game makes the page's link from the host's address)
+  SendRaw(ip, peer_port, r.holds ? "BF43M!h" + std::to_string(r.holds) + ":" + r.token : std::string("BF43M!n"));
   if (r.changed) BroadcastChat("[commander] " + r.text);
   else if (!r.text.empty() && body[0] != 'k') SendTo(ip, peer_port, "[commander] " + r.text);
 }
@@ -198,6 +199,11 @@ void ChatNetThread() {
     // A joiner holding a commander seat: its keep-alive (while it has input).
     if (!Host() && g_join_address && commander::KeepAliveDue())
       SendRaw(g_join_address, HostChatPort(), "BF43M!" + std::to_string(g_chat_port.load()) + "|k");
+    // A joiner in a level: where its camera is, every 5 s (the host finds its
+    // soldier there, so its team: commander.h). Older hosts ignore the kind.
+    if (!Host() && g_join_address && !g_sent_away && commander::Available())
+      if (const std::string eye = commander::EyeDue(); !eye.empty())
+        SendRaw(g_join_address, HostChatPort(), "BF43E!" + std::to_string(g_chat_port.load()) + "|" + eye);
     sockaddr_in from{};
     int len = sizeof(from);
     int n = recvfrom(g_chat_socket, buf, sizeof(buf) - 1, 0, (sockaddr*)&from, &len);
@@ -205,9 +211,9 @@ void ChatNetThread() {
     const char kind = buf[4];
     std::string body(buf + 6, size_t(n) - 6);
     if (kind != 'C') {
-      if (Host() && (kind == 'H' || kind == 'A' || kind == 'M')) {
+      if (Host() && (kind == 'H' || kind == 'A' || kind == 'M' || kind == 'E')) {
         // "<chat port>|...": a joiner's hello, a remote admin's command
-        // ("<chat port>|<password>|<line>") or a commander request.
+        // ("<chat port>|<password>|<line>"), a commander request or its eye.
         size_t bar = body.find('|');
         const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
         if (!peer_port) continue;
@@ -220,6 +226,10 @@ void ChatNetThread() {
         }
         if (kind == 'M') {
           OnCommanderPacket(from.sin_addr.s_addr, peer_port, body);
+          continue;
+        }
+        if (kind == 'E') {
+          if (commander::Available()) commander::OnPlayerEye(from.sin_addr.s_addr, peer_port, body);
           continue;
         }
         size_t bar2 = body.find('|');
@@ -247,7 +257,9 @@ void ChatNetThread() {
         if (kind == 'K') AddLine(Wide(body)), OnKicked(body), g_sent_away = true;
         else if (kind == 'N') AddLine(L"The host changes the map to " + Wide(body) + L"."), OnMapChanging(body);
         else if (kind == 'R') OnMapReady(body);
-        else if (kind == 'M') commander::OnHostReply(body);  // (which seat this game holds)
+        else if (kind == 'M') {  // (which seat this game holds; a new seat's page link)
+          if (const std::string line = commander::OnHostReply(body); !line.empty()) AddLine(Wide(line));
+        }
       }
       continue;
     }
@@ -301,17 +313,27 @@ void CommanderCommand(const std::string& arg) {
 #ifdef _WIN32
     SendRaw(g_join_address, HostChatPort(), "BF43M!" + std::to_string(g_chat_port.load()) + "|" + body);
 #endif
+    if (body == "s" && !commander::MyLink().empty()) AddLine(Wide("[commander] your map page: " + commander::MyLink()));
     return;
   }
-  const commander::Reply r = commander::Request(0, 0, g_dedicated ? "the server" : "the host", body, true);
-  if (r.text.empty()) return;
+  const commander::Reply r =
+      commander::Request(0, 0, g_dedicated ? "the server" : g_gamertag.empty() ? "the host" : g_gamertag, body, true);
+  if (!r.text.empty()) {
 #ifdef _WIN32
-  if (r.changed) {
-    BroadcastChat("[commander] " + r.text);
-    return;
-  }
+    if (r.changed) BroadcastChat("[commander] " + r.text);
+    else AddLine(Wide("[commander] " + r.text));
+#else
+    AddLine(Wide("[commander] " + r.text));
 #endif
-  AddLine(Wide("[commander] " + r.text));
+  }
+  // This game's own seat: its page's link (to the clipboard too; on the
+  // dedicated server's console, its log).
+  if (r.holds && (r.changed || body == "s")) {
+    const std::string link = commander::MyLink();
+    commander::CopyToClipboard(link);
+    AddLine(Wide("[commander] your map page (copied to the clipboard): " + link));
+    RT_INFO("commander: your page: %s", link.c_str());
+  }
 }
 
 void Command(const std::string& line) {
@@ -495,13 +517,23 @@ void ConsoleThread() {
 
 void Start() {
   if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
-  commander::Start([](const std::string& note) {  // (a seat freed: everyone hears it)
+  commander::Start(
+      [](const std::string& note) {  // (a seat freed: everyone hears it)
 #ifdef _WIN32
-    if (Host()) BroadcastChat("[commander] " + note);
+        if (Host()) BroadcastChat("[commander] " + note);
 #else
-    AddLine(Wide("[commander] " + note));
+        AddLine(Wide("[commander] " + note));
 #endif
-  });
+      },
+      [](uint32_t ip, uint16_t port, const std::string& text) {  // (one player: an order, a drop)
+#ifdef _WIN32
+        if (ip || port) {
+          SendTo(ip, port, text);
+          return;
+        }
+#endif
+        AddLine(Wide(text));
+      });
 #ifdef _WIN32
   std::thread(ChatThread).detach();
   std::thread(ChatNetThread).detach();
