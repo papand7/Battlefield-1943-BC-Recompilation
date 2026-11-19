@@ -836,12 +836,20 @@ std::string ParamText(const std::string& query, const char* name) {
   return "";
 }
 
+// One connection (its own short-lived thread: ServeLive): a receive timeout of 1 s
+// each and 3 s for the whole request, a send timeout of 2 s and 5 s for the whole
+// answer, so a slow or stalled client holds only its own thread. What the
+// answer is made of (the game's state, the caches) is made one request at a
+// time (g_serve_mu).
+std::mutex g_serve_mu;
 void Answer(SOCKET c, uint32_t from) {
-  DWORD to = 2000;
-  setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&to), sizeof to);
+  DWORD rto = 1000, sto = 2000;
+  setsockopt(c, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&rto), sizeof rto);
+  setsockopt(c, SOL_SOCKET, SO_SNDTIMEO, reinterpret_cast<const char*>(&sto), sizeof sto);
+  const auto began = Clock::now();
   std::string req;
   char buf[512];
-  while (req.size() < 2048 && req.find("\r\n\r\n") == std::string::npos) {
+  while (req.size() < 2048 && req.find("\r\n\r\n") == std::string::npos && Since(began, Clock::now()) < 3.0) {
     int n = recv(c, buf, sizeof buf, 0);
     if (n <= 0) break;
     req.append(buf, size_t(n));
@@ -850,6 +858,7 @@ void Answer(SOCKET c, uint32_t from) {
   int status = 200;
   const char* type = "text/html; charset=utf-8";
   std::string body;
+  std::unique_lock<std::mutex> compute(g_serve_mu);
   if (line.compare(0, 4, "GET ") != 0) {
     status = 405, type = "text/plain", body = "GET only\n";
   } else {
@@ -885,12 +894,13 @@ void Answer(SOCKET c, uint32_t from) {
       status = 404, type = "text/plain", body = "not found\n";
     }
   }
+  compute.unlock();  // (the sending may be slow: not under the lock)
   const char* reason = status == 200 ? "OK" : status == 404 ? "Not Found" : status == 429 ? "Too Many Requests" : "Method Not Allowed";
   std::string head = "HTTP/1.1 " + std::to_string(status) + " " + reason + "\r\nContent-Type: " + type +
                      "\r\nContent-Length: " + std::to_string(body.size()) +
                      "\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff\r\nConnection: close\r\n\r\n";
   head += body;
-  for (size_t at = 0; at < head.size();) {
+  for (size_t at = 0; at < head.size() && Since(began, Clock::now()) < 8.0;) {
     int n = send(c, head.data() + at, int(head.size() - at), 0);
     if (n <= 0) break;
     at += size_t(n);
@@ -916,7 +926,11 @@ void ServeLive() {
       sockaddr_in a{};
       a.sin_family = AF_INET;
       a.sin_port = htons(want);
-      a.sin_addr.s_addr = htonl(INADDR_ANY);
+      // The host's own LAN address only (a PC with other networks, a VPN or the
+      // internet side does not serve it there), or loopback when that is not known;
+      // BF_LIVEMAP_PUBLIC=1 binds every address (docs/COMMANDER.md).
+      static const bool pub = std::getenv("BF_LIVEMAP_PUBLIC") && std::getenv("BF_LIVEMAP_PUBLIC")[0] == '1';
+      a.sin_addr.s_addr = pub ? htonl(INADDR_ANY) : g_lan_ip ? uint32_t(g_lan_ip) : htonl(INADDR_LOOPBACK);
       if (listener == INVALID_SOCKET || bind(listener, reinterpret_cast<sockaddr*>(&a), sizeof a) != 0 ||
           listen(listener, 8) != 0) {
         RT_WARN("livemap: TCP port %u is not available (the live map is off)", unsigned(want));
@@ -925,7 +939,14 @@ void ServeLive() {
         continue;
       }
       bound = want;
-      RT_INFO("livemap: http://<this PC's address>:%u/ shows the live map", unsigned(want));
+      {
+        char ip[32] = "?";
+        in_addr ia{};
+        ia.s_addr = a.sin_addr.s_addr;
+        inet_ntop(AF_INET, &ia, ip, sizeof ip);
+        RT_INFO("livemap: http://%s:%u/ shows the live map%s", pub ? "<this PC's address>" : ip, unsigned(want),
+                pub ? " (on every address: BF_LIVEMAP_PUBLIC)" : "");
+      }
     }
     fd_set r;
     FD_ZERO(&r);
@@ -936,8 +957,20 @@ void ServeLive() {
       int len = sizeof from;
       SOCKET c = accept(listener, reinterpret_cast<sockaddr*>(&from), &len);
       if (c != INVALID_SOCKET) {
-        Answer(c, from.sin_addr.s_addr);  // (one at a time: the requests are bounded by that)
-        closesocket(c);
+        // A thread for each connection, at most 8 at once (a stalled client holds
+        // one of them for 8 s at most, never the others' turn); more are dropped.
+        static std::atomic<int> busy{0};
+        if (busy.load() >= 8) {
+          closesocket(c);
+        } else {
+          ++busy;
+          const uint32_t addr = from.sin_addr.s_addr;
+          std::thread([c, addr] {
+            Answer(c, addr);
+            closesocket(c);
+            --busy;
+          }).detach();
+        }
       }
     }
   }

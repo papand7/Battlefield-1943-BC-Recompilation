@@ -507,6 +507,229 @@ void OnServerUpdate() {
         if (Readable(sp) && Ld32(sp) == 0x82018898) RT_INFO("vehicle probe: a spawner at %08X", sp);
     }
   }
+  // (testing) BF_VEHICLE_WATCH: every jeep (up to 12), every 500 ms: its place
+  // when it moves, each change in its spawner's words (+EC -> 0..0x340), in its
+  // own words (0..0x200; an offset that changes more than 8 times is dropped as
+  // noise) and in its Havok body's words that are Havok vtables (820Bxxxx: the
+  // motion class), to see what getting in, driving off and leaving does.
+  if (std::getenv("BF_VEHICLE_WATCH")) {
+    struct Jeep {
+      std::vector<uint32_t> own = std::vector<uint32_t>(0x80), sp = std::vector<uint32_t>(0xD0), bd = std::vector<uint32_t>(0xC0);
+      std::map<uint32_t, int> noise;
+      float pos[3] = {};
+      uint32_t body = 0;
+    };
+    static std::map<uint32_t, Jeep> jeeps;
+    static Clock::time_point next;
+    if (Clock::now() >= next) {
+      next = Clock::now() + std::chrono::milliseconds(500);
+      const long long ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() % 86400000;
+      for (uint32_t o : Scan(kVehicle)) {
+        Vehicle v;
+        if (!ReadVehicle(o, v) || !IsJeep(v.kind)) continue;
+        if (!jeeps.count(o) && jeeps.size() >= 12) continue;
+        const bool fresh = !jeeps.count(o);
+        Jeep& j = jeeps[o];
+        const uint32_t s = Ld32(o + 0xEC);
+        if (fresh) {
+          for (uint32_t i = 0; i < 0x80; ++i) j.own[i] = Ld32(o + i * 4);
+          for (uint32_t i = 0; i < 0xD0; ++i) j.sp[i] = Readable(s) ? Ld32(s + i * 4) : 0;
+          memcpy(j.pos, v.pos, sizeof j.pos);
+          std::string w;
+          char t[24];
+          for (uint32_t i = 0; i < 0xD0; ++i) snprintf(t, sizeof t, " %X:%X", i * 4, j.sp[i]), w += t;
+          RT_INFO("vehicle watch %lld: %s %08X at %.1f,%.1f,%.1f; spawner %08X:%s", ms, v.kind.c_str(), o, v.pos[0], v.pos[1], v.pos[2], s, w.c_str());
+        }
+        if (std::hypot(v.pos[0] - j.pos[0], v.pos[2] - j.pos[2]) > 1.0f || std::fabs(v.pos[1] - j.pos[1]) > 1.0f) {
+          RT_INFO("vehicle watch %lld: %08X moved to %.1f,%.1f,%.1f", ms, o, v.pos[0], v.pos[1], v.pos[2]);
+          memcpy(j.pos, v.pos, sizeof j.pos);
+        }
+        for (uint32_t i = 0; i < 0x80; ++i) {
+          const uint32_t n = Ld32(o + i * 4);
+          if (n == j.own[i]) continue;
+          float f, g;
+          memcpy(&f, &n, 4), memcpy(&g, &j.own[i], 4);
+          if (++j.noise[i * 4] <= 8) RT_INFO("vehicle watch %lld: %08X vehicle +%X: %u -> %u (%g -> %g)", ms, o, i * 4, j.own[i], n, g, f);
+          j.own[i] = n;
+        }
+        if (Readable(s))
+          for (uint32_t i = 0; i < 0xD0; ++i) {
+            const uint32_t n = Ld32(s + i * 4);
+            if (n == j.sp[i]) continue;
+            float f, g;
+            memcpy(&f, &n, 4), memcpy(&g, &j.sp[i], 4);
+            if (++j.noise[0x10000 + i * 4] <= 12) RT_INFO("vehicle watch %lld: %08X spawner +%X: %u -> %u (%g -> %g)", ms, o, i * 4, j.sp[i], n, g, f);
+            j.sp[i] = n;
+          }
+        if (!j.body) {  // its rigid body: the one whose transform is at the jeep
+          float near = 2.5f;
+          for (uint32_t b : Scan(kRigidBody)) {
+            if (!Readable(b) || Ld32(b) != kRigidBody) continue;
+            const float d = std::hypot(std::hypot(LdF(b + 0xE0) - v.pos[0], LdF(b + 0xE8) - v.pos[2]), LdF(b + 0xE4) - v.pos[1]);
+            if (d < near) near = d, j.body = b;
+          }
+          if (j.body) {
+            std::string w;
+            char t[24];
+            for (uint32_t i = 0; i < 0xC0; ++i) {
+              j.bd[i] = Ld32(j.body + i * 4);
+              if (j.bd[i] >= 0x820B0000 && j.bd[i] < 0x820B2000) snprintf(t, sizeof t, " %X:%X", i * 4, j.bd[i]), w += t;
+            }
+            RT_INFO("vehicle watch %lld: %08X body %08X, its Havok vtables:%s", ms, o, j.body, w.c_str());
+          }
+        } else {
+          for (uint32_t i = 0; i < 0xC0; ++i) {
+            const uint32_t n = Ld32(j.body + i * 4);
+            if (n != j.bd[i] && ((n >= 0x820B0000 && n < 0x820B2000) || (j.bd[i] >= 0x820B0000 && j.bd[i] < 0x820B2000)))
+              RT_INFO("vehicle watch %lld: %08X body +%X: %X -> %X", ms, o, i * 4, j.bd[i], n);
+            j.bd[i] = n;
+          }
+        }
+      }
+    }
+  }  // (testing) BF_CLIP_WATCH: the object the clip probe pointed at: for each
+  // ServerWeaponComponent w, o2 = *(*(w+3C)+C); its words +28, +38, +48, +58
+  // (counters stepping down in the probe), every 100 ms, each change logged
+  // with the time of day (at most 6000 lines); o2's first 0x60 words once.
+  if (std::getenv("BF_CLIP_WATCH")) {
+    static std::map<uint32_t, std::array<uint32_t, 4>> o2s;
+    static Clock::time_point next;
+    static int lines = 0;
+    if (Clock::now() >= next) {
+      next = Clock::now() + std::chrono::milliseconds(100);
+      const long long ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() % 86400000;
+      for (uint32_t w : Scan(0x82010500)) {
+        if (!Readable(w) || Ld32(w) != 0x82010500) continue;
+        const uint32_t o1 = Ld32(w + 0x3C);
+        const uint32_t o2 = Readable(o1) ? Ld32(o1 + 0xC) : 0;
+        if (!Readable(o2)) continue;
+        std::array<uint32_t, 4> now_v = {Ld32(o2 + 0x28), Ld32(o2 + 0x38), Ld32(o2 + 0x48), Ld32(o2 + 0x58)};
+        auto it = o2s.find(o2);
+        if (it == o2s.end()) {
+          std::string out;
+          char b[24];
+          for (uint32_t off = 0; off < 0x60; off += 4) snprintf(b, sizeof b, " %X:%X", off, Ld32(o2 + off)), out += b;
+          RT_INFO("clip watch %lld: object %08X (from component %08X):%s", ms, o2, w, out.c_str());
+          o2s[o2] = now_v;
+          continue;
+        }
+        if (it->second != now_v && lines < 6000) {
+          ++lines;
+          RT_INFO("clip watch %lld: %08X +28 %u +38 %u +48 %u +58 %u (was %u %u %u %u)", ms, o2, now_v[0], now_v[1], now_v[2], now_v[3],
+                  it->second[0], it->second[1], it->second[2], it->second[3]);
+          it->second = now_v;
+        }
+      }
+    }
+  }
+  // (testing) BF_CLIP_PROBE: where a weapon's rounds are. Every 100 ms, for each
+  // ServerWeaponComponent (82010500) the small whole numbers (0..80) one pointer
+  // away (its words 0..0x200 that point somewhere, and 0x80 bytes there), and
+  // through two pointers (0x60 bytes); a path that steps down by 1 to 4 is
+  // counted (a burst takes the clip down shot by shot, a reload takes it back up).
+  // Every 10 s the paths with most steps are logged as [comp#.depth a b c]
+  // with the component's address.
+  if (std::getenv("BF_CLIP_PROBE")) {
+    static std::map<uint64_t, uint32_t> last;
+    static std::map<uint64_t, std::pair<int, int>> steps;  // path -> down steps, up jumps
+    static std::map<uint32_t, uint32_t> index;             // component -> number
+    static const uint32_t vt = [] {  // BF_CLIP_VT=<hex vtable>: another class (the client's weapon: 82005360)
+      const char* e = std::getenv("BF_CLIP_VT");
+      return e ? uint32_t(strtoul(e, nullptr, 16)) : 0x82010500u;
+    }();
+    static Clock::time_point next, report;
+    const auto now = Clock::now();
+    if (now >= next) {
+      next = now + std::chrono::milliseconds(100);
+      for (uint32_t w : Scan(vt)) {
+        if (!Readable(w) || Ld32(w) != vt) continue;
+        const uint64_t ci = index.emplace(w, uint32_t(index.size())).first->second;
+        auto see = [&](uint64_t depth, uint64_t a, uint64_t b, uint64_t c, uint32_t v) {
+          if (v > 80) return;
+          const uint64_t key = (ci << 52) | (depth << 48) | ((a >> 2) << 32) | ((b >> 2) << 16) | (c >> 2);
+          auto it = last.find(key);
+          if (it != last.end()) {
+            if (v < it->second && it->second - v <= 4) ++steps[key].first;
+            else if (v > it->second + 5) ++steps[key].second;
+          }
+          last[key] = v;
+        };
+        for (uint32_t a = 0; a < 0x200; a += 4) {
+          const uint32_t p = Ld32(w + a);
+          see(0, a, 0, 0, p);
+          if (!Readable(p) || (p & 3)) continue;
+          for (uint32_t b = 0; b < 0x80; b += 4) {
+            const uint32_t q = Ld32(p + b);
+            see(1, a, b, 0, q);
+            if (!Readable(q) || (q & 3)) continue;
+            for (uint32_t c = 0; c < 0x60; c += 4) see(2, a, b, c, Ld32(q + c));
+          }
+        }
+      }
+      if (last.size() > 3000000) last.clear();
+    }
+    if (now >= report) {
+      report = now + std::chrono::seconds(10);
+      std::vector<std::pair<int, uint64_t>> top;
+      for (const auto& [key, n] : steps)
+        if (n.first >= 6) top.push_back({n.first, key});
+      std::sort(top.rbegin(), top.rend());
+      std::vector<uint32_t> comps(index.size());
+      for (const auto& [addr, i] : index) comps[i] = addr;
+      std::string out;
+      char b[120];
+      for (size_t i = 0; i < top.size() && i < 70; ++i) {
+        const uint64_t k = top[i].second;
+        const auto& n = steps[k];
+        snprintf(b, sizeof b, " [%08X d%u +%X +%X +%X] %d/%d", comps[k >> 52], unsigned((k >> 48) & 3), unsigned(((k >> 32) & 0xFFFF) << 2),
+                 unsigned(((k >> 16) & 0xFFFF) << 2), unsigned((k & 0xFFFF) << 2), n.first, n.second);
+        out += b;
+      }
+      RT_INFO("clip probe:%s", out.c_str());
+    }
+  }
+  // (testing) BF_WEAPON_PROBE: every ServerWeaponComponent (82010500, a
+  // soldier's weapon): its first 0x200 bytes once, then each word that changes,
+  // every 250 ms, with the time of day; and what points at it (the soldier's
+  // word, if any). Run with --bots 0: the host's own weapons only.
+  if (std::getenv("BF_WEAPON_PROBE")) {
+    static std::map<uint32_t, std::vector<uint32_t>> seen;
+    static Clock::time_point next;
+    if (Clock::now() >= next) {
+      next = Clock::now() + std::chrono::milliseconds(250);
+      const long long ms =
+          std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count() % 86400000;
+      std::vector<uint32_t> soldiers = Scan(kSoldier);
+      for (uint32_t w : Scan(0x82010500)) {
+        if (!Readable(w) || Ld32(w) != 0x82010500) continue;
+        auto it = seen.find(w);
+        if (it == seen.end()) {
+          std::string out;
+          char b[24];
+          for (uint32_t off = 0; off < 0x200; off += 4) snprintf(b, sizeof b, " %X:%X", off, Ld32(w + off)), out += b;
+          std::string owners;
+          for (uint32_t s : soldiers)
+            for (uint32_t off = 0; off < 0x600; off += 4)
+              if (Ld32(s + off) == w) snprintf(b, sizeof b, " soldier %08X+%X", s, off), owners += b;
+          RT_INFO("weapon probe %lld: new component %08X%s:%s", ms, w, owners.c_str(), out.c_str());
+          std::vector<uint32_t> v(0x80);
+          for (uint32_t i = 0; i < 0x80; ++i) v[i] = Ld32(w + i * 4);
+          seen[w] = v;
+          continue;
+        }
+        for (uint32_t i = 0; i < 0x80; ++i) {
+          const uint32_t now_w = Ld32(w + i * 4);
+          if (now_w == it->second[i]) continue;
+          float f, g;
+          memcpy(&f, &now_w, 4), memcpy(&g, &it->second[i], 4);
+          RT_INFO("weapon probe %lld ms %08X +%X: %u -> %u (%g -> %g)", ms, w, i * 4, it->second[i], now_w, g, f);
+          it->second[i] = now_w;
+        }
+      }
+    }
+  }
   // (testing) BF_CHANGE_PROBE: what changes, rarely, in this game's own soldier
   // (the one under the camera: 'S') and in the jeep nearest it ('V'), its words
   // and one and two pointers further, every 250 ms, with the time since the

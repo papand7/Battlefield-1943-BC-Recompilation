@@ -112,6 +112,12 @@ void PrunePeersLocked() {
     if (it->second.second < stale) it = g_peers.erase(it);
     else ++it;
 }
+// A peer that already said hello (its address and chat port are in the table).
+bool KnownPeer(uint32_t ip, uint16_t port) {
+  std::lock_guard lock(g_peers_lock);
+  auto it = g_peers.find(ip);
+  return it != g_peers.end() && it->second.first == port;
+}
 bool RegisterPeer(uint32_t ip, uint16_t port) {  // (false: refused)
   std::lock_guard lock(g_peers_lock);
   PrunePeersLocked();
@@ -221,6 +227,9 @@ void ChatNetThread() {
         const uint16_t peer_port = bar == std::string::npos ? 0 : uint16_t(atoi(body.c_str()));
         if (!peer_port) continue;
         if (ChatBlocked(from.sin_addr.s_addr, peer_port)) continue;  // (kicked or banned)
+        // An eye packet only from a registered player (one that said hello): it
+        // is not a way to register. The team it gives is the soldier's, not a claim.
+        if (kind == 'E' && !KnownPeer(from.sin_addr.s_addr, peer_port)) continue;
         if (!RegisterPeer(from.sin_addr.s_addr, peer_port)) continue;  // (it hears the chat from now on)
         body = body.substr(bar + 1);
         if (kind == 'H') {
@@ -239,7 +248,25 @@ void ChatNetThread() {
         if (bar2 == std::string::npos) continue;
         const std::string password = body.substr(0, bar2), line = Trim(body.substr(bar2 + 1));
         std::string reply;
-        if (g_admin_password.empty() || password != g_admin_password) {
+        // Wrong guesses per source: 5 in 10 s, then refused for the rest of that
+        // window (the beacon's own limit, as for the live map).
+        static std::mutex guess_lock;
+        static std::map<uint32_t, std::pair<std::chrono::steady_clock::time_point, int>> guesses;
+        bool locked_out = false;
+        {
+          std::lock_guard g(guess_lock);
+          auto& gs = guesses[from.sin_addr.s_addr];
+          const auto now = std::chrono::steady_clock::now();
+          if (std::chrono::duration<double>(now - gs.first).count() > 10.0) gs = {now, 0};
+          locked_out = gs.second >= 5;
+        }
+        if (locked_out) {
+          reply = "Too many wrong admin passwords: wait 10 s.";
+        } else if (g_admin_password.empty() || password != g_admin_password) {
+          {
+            std::lock_guard g(guess_lock);
+            if (guesses.size() < 512) ++guesses[from.sin_addr.s_addr].second;
+          }
           reply = g_admin_password.empty() ? "This server takes no remote admins." : "Wrong admin password (/login).";
           RT_INFO("admin: a command from %u.%u.%u.%u refused", from.sin_addr.S_un.S_un_b.s_b1,
                   from.sin_addr.S_un.S_un_b.s_b2, from.sin_addr.S_un.S_un_b.s_b3, from.sin_addr.S_un.S_un_b.s_b4);

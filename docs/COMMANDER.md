@@ -299,3 +299,19 @@ known joiners but no joiner was there), the airstrike's smoke on a joiner's scre
   out) sends a line to the team's players, as `[commander] Japan team: <name>: <text>`, by the
   game's chat path, and only to that team. Both check the token's seat on every request.
 
+## Hardening (the bug-hunt pass)
+
+- **The live map binds the host's own LAN address** (the address the game found on its default
+  route, or `--lan-ip`), not every address. `BF_LIVEMAP_PUBLIC=1` binds all of them. If no
+  route is known it binds loopback. Checked: a LAN-bound page answers (200), and a second client
+  that connects and sends nothing does not delay a request (16 ms).
+- **Per-connection handling:** each request has its own thread (8 at once, later ones are
+  dropped); a receive deadline of 3 s for the whole request, send deadline 8 s; the answer is
+  built one request at a time.
+- **Eye packets (`E`) only from a registered player** (one that said hello on that chat port).
+  The team is the soldier's under the eye, never the sender's claim.
+- **Admin password guesses:** 5 wrong per source in 10 s, then refused until the window ends.
+- Not done (need a decision or more work): the heal zone's full rescan every half second, the
+  vehicle drop's memory-wide writes (it is off by default), the admin chat source checks, the
+  known-player table's expiry and cap, the relay and log rate limits, the beacon's reply rate
+  limit, and the pad pointer under the lock.
