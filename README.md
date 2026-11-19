@@ -47,7 +47,7 @@ Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced
 - **Resolution** - Up to 4K, with a resolution scale of 1x, 2x or 3x.
 - **Upscaling** - AMD FSR, FSR 3 and NVIDIA DLSS (on RTX cards), or **Auto** to pick the best your GPU has, with a **Sharpness** setting.
 - **Frame Generation** - AMD FSR 3.1 frame generation, roughly doubling the frames shown on any Vulkan GPU (needs the scene effects on).
-- **Max Frame Rate** - 60, 120, 144, 165, 240 or unlimited, with the game running smoothly at them.
+- **Max Frame Rate** - 60, 120, 144, 165, 240 or unlimited, with the game running smoothly at them. The scene effects run as one lean GPU program per pass, which gained 7 to 11 fps on Ultra.
 - **Adaptive Quality** - Optional: keeps 60 (or 30) fps by easing the heaviest effects when a scene gets busy, and bringing them back when it calms down.
 - **Ultrawide** - 21:9 and wider without bars, with the HUD moved out to the screen's edges (or kept in the middle), or stretched, or the original 16:9 with bars.
 - **Motion Blur** - The game's own (explosions, low health), or a low or high camera blur as you turn and move.
@@ -86,6 +86,7 @@ Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced
 - **Bots** - Computer players on your server (`--bots N`), half on each team: they capture flags, fight, sprint, drive landing craft, jeeps and tanks, and fly planes. They go in squads of four to the same flag, the first leading and the others staying with it. They play inside the server itself, with no extra copies of the game running. Their navigation meshes are made on your PC from your game files the first time a map needs one.
 - **Hardcore** - A server setting (**HOST GAME**, the launcher's **SERVER** page, or `--hardcore`): no HUD or crosshair for anyone, and fewer hits to kill. Hardcore servers are marked in **JOIN GAME**.
 - **Chat and Admin Commands** - <kbd>T</kbd> opens a chat line. The host (or a dedicated server's console) can type `/players`, `/kick`, `/ban`, `/unban`, `/map`, `/bots`, `/weather clear|rain` and `/time dawn|day|sunset|night|<hours>` (everyone in the match sees the change); joiners can use them after `/login <admin password>` (`--admin-password`). `/help` lists them all.
+- **Commander and Live Map** (Battlefield 1943) - A host or server shows a live map of the match in any browser at `http://<server IP>:19440/` (players, vehicles and flag owners, no names). In game, `/commander us` or `/commander japan` takes a team's commander seat (anyone can, either team); it frees itself after 20 seconds of no input, so another player can step in. Every commander action has a server-enforced cooldown. Orders and air drops from the map page are being built.
 - **Spectate** - <kbd>F4</kbd> (or `--spectate`) watches the match on the host's PC: <kbd>N</kbd> / <kbd>B</kbd> to follow the next or previous player, <kbd>Space</kbd> for a free camera, the wheel to zoom.
 - **Match Replays** - A host records every match to `replays/`. Play one back with `--replay <file>`, and fly around it with a free camera or follow a player, paused, rewound or up to 16x faster.
 - **Learning Bots** - Every server learns from its matches where players go, where they die and where they win fights, per map. Bots use it to hold good spots at a flag and to watch where enemies usually come from, and what servers learned can be merged into the next version (`tools/bot_knowledge.py`).
@@ -97,6 +98,8 @@ bf1943.exe --game <your game files> --dedicated --name "Player" --servername "My
 ```
 A server with a password shows a padlock in **JOIN GAME** and only lets in players who type it (UDP 19430 must reach the host for that check). Matches run at 75 ticks a second unless `--tickrate 30` (the original game's rate). In game, **HOST GAME** has the same **SERVER NAME** and **PASSWORD** rows.
 The host's firewall needs to let the game through: UDP ports 1003 and 19430. For the Linux server, see [the developer guide](docs/DEVELOPERS.md).
+
+**Training overview** - The training run's map, and the pictures the bot advisor is shown, use the game's own minimap of each level as their ground (read from your own game files the first time), with the bots' markers on top.
 
 **Bot advisor (optional)** - `BOT_LLM=1` in the start script: when a bot keeps getting stuck or is losing a fight, a small vision model (Qwen3.5 4B through llama.cpp, on the server's own PC) is shown a map of its surroundings and picks where it should go. The first start installs it into `llm/` (about 3.5 GB, needs Python; `tools/setup_bot_llm.py`), then the server runs with `--bot-llm llm`. It is faster with a graphics card; on a CPU an answer takes several seconds, and the bots carry on as usual meanwhile. Works for both games' servers (`--bot-llm` on Bad Company's too).
 
