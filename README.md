@@ -15,7 +15,10 @@ The latest version of the launcher can be found in the [Releases](https://github
 
 <img width="825" alt="The launcher's settings page" src="docs/images/launcher.png" />
 
-**Linux:** `BattlefieldLauncher-<version>-x86_64.AppImage` works the same way: `chmod +x` it, put it next to your game files and start it. It builds the games with `bf1943-recomp/build_linux.sh` and lists the packages to install if any are missing. **macOS:** experimental and untested, built from source (see [Building](#macos-experimental-untested)).
+**Other downloads** (same Releases page; nothing of the games is in any of them, the games are built on your PC from your own files):
+- **Linux:** `BattlefieldLauncher-<version>-x86_64.AppImage` works the same way: `chmod +x` it, put it next to your game files and start it. It builds the games with `bf1943-recomp/build_linux.sh` and lists the packages to install if any are missing.
+- **macOS** (experimental and untested): `BattlefieldLauncher-<version>-arm64.dmg` (Apple Silicon) or `BattlefieldLauncher-<version>-x64.dmg` (Intel). The launcher is not signed, so the first time: drag it to Applications, then right-click it and choose **Open** (or **System Settings > Privacy & Security > Open Anyway**; or `xattr -dr com.apple.quarantine /Applications/"BF1943 Launcher.app"`). Put your game files in a `Battlefield` folder in your home folder (or next to the app if it is not in Applications). The games are built as x86-64 programs (Apple Silicon runs them through Rosetta); the build needs what [macOS](#macos-experimental-untested) lists (Xcode command line tools, Homebrew packages, the LunarG Vulkan SDK).
+- **Dedicated server:** `BattlefieldServer-<version>.zip` (Windows) or `.tar.gz` (Linux, macOS): the server for both games without the launcher, built once from your own game files. Unpack it and read `README-SERVER.txt` (`build_server.sh` / `build_server.bat`, then `start_server`; ports UDP 1003 and 19430 and TCP 19440 for Battlefield 1943, UDP 1503 and 19431 for Bad Company).
 
 ## Original vs Ultra
 Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced** look with every effect at its highest setting, ray tracing and the HD texture pack, from the same spawn.

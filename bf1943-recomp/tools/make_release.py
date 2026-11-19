@@ -5,6 +5,9 @@ games goes in: no game files, no recompiled code.
   python tools/make_release.py [out_dir]                 one exe (default)
   python tools/make_release.py [out_dir] --folder [--zip]  a folder
   python3 tools/make_release.py [out_dir] --appimage     Linux: one AppImage (run on Linux)
+  python3 tools/make_release.py [out_dir] --mac          macOS: two dmgs, arm64 and x64 (run on a Mac)
+  python  tools/make_release.py [out_dir] --server       the dedicated server package: BattlefieldServer-<version>.zip
+                                                         and .tar.gz (sources only, any OS)
 
 One exe (default out_dir build/release): BattlefieldLauncher-<version>.exe,
 electron-builder's portable target (npm run dist in launcher/) with src/ and
@@ -20,10 +23,15 @@ A folder (default out_dir build/release/BF1943-PC):
   src-bfbc1/       ../bfbc1-recomp: Battlefield: Bad Company's sources and config
   README.txt
 """
+import io
+import json
 import os
 import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
+import zipfile
 
 ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 
@@ -64,22 +72,31 @@ def copy_tree(src_root, dst_root, skip=SKIP):
             shutil.copy2(os.path.join(dirpath, f), os.path.join(dst_root, rel))
 
 
-def stage(out):
-    """The build trees: <out>/src and <out>/src-bfbc1."""
+def stage(out, src_name='src', bc_name='src-bfbc1', binaries=True):
+    """The build trees: <out>/src and <out>/src-bfbc1 (the server package:
+    bf1943-recomp and bfbc1-recomp, no shaders or XenonRecomp.exe: its
+    build_server scripts make them)."""
     if os.path.exists(out):
         shutil.rmtree(out)
-    src = os.path.join(out, 'src')
+    src = os.path.join(out, src_name)
     print('sources ->', src)
     copy_tree(ROOT, src)
-    for k in KEEP:
-        os.makedirs(os.path.dirname(os.path.join(src, k)), exist_ok=True)
-        shutil.copy2(os.path.join(ROOT, k), os.path.join(src, k))
-    bc = os.path.join(out, 'src-bfbc1')
+    # (The recompiler configs are not in git: a clean checkout, as in CI, has
+    # none and build_linux.sh / build_server.bat make them from the player's
+    # default.xex. The server package never carries them.)
+    for k in KEEP if binaries else []:
+        if os.path.isfile(os.path.join(ROOT, k)):
+            os.makedirs(os.path.dirname(os.path.join(src, k)), exist_ok=True)
+            shutil.copy2(os.path.join(ROOT, k), os.path.join(src, k))
+    bc = os.path.join(out, bc_name)
     print('Bad Company ->', bc)
     copy_tree(BC_ROOT, bc, BC_SKIP)
-    for k in BC_KEEP:
-        os.makedirs(os.path.dirname(os.path.join(bc, k)), exist_ok=True)
-        shutil.copy2(os.path.join(BC_ROOT, k), os.path.join(bc, k))
+    for k in BC_KEEP if binaries else []:
+        if os.path.isfile(os.path.join(BC_ROOT, k)):
+            os.makedirs(os.path.dirname(os.path.join(bc, k)), exist_ok=True)
+            shutil.copy2(os.path.join(BC_ROOT, k), os.path.join(bc, k))
+    if not binaries:
+        return
     # (The Linux release: build_linux.sh builds the shaders and XenonRecomp
     # when they aren't there.)
     shaders = os.path.join(ROOT, 'build', 'xenia_shaders')
@@ -96,22 +113,93 @@ def stage(out):
     shutil.copy2(recomp, os.path.join(src, 'tools', 'bin', 'XenonRecomp.exe'))
 
 
+# ---- the dedicated server package ----------------------------------------------------
+REPO = os.path.abspath(os.path.join(ROOT, '..'))
+SERVER_FILES = {  # package path -> file (relative to the repo)
+    'README-SERVER.txt': 'bf1943-recomp/tools/server_package/README-SERVER.txt',
+    'build_server.sh': 'bf1943-recomp/tools/server_package/build_server.sh',
+    'build_server.bat': 'bf1943-recomp/tools/server_package/build_server.bat',
+    'docs/DEVELOPERS.md': 'docs/DEVELOPERS.md',
+}
+
+
+def launcher_version():
+    with open(os.path.join(ROOT, 'launcher', 'package.json'), encoding='utf-8') as f:
+        return json.load(f)['version']
+
+
+def make_server(out):
+    """BattlefieldServer-<version>.zip (Windows) and .tar.gz (Linux, macOS; the
+    scripts executable): the sources the launcher builds from (no game files,
+    no generated code, no binaries but AMD's FSR 3 DLLs the Windows build needs) plus the server scripts and docs."""
+    name = 'BattlefieldServer-' + launcher_version()
+    work = os.path.join(tempfile.gettempdir(), 'bf_server_package')  # (short: Windows path limit)
+    pkg = os.path.join(work, name)
+    stage(pkg, 'bf1943-recomp', 'bfbc1-recomp', binaries=False)
+    for dst, rel in SERVER_FILES.items():
+        os.makedirs(os.path.dirname(os.path.join(pkg, dst)), exist_ok=True)
+        shutil.copy2(os.path.join(REPO, rel), os.path.join(pkg, dst))
+    # Not needed in the trees: the package's own files, a third-party sample program.
+    shutil.rmtree(os.path.join(pkg, 'bf1943-recomp', 'tools', 'server_package'), ignore_errors=True)
+    shutil.rmtree(os.path.join(pkg, 'bf1943-recomp', 'thirdparty', 'VulkanMemoryAllocator', 'bin'), ignore_errors=True)
+    os.makedirs(out, exist_ok=True)
+    zip_path, tar_path = os.path.join(out, name + '.zip'), os.path.join(out, name + '.tar.gz')
+
+    def entry(path):  # (bytes, is script): .sh LF, .bat CRLF whatever the checkout did
+        with open(path, 'rb') as f:
+            data = f.read()
+        if path.endswith('.sh'):
+            data = data.replace(b'\r\n', b'\n')
+        elif path.endswith('.bat'):
+            data = data.replace(b'\r\n', b'\n').replace(b'\n', b'\r\n')
+        return data, path.endswith('.sh')
+
+    files = []
+    for dirpath, _, names in os.walk(pkg):
+        for f in sorted(names):
+            full = os.path.join(dirpath, f)
+            files.append((os.path.relpath(full, work).replace('\\', '/'), full))
+    with zipfile.ZipFile(zip_path, 'w', zipfile.ZIP_DEFLATED, compresslevel=9) as z, \
+            tarfile.open(tar_path, 'w:gz') as t:
+        for arc, full in files:
+            data, script = entry(full)
+            zi = zipfile.ZipInfo(arc, (2020, 1, 1, 0, 0, 0))
+            zi.compress_type = zipfile.ZIP_DEFLATED
+            zi.external_attr = ((0o755 if script else 0o644) | 0o100000) << 16
+            z.writestr(zi, data)
+            if arc.endswith(('.dll', '.lib')):
+                continue  # (Windows only: AMD's FSR 3 libraries the Windows build copies; not for the Linux/macOS tarball)
+            ti = tarfile.TarInfo(arc)
+            ti.size, ti.mode = len(data), 0o755 if script else 0o644
+            t.addfile(ti, io.BytesIO(data))
+    for p in (zip_path, tar_path):
+        print('done: %s (%.1f MB)' % (p, os.path.getsize(p) / 1e6))
+
+
 def main():
+    if '--server' in sys.argv:
+        args = [a for a in sys.argv[1:] if not a.startswith('--')]
+        make_server(os.path.abspath(args[0] if args else os.path.join(ROOT, 'build', 'release')))
+        return
     args = [a for a in sys.argv[1:] if not a.startswith('--')]
     launcher = os.path.join(ROOT, 'launcher')
-    if '--appimage' in sys.argv:
+    if '--appimage' in sys.argv or '--mac' in sys.argv:
         # Linux (run there): BattlefieldLauncher-<version>-x86_64.AppImage, the
         # same build trees inside; it installs in a BattlefieldRecomp folder
         # next to itself and builds with build_linux.sh (launcher/setup_linux.js).
+        # macOS (--mac, run there): BattlefieldLauncher-<version>-arm64.dmg and
+        # -x64.dmg, unsigned; the same, built with build_macos.sh.
+        mac = '--mac' in sys.argv
         out = os.path.abspath(args[0] if args else os.path.join(ROOT, 'build', 'release'))
         stage(os.path.join(ROOT, 'build', 'release_sources'))
-        print('launcher -> AppImage')
-        dist = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'bf_launcher_dist_linux')
+        print('launcher -> ' + ('dmg' if mac else 'AppImage'))
+        dist = os.path.join(os.environ.get('TMPDIR', '/tmp'), 'bf_launcher_dist_' + ('mac' if mac else 'linux'))
         shutil.rmtree(dist, ignore_errors=True)
-        subprocess.run(['npm', 'run', 'dist:linux', '--', '--config.directories.output=' + dist], cwd=launcher, check=True)
+        subprocess.run(['npm', 'run', 'dist:mac' if mac else 'dist:linux', '--', '--config.directories.output=' + dist],
+                       cwd=launcher, check=True)
         os.makedirs(out, exist_ok=True)
         for f in os.listdir(dist):
-            if f.endswith('.AppImage'):
+            if f.endswith('.dmg' if mac else '.AppImage'):
                 shutil.copy2(os.path.join(dist, f), os.path.join(out, f))
                 print('done:', os.path.join(out, f))
         return

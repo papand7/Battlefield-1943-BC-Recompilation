@@ -44,4 +44,9 @@ cd "$(dirname "$0")" || exit 1
 if [ "$BOT_LLM" = "1" ]; then
   if [ -f llm/bot_llm.ini ] || python3 tools/setup_bot_llm.py --dir llm; then set -- "$@" --bot-llm llm; fi
 fi
-exec build/linux/bf1943_server --game "$GAME" --user server_data --dedicated --name "$NAME" --servername "$SERVERNAME" --maps "$MAPS" --bots "$BOTS" "$@"
+# build_server.sh's build, or the one from the developer guide (build/linux)
+BIN=build/linux-server/game/bf1943_server
+[ -x "$BIN" ] || BIN=build/macos-server/game/bf1943_server
+[ -x "$BIN" ] || BIN=build/linux/bf1943_server
+[ -x "$BIN" ] || { echo "The server is not built yet: run build_server.sh (see README-SERVER.txt)"; exit 1; }
+exec "$BIN"--game "$GAME" --user server_data --dedicated --name "$NAME" --servername "$SERVERNAME" --maps "$MAPS" --bots "$BOTS" "$@"

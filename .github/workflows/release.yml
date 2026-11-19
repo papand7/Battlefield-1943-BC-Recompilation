@@ -1,0 +1,79 @@
+name: Release downloads
+# Adds the Linux AppImage, the macOS launcher (dmg) and the dedicated server
+# package to a GitHub release (the Windows exe is made on the maintainer's PC:
+# python tools/make_release.py). Nothing of the games is in any of them: the
+# launcher builds the games on the player's PC from the player's own files.
+#   - when a release is published (the files go to that release);
+#   - by hand (Actions > Release downloads > Run workflow, with the release's tag),
+#     e.g. to add them to a release that already exists. It builds the commit it is
+#     run on (choose the branch with this file), so that commit's launcher
+#     version (bf1943-recomp/launcher/package.json) must be the tag's.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag to attach the files to (e.g. v0.2.0)'
+        required: true
+permissions:
+  contents: write   # gh release upload (the workflow's own GITHUB_TOKEN, nothing else)
+env:
+  TAG: ${{ github.event.release.tag_name || inputs.tag }}
+  GH_TOKEN: ${{ github.token }}
+jobs:
+  linux:
+    name: Linux AppImage and server package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: The launcher's version is the release's
+        run: |
+          v=$(node -p "require('./bf1943-recomp/launcher/package.json').version")
+          [ "v$v" = "$TAG" ] || { echo "::error::launcher version $v is not release $TAG"; exit 1; }
+      - run: npm ci
+        working-directory: bf1943-recomp/launcher
+      - name: Linux launcher (AppImage)
+        run: python3 bf1943-recomp/tools/make_release.py "$RUNNER_TEMP/out" --appimage
+      - name: Dedicated server package (zip and tar.gz)
+        run: python3 bf1943-recomp/tools/make_release.py "$RUNNER_TEMP/out" --server
+      - name: Upload to the release
+        run: |
+          ls -l "$RUNNER_TEMP/out"
+          gh release upload "$TAG" "$RUNNER_TEMP"/out/* --clobber --repo "$GITHUB_REPOSITORY"
+
+  macos:
+    name: macOS launcher (dmg, Apple Silicon and Intel)
+    runs-on: macos-latest
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'   # unsigned
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
+        with:
+          submodules: recursive
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020  # v4.4.0
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5.6.0
+        with:
+          python-version: '3.12'
+      - name: The launcher's version is the release's
+        run: |
+          v=$(node -p "require('./bf1943-recomp/launcher/package.json').version")
+          [ "v$v" = "$TAG" ] || { echo "::error::launcher version $v is not release $TAG"; exit 1; }
+      - run: npm ci
+        working-directory: bf1943-recomp/launcher
+      - name: macOS launcher (dmg, arm64 and x64)
+        run: python3 bf1943-recomp/tools/make_release.py "$RUNNER_TEMP/out" --mac
+      - name: Upload to the release
+        run: |
+          ls -l "$RUNNER_TEMP/out"
+          gh release upload "$TAG" "$RUNNER_TEMP"/out/* --clobber --repo "$GITHUB_REPOSITORY"

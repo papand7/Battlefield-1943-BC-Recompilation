@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const base = require('./setup');
+const { failureSummary, openBuildLog } = require('./buildlog');
 
 // Per game: the exe and the build's folder under <root> (the game's folder,
 // setup.js's gameDir: game, game-bfbc1).
@@ -120,7 +121,10 @@ async function setup(launcherDir, game, gamePath, send) {
   }
   send({ step: 'game', state: 'done' });
 
-  // 2-4. build_linux.sh (again once after installing missing packages).
+  // 2-4. build_linux.sh (again once after installing missing packages). Its whole
+  // output goes to <root>/logs/build-<game>.log.
+  const blog = openBuildLog(p.root, game);
+  log(`Build log: ${blog.path}`);
   for (let attempt = 0; ; ++attempt) {
     const lines = [];
     let current = null, lastError = '';
@@ -135,6 +139,7 @@ async function setup(launcherDir, game, gamePath, send) {
     const code = await run('bash', [path.join(p.src, 'build_linux.sh'), '--game', p.data, '--out', p.out,
       ...p.linux.args, ...(game === 'bfbc1' ? ['--bc-tree', p.tree] : [])], { cwd: p.src },
       (line) => {
+        blog.write(line);
         lines.push(line);
         if (lines.length > 200) lines.shift();
         const m = /^progress (\w+) (\d+) (\d+)$/.exec(line);
@@ -148,6 +153,7 @@ async function setup(launcherDir, game, gamePath, send) {
       });
     if (code === 0) {
       if (current) send({ step: current, state: 'done' });
+      blog.close();
       break;
     }
     const install = attempt === 0 && current === 'tools' && installCommand(lines);
@@ -161,7 +167,10 @@ async function setup(launcherDir, game, gamePath, send) {
       send({ step: 'tools', state: 'fail', text: e.message });
       throw e;
     }
-    const e = new Error(lastError || `build_linux.sh failed (exit ${code}); see ${path.join(p.out, 'logs')}`);
+    // The compiler's own log (<out>/logs/build.log) is added to ours: the first FAILED: line
+    // and the first errors from it, not ninja's last line.
+    try { blog.write(`----- ${path.join(p.out, 'logs', 'build.log')}`); for (const l of fs.readFileSync(path.join(p.out, 'logs', 'build.log'), 'utf8').split(/\r?\n/)) blog.write(l); } catch { /* no such log: the step failed before it */ }
+    const e = new Error((lastError || `build_linux.sh failed (exit ${code})`) + '\n' + blog.explain());
     send({ step: current || 'tools', state: 'fail', text: e.message });
     throw e;
   }

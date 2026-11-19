@@ -34,4 +34,6 @@ if not "!ADMINPASSWORD!"=="" set "EXTRA=!EXTRA! --admin-password "!ADMINPASSWORD
 if "%HARDCORE%"=="1" set EXTRA=%EXTRA% --hardcore
 if "%PUBLISH%"=="1" set EXTRA=%EXTRA% --publish
 cd /d "%~dp0"
+rem the game files build_server.bat set up
+if exist original\bfbc1\default.xex set "GAME=original\bfbc1"
 build\game\bfbc1.exe --game "!GAME!" --user server_data --dedicated --name "!NAME!" --servername "!SERVERNAME!" --maps "!MAPS!" --bots %BOTS% !EXTRA!
