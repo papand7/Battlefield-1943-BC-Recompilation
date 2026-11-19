@@ -1,8 +1,10 @@
 // bf1943: runtime side of Xenia's GPU (see runtime/xenia_bridge.h).
 #include "../xenia_bridge.h"
+#include "../commander_hud.h"
 
 #include <algorithm>
 #include <cmath>
+#include <map>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -121,9 +123,48 @@ class OverlayDrawer : public xe::ui::UIDrawer {
     if (!drawer) return;
     DrawPage(context);
     DrawCorner(context);
+    DrawHud(context);
   }
 
  private:
+  // The commander's markers (commander_hud.cpp): plain colour quads and text textures.
+  void DrawHud(xe::ui::UIDrawContext& context) {
+    const float w = float(context.render_target_width()), h = float(context.render_target_height());
+    std::vector<rt::commander::hud::Quad> quads;
+    std::vector<rt::commander::hud::Texture> textures;
+    rt::commander::hud::Frame(w, h, quads, textures);
+    for (const auto& t : textures) {
+      if (t.rgba.empty()) {
+        hud_textures_.erase(t.id);
+      } else {
+        hud_textures_[t.id] = drawer->CreateTexture(t.w, t.h, xe::ui::ImmediateTextureFilter::kLinear, false, t.rgba.data());
+      }
+    }
+    if (quads.empty()) return;
+    drawer->Begin(context, w, h);
+    for (const auto& q : quads) {
+      const xe::ui::ImmediateVertex vertices[4] = {{q.x[0], q.y[0], 0, 0, q.color},
+                                                   {q.x[1], q.y[1], 1, 0, q.color},
+                                                   {q.x[2], q.y[2], 1, 1, q.color},
+                                                   {q.x[3], q.y[3], 0, 1, q.color}};
+      const uint16_t indices[6] = {0, 1, 2, 0, 2, 3};
+      xe::ui::ImmediateDrawBatch batch;
+      batch.vertices = vertices;
+      batch.vertex_count = 4;
+      batch.indices = indices;
+      batch.index_count = 6;
+      drawer->BeginDrawBatch(batch);
+      xe::ui::ImmediateDraw draw;
+      draw.count = 6;
+      const auto it = hud_textures_.find(q.tex);
+      draw.texture = it != hud_textures_.end() ? it->second.get() : nullptr;
+      drawer->Draw(draw);
+      drawer->EndDrawBatch();
+    }
+    drawer->End();
+  }
+  std::map<int, std::unique_ptr<xe::ui::ImmediateTexture>> hud_textures_;
+
   // The FPS counter: its panel at the top-left, sized for the window's height.
   void DrawCorner(xe::ui::UIDrawContext& context) {
     {
@@ -420,6 +461,7 @@ void SetWeather(float rain, float time_hours) {
 }
 
 bool CameraEye(float out[3]) { return xe::gpu::scenefx::Eye(out); }
+bool ViewProjection(float out[16]) { return xe::gpu::scenefx::ViewProj(out); }
 
 void SetHdrStretch(bool on) { xe::ui::bfhdr::no_stretch = !on; }
 

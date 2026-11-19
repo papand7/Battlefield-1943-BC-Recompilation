@@ -155,6 +155,10 @@ const Settings& GetSettings();
 // The eye (world position) of the main view, from the last lit draw; false
 // when no level view was drawn in the last half second.
 bool Eye(float out[3]);
+// The main view's world -> clip matrix of the last frame (column-major: clip =
+// M * (x, y, z, 1)); false when none was made in the last half second. For the
+// HUD's markers (commander_hud.cpp).
+bool ViewProj(float out[16]);
 
 // Called for every draw after the render targets are set up; keeps the
 // constants of the latest lit main-view draw.

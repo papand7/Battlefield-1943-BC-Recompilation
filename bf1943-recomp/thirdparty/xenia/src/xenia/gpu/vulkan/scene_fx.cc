@@ -8,6 +8,7 @@
 #include <cmath>
 #include <cstdlib>
 #include <cstring>
+#include <mutex>
 #include <set>
 #include <thread>
 #include <string>
@@ -713,6 +714,20 @@ bool Eye(float out[3]) {
   return true;
 }
 
+namespace {
+// The last frame's world -> clip matrix (column-major), for the HUD's markers.
+std::mutex g_view_proj_mu;
+float g_view_proj[16];
+int64_t g_view_proj_ms = -1000000;
+}  // namespace
+
+bool ViewProj(float out[16]) {
+  std::lock_guard<std::mutex> lock(g_view_proj_mu);
+  if (NowMs() - g_view_proj_ms > 500) return false;
+  for (int i = 0; i < 16; ++i) out[i] = g_view_proj[i];
+  return true;
+}
+
 const Settings& GetSettings() { return settings; }
 
 void CaptureDraw(const Shader* vertex_shader, const Shader* pixel_shader,
@@ -1047,6 +1062,11 @@ void VulkanRenderTargetCache::ApplySceneFx(
   for (int r = 0; r < 4; ++r)
     for (int c = 0; c < 4; ++c)
       p.view_proj[c * 4 + r] = float(vp[r][c]);
+  {
+    std::lock_guard<std::mutex> lock(g_view_proj_mu);
+    for (int i = 0; i < 16; ++i) g_view_proj[i] = p.view_proj[i];
+    g_view_proj_ms = NowMs();
+  }
   // BF_FOV_LOG: the camera's field of view (from the rows' lengths: x and y
   // scales over w's), now and then.
   static const bool fov_log = getenv("BF_FOV_LOG") != nullptr;

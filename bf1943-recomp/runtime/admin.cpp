@@ -19,6 +19,7 @@
 #include "admin_server.h"
 #include "bot_llm.h"
 #include "commander.h"
+#include "commander_hud.h"
 
 #ifdef _WIN32
 #define WIN32_LEAN_AND_MEAN
@@ -82,6 +83,8 @@ std::string Narrow(const std::wstring& w) {
 void AddLine(std::wstring line) {
   if (t_reply) *t_reply += (t_reply->empty() ? "" : "\n") + Narrow(line);
   if (g_dedicated) RT_INFO("admin> %s", Narrow(line).c_str());  // (no screen: the console's answer)
+  // All talk for the commander's page log (its team lines come from commander.cpp itself).
+  if (line.rfind(L"[commander]", 0) != 0) commander::LogChat(0, Narrow(line));
   std::lock_guard lock(g_lock);
   g_lines.push_back({std::chrono::steady_clock::now(), std::move(line)});
   while (g_lines.size() > kMaxLines) g_lines.pop_front();
@@ -259,6 +262,10 @@ void ChatNetThread() {
         else if (kind == 'R') OnMapReady(body);
         else if (kind == 'M') {  // (which seat this game holds; a new seat's page link)
           if (const std::string line = commander::OnHostReply(body); !line.empty()) AddLine(Wide(line));
+        } else if (kind == 'Z') {  // (the commander's markers for this game's team: commander_hud.cpp)
+          if (commander::Available()) commander::hud::OnPacket(body);
+        } else if (kind == 'X') {  // (an airstrike's blast: its smoke and debris here too)
+          if (commander::Available()) commander::ShowBlast(body);
         }
       }
       continue;
@@ -517,6 +524,9 @@ void ConsoleThread() {
 
 void Start() {
   if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
+  commander::SetRawSender([](uint32_t ip, uint16_t port, const std::string& packet) {  // (markers, blasts)
+    SendRaw(ip, port, packet);
+  });
   commander::Start(
       [](const std::string& note) {  // (a seat freed: everyone hears it)
 #ifdef _WIN32

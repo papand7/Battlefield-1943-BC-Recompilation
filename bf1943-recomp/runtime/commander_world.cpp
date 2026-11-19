@@ -5,8 +5,12 @@
 // Battlefield 1943 has no ammo crates in its levels (its soldiers' ammunition
 // doesn't run out and health comes back by itself; the engine's
 // ServerAmmoCrateEntity class is there, unused). So:
-//   - a SUPPLY drop heals the team's soldiers within kSupplyRadius of the point,
-//     at once and again every half second for kSupplySeconds;
+//   - a HEAL zone heals the team's soldiers within kSupplyRadius of the point,
+//     at once and again every half second for kSupplySeconds (an AMMO zone is
+//     refused: the soldiers' rounds are not found, docs/COMMANDER.md);
+//   - an AIRSTRIKE hurts every soldier within kBlastRadius kStrikeWarnS after
+//     it is called (its warning on the calling team's HUD), with the scene
+//     effects' smoke and debris in every game;
 //   - a VEHICLE drop takes the team's free jeep (US Willys, Japan Kurogane;
 //     else any free jeep), the one nearest the point with no soldier near it,
 //     and puts it kDropHeight above the ground there: its Havok rigid body
@@ -22,6 +26,7 @@
 #include "bot_players.h"
 #include "guest.h"
 #include "kernel.h"
+#include "xenia_bridge.h"
 
 #include <algorithm>
 #include <array>
@@ -31,6 +36,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <map>
 #include <mutex>
 #include <string>
 #include <vector>
@@ -94,6 +100,9 @@ struct Zone {
   int team;
   float x, z;
   Clock::time_point until;
+  int kind = 1;  // 1 heal, 2 ammo
+  float y = 0;
+  bool has_y = false;
 };
 std::mutex g_mu;
 std::vector<Drop> g_queue;
@@ -278,6 +287,46 @@ bool DropVehicle(int team, float x, float z, std::string* text) {
   return true;
 }
 
+// The airstrike: the blast at its point after kStrikeWarnS, on every soldier
+// within kBlastRadius (the centre killed, the edge hurt least). The soldiers'
+// health (+3C) is taken down directly: the explosion's own effect is a guest
+// object the server does not make (docs/COMMANDER.md), so there is no flash.
+constexpr double kStrikeWarnS = 8.0;
+constexpr float kBlastRadius = 12.0f;
+struct Strike {
+  int team;
+  float x, z;
+  float y;
+  bool has_y;
+  Clock::time_point fire;
+};
+std::vector<Strike> g_strikes;  // (under g_mu)
+
+void Blast(const Strike& s) {
+  int hit = 0, killed = 0;
+  for (uint32_t a : Scan(kSoldier)) {
+    if (!Readable(a) || Ld32(a) != kSoldier) continue;
+    const float hp = LdF(a + 0x3C), x = LdF(a + 0x180), z = LdF(a + 0x188);
+    if (!(hp > 0)) continue;
+    const float d = std::hypot(x - s.x, z - s.z);
+    if (d >= kBlastRadius) continue;
+    // Full at 4 m or less, a fifth of it at the edge (linear between).
+    const float dmg = d <= 4.0f ? 1000.0f : 100.0f * (1.0f - 0.8f * (d - 4.0f) / (kBlastRadius - 4.0f));
+    const float left = hp - dmg;
+    StF(a + 0x3C, left > 0 ? left : 0.0f);
+    ++hit;
+    if (left <= 0) ++killed;
+  }
+  RT_INFO("commander: %s team's airstrike at %.1f,%.1f: %d soldiers hit, %d killed", TeamName(s.team), s.x, s.z, hit, killed);
+  // Its smoke and debris (the scene effects' explosion, as the game's own make).
+  float y = s.y;
+  if (!s.has_y) {
+    float eye[3];
+    y = xgpu::CameraEye(eye) ? eye[1] - 1.7f : 0.0f;
+  }
+  OnBlast(s.x, y, s.z);
+}
+
 // Heals the zones' soldiers (every half second; the soldiers found again every 2 s).
 void Heal(const std::vector<Zone>& zones, Clock::time_point now) {
   if (Since(g_soldiers_at, now) > 2.0) g_soldiers = Scan(kSoldier), g_soldiers_at = now;
@@ -307,12 +356,26 @@ void QueueDrop(int team, const std::string& kind, float x, float z, std::functio
   g_work = true;
 }
 
+std::vector<StrikeWarning> PendingStrikes() {
+  std::lock_guard l(g_mu);
+  std::vector<StrikeWarning> out;
+  const auto now = Clock::now();
+  for (const Strike& s : g_strikes)
+    if (s.fire > now) out.push_back({s.team, s.x, s.z, float(std::chrono::duration<double>(s.fire - now).count()), s.y, s.has_y});
+  return out;
+}
+
 std::vector<SupplyZone> SupplyZones() {
   std::lock_guard l(g_mu);
   std::vector<SupplyZone> out;
   const auto now = Clock::now();
   for (const Zone& z : g_zones)
-    if (z.until > now) out.push_back({z.team, z.x, z.z, float(std::chrono::duration<double>(z.until - now).count())});
+    if (z.until > now) {
+      SupplyZone s;
+      s.team = z.team, s.x = z.x, s.z = z.z, s.left = float(std::chrono::duration<double>(z.until - now).count());
+      s.kind = z.kind, s.y = z.y, s.has_y = z.has_y;
+      out.push_back(s);
+    }
   return out;
 }
 
@@ -336,6 +399,113 @@ void OnServerUpdate() {
               LdF(g_watch.body + 0xE4), LdF(g_watch.body + 0xE8), v.pos[0], v.pos[1], v.pos[2], ok ? "" : " (gone)");
     }
   }
+  // (testing) BF_AMMO_PROBE: where a soldier's rounds are. Every 3 s, the small
+  // whole numbers reachable from each soldier (its words, and one and two
+  // pointers further); a path whose value drops by 1 to 5 between looks (a shot,
+  // a burst) is counted, and the most counted paths are logged every 15 s.
+  if (std::getenv("BF_AMMO_PROBE")) {
+    static std::map<uint64_t, std::pair<uint32_t, uint32_t>> last;  // (soldier, path) -> value, look number
+    static std::map<uint64_t, std::pair<int, int>> drops;  // path -> drops, rises to a bigger value (a reload)
+    static Clock::time_point next, report;
+    static uint32_t look = 0;
+    const auto now = Clock::now();
+    if (now >= next) {
+      next = now + std::chrono::seconds(3), ++look;
+      for (uint32_t s : Scan(kSoldier)) {
+        if (!Readable(s) || Ld32(s) != kSoldier) continue;
+        auto see = [&](uint64_t path, uint32_t v) {
+          if (v > 400) return;
+          const uint64_t key = (uint64_t(s) << 32) ^ (path * 0x9E3779B97F4A7C15ull);
+          auto it = last.find(key);
+          if (it != last.end() && it->second.second + 1 == look) {
+            const uint32_t was = it->second.first;
+            if (v < was && was - v <= 5) ++drops[path].first;
+            else if (v > was + 3 && v <= 200) ++drops[path].second;
+          }
+          last[key] = {v, look};
+        };
+        for (uint32_t a = 0; a < 0x400; a += 4) {
+          const uint32_t w = Ld32(s + a);
+          see(0x1000000ull | a, w);
+          if (!Readable(w) || (w & 3)) continue;
+          for (uint32_t b = 0; b < 0x200; b += 4) {
+            const uint32_t w2 = Ld32(w + b);
+            see((uint64_t(a) << 24) | (uint64_t(b) << 12) | 0xFFF, w2);
+            if (!Readable(w2) || (w2 & 3)) continue;
+            for (uint32_t c = 0; c < 0x100; c += 4) see((uint64_t(a) << 24) | (uint64_t(b) << 12) | c, Ld32(w2 + c));
+          }
+        }
+      }
+      if (last.size() > 4000000) last.clear();
+    }
+    if (now >= report) {
+      report = now + std::chrono::seconds(15);
+      std::vector<std::pair<int, uint64_t>> top;
+      for (const auto& [path, n] : drops)
+        if (n.first >= 3) top.push_back({n.first * 4 + n.second, path});
+      std::sort(top.rbegin(), top.rend());
+      std::string out;
+      char b[96];
+      for (size_t i = 0; i < top.size() && i < 20; ++i) {
+        const uint64_t p = top[i].second;
+        const auto& n = drops[p];
+        if (p & 0x1000000ull) snprintf(b, sizeof b, " [+%X] %d/%d", unsigned(p & 0xFFFFFF), n.first, n.second);
+        else if ((p & 0xFFF) == 0xFFF) snprintf(b, sizeof b, " [+%X]+%X %d/%d", unsigned(p >> 24), unsigned((p >> 12) & 0xFFF), n.first, n.second);
+        else snprintf(b, sizeof b, " [[+%X]+%X]+%X %d/%d", unsigned(p >> 24), unsigned((p >> 12) & 0xFFF), unsigned(p & 0xFFF), n.first, n.second);
+        out += b;
+      }
+      RT_INFO("ammo probe (path drops/reloads):%s", out.c_str());
+    }
+  }
+  // (testing) BF_VEHICLE_PROBE: each jeep's maker (+EC: is it the level's
+  // ServerVehicleSpawnEntity, vtable 82018898?) and where it makes it (+310).
+  if (std::getenv("BF_VEHICLE_PROBE")) {
+    static int64_t probed = -1;
+    static Clock::time_point after = Clock::now() + std::chrono::seconds(25);
+    if (probed != g_level && Clock::now() >= after) {
+      probed = g_level;
+      for (uint32_t o : Scan(kVehicle)) {
+        Vehicle v;
+        if (!ReadVehicle(o, v) || !IsJeep(v.kind)) continue;
+        const uint32_t made = Ld32(o + 0xEC);
+        const uint32_t vt = Readable(made) ? Ld32(made) : 0;
+        RT_INFO("vehicle probe: %s %08X at %.1f,%.1f,%.1f; +EC %08X (vtable %08X%s), its +310 %.1f,%.1f,%.1f", v.kind.c_str(), o,
+                v.pos[0], v.pos[1], v.pos[2], made, vt, vt == 0x82018898u ? ": the vehicle spawner" : "",
+                Readable(made) ? LdF(made + 0x310) : 0.0f, Readable(made) ? LdF(made + 0x314) : 0.0f, Readable(made) ? LdF(made + 0x318) : 0.0f);
+      }
+      for (uint32_t sp : Scan(0x82018898))
+        if (Readable(sp) && Ld32(sp) == 0x82018898) RT_INFO("vehicle probe: a spawner at %08X", sp);
+    }
+  }
+  // (testing) BF_POINT_PROBE: the strings reachable from each capture point
+  // (its object's words and one pointer further), to find the flags' names.
+  if (std::getenv("BF_POINT_PROBE")) {
+    static int64_t probed = -1;
+    static Clock::time_point after = Clock::now() + std::chrono::seconds(20);
+    if (probed != g_level && Clock::now() >= after) {
+      probed = g_level;
+      auto text = [](uint32_t p) -> std::string {
+        if (!Readable(p)) return "";
+        const char* s = G<char>(p);
+        size_t n = 0;
+        while (n < 40 && s[n] >= 32 && s[n] < 127) ++n;
+        return n >= 3 && s[n] == 0 ? std::string(s, n) : "";
+      };
+      for (uint32_t o : Scan(0x820190D0)) {
+        if (!Readable(o) || Ld32(o) != 0x820190D0) continue;
+        std::string found;
+        for (uint32_t off = 0; off < 0x200; off += 4) {
+          const uint32_t p = Ld32(o + off);
+          if (const std::string t = text(p); !t.empty()) found += " +" + std::to_string(off) + "='" + t + "'";
+          if (!Readable(p) || (p & 3)) continue;
+          for (uint32_t off2 = 0; off2 < 0x80; off2 += 4)
+            if (const std::string t = text(Ld32(p + off2)); !t.empty())
+              found += " +" + std::to_string(off) + "+" + std::to_string(off2) + "='" + t + "'";
+        }
+        RT_INFO("point probe %08X:%s", o, found.c_str());
+      }
+    }
+  }
   // A seat taken: the map's ground is read (the vehicle drops' height; the bots
   // read it anyway), once a level, in the background.
   static Clock::time_point next_look;
@@ -350,23 +520,40 @@ void OnServerUpdate() {
   if (!g_work.load(std::memory_order_relaxed)) return;
   std::vector<Drop> queue;
   std::vector<Zone> zones;
+  std::vector<Strike> due;
   const auto now = Clock::now();
   {
     std::lock_guard l(g_mu);
     queue.swap(g_queue);
     g_zones.erase(std::remove_if(g_zones.begin(), g_zones.end(), [&](const Zone& z) { return z.until <= now; }), g_zones.end());
     for (const Drop& d : queue)
-      if (d.kind == "ammo") g_zones.push_back({d.team, d.x, d.z, now + std::chrono::milliseconds(int(kSupplySeconds * 1000))});
+      if (d.kind == "strike") {
+        Strike s{d.team, d.x, d.z, 0.0f, false, now + std::chrono::milliseconds(int(kStrikeWarnS * 1000))};
+        const float g = TerrainHeight(d.x, d.z);
+        s.has_y = g > -1e8f && std::isfinite(g), s.y = s.has_y ? g : 0.0f;
+        g_strikes.push_back(s);
+      } else if (d.kind == "heal") {
+        Zone z{d.team, d.x, d.z, now + std::chrono::milliseconds(int(kSupplySeconds * 1000))};
+        const float g = TerrainHeight(d.x, d.z);  // (the ground there, for the players' rings)
+        z.has_y = g > -1e8f && std::isfinite(g), z.y = z.has_y ? g : 0.0f;
+        g_zones.push_back(z);
+      }
     zones = g_zones;
-    g_work = !g_zones.empty();
+    // The strikes due now (their blasts, below), the rest waiting.
+    for (const Strike& s : g_strikes)
+      if (s.fire <= now) due.push_back(s);
+    g_strikes.erase(std::remove_if(g_strikes.begin(), g_strikes.end(), [&](const Strike& s) { return s.fire <= now; }), g_strikes.end());
+    g_work = !g_zones.empty() || !g_strikes.empty();
   }
   for (Drop& d : queue) {
     std::string text;
     bool ok = true;
     if (d.kind == "vehicle") ok = DropVehicle(d.team, d.x, d.z, &text);
-    else text = "supply drop: the team is healed there for 30 s";
+    else if (d.kind == "strike") text = "airstrike: the blast in 8 s";
+    else text = "heal zone: the team is healed there for 30 s";
     if (d.done) d.done(ok, text);
   }
+  for (const Strike& s : due) Blast(s);
   if (!zones.empty() && (now >= g_next_heal || !queue.empty())) {
     g_next_heal = now + std::chrono::milliseconds(500);
     Heal(zones, now);

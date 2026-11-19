@@ -79,6 +79,8 @@ void SetWeather(float rain, float time_hours);
 void SetMotionBlurHold(bool hold);
 // The eye (world position) of the level view now; false if none drawn lately.
 bool CameraEye(float out[3]);
+// The main view's world -> clip matrix (column-major) of the last frame; false if none lately.
+bool ViewProjection(float out[16]);
 // The front end menu's rows in the last frame (gpu/vulkan/bf_menu.h): up to max
 // boxes {x0, y0, x1, y1} (0-1 of the frame, y down), top to bottom, and the
 // highlighted one's index (-1 if no highlighted list is on screen).

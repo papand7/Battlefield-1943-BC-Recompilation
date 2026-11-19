@@ -46,6 +46,25 @@ bool g_live_valid = false;
 std::chrono::steady_clock::time_point g_live_at;
 
 bool Readable(uint32_t a) { return a >= 0x40000000 && a < 0xC0000000 && IsCommitted(a) && IsCommitted(a + 0x400); }
+
+// A capture point's name in the level: its data's (+14) name (+C), e.g.
+// "MP_XX_The Outpost" -> "The Outpost" (found with commander_world.cpp's BF_POINT_PROBE).
+std::string PointName(uint32_t data) {
+  const uint32_t p = Readable(data) ? Ld32(data + 0xC) : 0;
+  if (!Readable(p)) return "";
+  const char* s = G<char>(p);
+  size_t n = 0;
+  while (n < 48 && s[n] >= 32 && s[n] < 127) ++n;
+  if (n < 2 || s[n]) return "";
+  std::string t(s, n);
+  if (t.rfind("MP_XX_", 0) == 0) t = t.substr(6);
+  if (t == "Team1") t = "US base";  // (the teams' main bases)
+  if (t == "Team2") t = "Japanese base";
+  std::replace(t.begin(), t.end(), '_', ' ');
+  for (char& c : t)
+    if (c == '"' || c == '\\' || c == ',' || c == ';' || c == '|') c = ' ';
+  return t;
+}
 float LdF(uint32_t a) {
   uint32_t u = Ld32(a);
   float f;
@@ -265,7 +284,7 @@ struct Recorder {
       if (!Readable(spatial)) continue;
       int owner = int(Ld32(o + 0x80));
       auto [it, added] = point_ids.emplace(o, uint16_t(point_ids.size()));
-      live_points.push_back({it->second, uint8_t(owner), LdF(spatial + 0x60), LdF(spatial + 0x68)});
+      live_points.push_back({it->second, uint8_t(owner), LdF(spatial + 0x60), LdF(spatial + 0x68), PointName(spatial)});
       auto own = point_owner.find(o);
       if (own != point_owner.end() && own->second == owner) continue;
       point_owner[o] = owner;
