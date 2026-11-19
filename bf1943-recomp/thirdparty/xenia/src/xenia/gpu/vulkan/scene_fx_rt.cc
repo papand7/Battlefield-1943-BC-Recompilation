@@ -572,7 +572,8 @@ const PositionFetch& GetPositionFetch(const Shader& shader) {
   pf.world_from_view = !parts && (!world_row(0) || !world_row(1) || !world_row(2));
   if (pf.world_from_view && pf.clip_constant != 12) return reject("no c20-c22 world matrix");
   // BF_RT_NO_VIEW_WORLD leaves those out.
-  if (pf.world_from_view && std::getenv("BF_RT_NO_VIEW_WORLD")) {
+  static const bool no_view_world = std::getenv("BF_RT_NO_VIEW_WORLD") != nullptr;  // (read once: per draw)
+  if (pf.world_from_view && no_view_world) {
     return reject("no c16-c18 world matrix");
   }
   bool direct = !std::strncmp(end, ".zxyw", 5);
@@ -1486,7 +1487,8 @@ void RecordDraw(const Shader& vertex_shader, const Shader& pixel_shader,
       ++skipped_alpha;
       ++skipped_alpha_why[!alpha->ok ? 1 : alpha->fetch_constant != pf.fetch_constant ? 2 : 3];
       skipped_alpha_wind += pf.wind;
-      if (std::getenv("BF_RT_ALPHA_DEBUG")) {
+      static const bool alpha_debug = std::getenv("BF_RT_ALPHA_DEBUG") != nullptr;  // (read once: per draw)
+      if (alpha_debug) {
         ++skipped_alpha_pairs[fmt::format("{:016X} {:016X} why{} wind{}", vertex_shader.ucode_data_hash(),
                                           pixel_shader.ucode_data_hash(),
                                           !alpha->ok ? 1 : alpha->fetch_constant != pf.fetch_constant ? 2 : 3,

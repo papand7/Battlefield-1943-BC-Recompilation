@@ -19,6 +19,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cstring>
 #include <mutex>
 #include <condition_variable>
 #include <algorithm>
@@ -341,17 +342,27 @@ bool g_wptr_direct = false;
 void RegisterMirrorThread() {
   SetThreadDescription(GetCurrentThread(), L"gpu register mirror");
   static uint32_t shadow[0x8000];
+  // The raw bytes of each block as last scanned: a block whose bytes are
+  // unchanged holds no changed register (Ld32 is a byte swap of them), so it is
+  // skipped with one memcmp instead of 1024 byte-swapped loads and compares.
+  constexpr uint32_t kBlockDwords = 1024;
+  static uint8_t raw_shadow[0x8000 * 4];
   for (;;) {
-    for (uint32_t i = 0; i < 0x8000; ++i) {
-      uint32_t v = Ld32(kGpuRegs + i * 4);
-      if (v != shadow[i]) {
-        shadow[i] = v;
-        if (i == CP_RB_WPTR) {
-          std::lock_guard<std::mutex> lock(g_wptr_lock);
-          if (!g_wptr_direct) xgpu::WriteRegister(i, Ld32(kGpuRegs + i * 4));
-          continue;
+    for (uint32_t block = 0; block < 0x8000; block += kBlockDwords) {
+      const uint8_t* raw = G<uint8_t>(kGpuRegs + block * 4);
+      if (std::memcmp(raw, raw_shadow + block * 4, kBlockDwords * 4) == 0) continue;
+      std::memcpy(raw_shadow + block * 4, raw, kBlockDwords * 4);
+      for (uint32_t i = block; i < block + kBlockDwords; ++i) {
+        uint32_t v = Ld32(kGpuRegs + i * 4);
+        if (v != shadow[i]) {
+          shadow[i] = v;
+          if (i == CP_RB_WPTR) {
+            std::lock_guard<std::mutex> lock(g_wptr_lock);
+            if (!g_wptr_direct) xgpu::WriteRegister(i, Ld32(kGpuRegs + i * 4));
+            continue;
+          }
+          xgpu::WriteRegister(i, v);
         }
-        xgpu::WriteRegister(i, v);
       }
     }
     // (A millisecond, as Windows' sleep is anyway: on Linux, where a 100 us

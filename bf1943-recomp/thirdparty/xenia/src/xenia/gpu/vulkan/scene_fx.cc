@@ -1693,7 +1693,8 @@ void VulkanRenderTargetCache::ApplySceneFx(
     }
   }
   static int eye_logs = 0;
-  if (getenv("BF_SCENEFX_LOG") && !save_pass && (vk.frame % 120) == 0 &&
+  static const bool scenefx_log = getenv("BF_SCENEFX_LOG") != nullptr;  // (read once, not per frame)
+  if (scenefx_log && !save_pass && (vk.frame % 120) == 0 &&
       eye_logs++ < 20) {
     XELOGI("scenefx: eye {:.2f} {:.2f} {:.2f}, sun {:.3f} {:.3f} {:.3f}, ps c7 {:.2f} {:.2f} {:.2f} (ps {:016X})",
            eye[0], eye[1], eye[2], cap.ps[1][0], cap.ps[1][1], cap.ps[1][2],

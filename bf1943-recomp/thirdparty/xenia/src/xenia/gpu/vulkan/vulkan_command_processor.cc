@@ -1689,7 +1689,8 @@ static bool BfUiWideTransform(const Shader& vs, const RegisterFile& regs, Memory
   const bool menu = bfmenu::g_ui_menu.load(std::memory_order_relaxed);
   if (span && x0 < 0.02f && x1 > 0.98f && (!menu || !textured)) return false;
   scale = s;
-  if (std::getenv("BF_WIDE_UI_LOG")) {
+  static const bool wide_ui_log = std::getenv("BF_WIDE_UI_LOG") != nullptr;  // (read once: per draw)
+  if (wide_ui_log) {
     static std::set<uint64_t> logged;
     if (logged.size() < 60 && logged.insert(vs.ucode_data_hash() ^ (uint64_t(menu) << 60)).second)
       fprintf(stderr, "[ui-wide] vs %016llX kind %d menu %d span %d x %.2f-%.2f y %.2f-%.2f tex %d\n",
