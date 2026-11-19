@@ -215,6 +215,12 @@ const kToolNames = {
 
 // ---- running things -------------------------------------------------------------------
 // sink(line), if given, gets every line (the build's full log), onLine the ones shown.
+// winget: already installed and no newer version (exit 0x8A15002B): not a failure.
+function wingetInstall(args, log) {
+  return run('winget', ['install', '-e', '--accept-package-agreements', '--accept-source-agreements', ...args], {}, log)
+    .catch((e) => { if (String(e.message).includes('exit 2316632107')) return; throw e; });
+}
+
 function run(cmd, args, opts, onLine, sink) {
   return new Promise((resolve, reject) => {
     const p = spawn(cmd, args, { windowsHide: true, ...opts });
@@ -278,7 +284,7 @@ async function setup(launcherDir, game, gamePath, send) {
         // An Xbox 360 package (BF1943) or disc image (Bad Company): unpack it (needs Python).
         if (!tools.python) {
           log('Installing Python to unpack the game…');
-          await run('winget', ['install', '-e', '--accept-package-agreements', '--accept-source-agreements', ...kWinget.python], {}, log);
+          await wingetInstall(kWinget.python, log);
           tools = findTools();
         }
         log(`Unpacking ${gamePath}`);
@@ -298,7 +304,7 @@ async function setup(launcherDir, game, gamePath, send) {
     for (const k of Object.keys(kToolNames)) {
       if (tools[k]) continue;
       log(`Installing ${kToolNames[k]}… (Windows may ask for permission)`);
-      await run('winget', ['install', '-e', '--accept-package-agreements', '--accept-source-agreements', ...kWinget[k]], {}, log)
+      await wingetInstall(kWinget[k], log)
         .catch((e) => { throw new Error(`Could not install ${kToolNames[k]}: ${e.message}`); });
       tools = findTools();
     }
