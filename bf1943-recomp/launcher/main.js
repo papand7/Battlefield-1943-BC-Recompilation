@@ -192,7 +192,7 @@ let win;
 function createWindow() {
   win = new BrowserWindow({
     width: 1100, height: 720, resizable: false, maximizable: false, frame: false,
-    backgroundColor: '#0E1013', show: false, title: 'Battlefield 1943 / Bad Company',
+    backgroundColor: '#D6C9A6',  // (the paper: styles.css) show: false, title: 'Battlefield 1943 / Bad Company',
     icon: path.join(__dirname, process.platform === 'win32' ? 'icon.ico' : 'icon.png'),  // (the taskbar's; make_icon.py)
     webPreferences: { preload: path.join(__dirname, 'preload.js'), contextIsolation: true, sandbox: true },
   });

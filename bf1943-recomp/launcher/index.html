@@ -6,13 +6,14 @@
   <title>Battlefield 1943</title>
   <link rel="stylesheet" href="styles.css">
 </head>
-<body>
-  <!-- Laid out as the NightFire launcher: title bar with the game tabs, a
-       side menu, pages (home: the game, its setup and PLAY; settings). -->
+<body data-game="bf1943">
+  <!-- The game's own PC menus ("field orders", runtime/pc_menu.cpp): an olive
+       canvas band with the menu, orders typed on paper, rubber stamps. Title
+       bar with the game tabs, a side menu, pages (home: the game, its setup
+       and PLAY; server; settings). Mouse, keyboard and controller: nav.js. -->
   <header id="titlebar">
     <div class="brand">
-      <span class="brand-mark">BF</span>
-      <span class="brand-name">BATTLEFIELD</span><span class="brand-sub">LAUNCHER</span>
+      <span class="brand-name">BATTLEFIELD</span><span class="brand-sub">FIELD LAUNCHER</span>
     </div>
     <nav class="gametabs" aria-label="Game">
       <button class="game on" id="tab-bf1943" data-game="bf1943">Battlefield 1943</button>
@@ -20,8 +21,8 @@
     </nav>
     <div class="drag"></div>
     <div class="winbtns">
-      <button id="min" title="Minimise" aria-label="Minimise"><svg viewBox="0 0 10 10"><path d="M1 5h8"/></svg></button>
-      <button id="close" class="close" title="Close" aria-label="Close"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></button>
+      <button id="min" title="Minimise" aria-label="Minimise" tabindex="-1"><svg viewBox="0 0 10 10"><path d="M1 5h8"/></svg></button>
+      <button id="close" class="close" title="Close" aria-label="Close" tabindex="-1"><svg viewBox="0 0 10 10"><path d="M1.5 1.5l7 7M8.5 1.5l-7 7"/></svg></button>
     </div>
   </header>
 
@@ -32,7 +33,12 @@
       <button data-page="settings"><svg viewBox="0 0 24 24"><path d="M4 6h10M18 6h2M4 12h4M12 12h8M4 18h12"/><circle cx="16" cy="6" r="2"/><circle cx="10" cy="12" r="2"/><circle cx="18" cy="18" r="2"/></svg><span>Settings</span></button>
       <div class="nav-foot">
         <button id="updatebtn" class="btn ghost small" hidden>UPDATE</button>
-        <div class="classified">// FIELD ORDERS</div>
+        <!-- The prompts: the keys, or the pad's buttons once a pad is used (nav.js) -->
+        <div class="prompts" aria-hidden="true">
+          <div><kbd data-key="ENTER" data-pad="A"></kbd>SELECT</div>
+          <div><kbd data-key="ESC" data-pad="B"></kbd>BACK</div>
+          <div><kbd data-key="Q E" data-pad="LB RB"></kbd>PAGE</div>
+        </div>
       </div>
     </nav>
 
@@ -40,10 +46,19 @@
       <!-- HOME: the game, its setup, PLAY -->
       <section id="page-home" class="page active">
         <div class="hero">
-          <div class="rings"></div>
           <div class="hero-text">
             <div class="hero-kicker">BATTLEFIELD</div>
-            <h1 id="year">1943</h1>
+            <h1 id="year" class="type">1943</h1>
+            <div class="hero-sub"><span class="only-bf1943">PACIFIC THEATRE &ndash; FIELD ORDERS</span><span class="only-bfbc1">B COMPANY &ndash; FIELD ORDERS</span></div>
+          </div>
+          <div class="memo">
+            <div class="memo-title"><span class="only-bf1943">OPERATION ORDER No. 43</span><span class="only-bfbc1">OPERATION ORDER No. 222</span></div>
+            <dl>
+              <dt>FROM:</dt><dd><span class="only-bf1943">PACIFIC COMMAND</span><span class="only-bfbc1">B COMPANY HQ</span></dd>
+              <dt>TO:</dt><dd><span class="only-bf1943">ALL UNITS</span><span class="only-bfbc1">PVT. P. MARLOWE</span></dd>
+              <dt>RE:</dt><dd>DEPLOYMENT</dd>
+            </dl>
+            <div class="stamp" aria-hidden="true" data-bf1943="TOP SECRET" data-bfbc1="CLASSIFIED"></div>
           </div>
         </div>
 
@@ -90,7 +105,7 @@
       <section id="page-server" class="page">
         <div class="page-head">
           <div>
-            <h2>Server</h2>
+            <h2 class="type">Server</h2>
             <div class="muted" id="srvgame">Battlefield 1943 · dedicated server</div>
           </div>
           <div class="srv-badge" id="srvbadge">STOPPED</div>
@@ -188,7 +203,13 @@
 
       <!-- SETTINGS: graphics and the launcher -->
       <section id="page-settings" class="page">
-        <div class="page-head"><h2>Settings</h2></div>
+        <div class="page-head">
+          <div>
+            <h2 class="type">Settings</h2>
+            <div class="motto">Tune your rig, soldier.</div>
+          </div>
+          <div class="stamp" aria-hidden="true" data-bf1943="CONFIDENTIAL" data-bfbc1="CONFIDENTIAL"></div>
+        </div>
         <div class="card" id="graphicscard">
           <div class="card-head"><span class="num">01</span> Graphics</div>
           <div class="card-body">
@@ -209,7 +230,8 @@
             <div class="toggle-row">
               <div><div class="label">Automatic updates</div><div class="muted">Installs a new release from GitHub when the launcher starts</div></div>
               <input type="checkbox" class="switch" id="autoupdate">
-            </div>            <div class="toggle-row">
+            </div>
+            <div class="toggle-row">
               <div><div class="label">Update from GitHub</div><div id="updatehint" class="muted">Checks the releases page for a newer version.</div></div>
               <button id="checkupdate" class="btn ghost small">CHECK NOW</button>
             </div>
@@ -245,5 +267,6 @@
   </div>
 
   <script src="renderer.js"></script>
+  <script src="nav.js"></script>
 </body>
 </html>
