@@ -115,8 +115,14 @@ const uint kMaterialDepthOffset = kMaterialPitch * kMaterialRows;
 const uint kMaterialCameraOffset = kMaterialDepthOffset * 2u;
 #endif
 layout(push_constant) uniform Push {
-  uint pass_mode;
+  uint pass_push;
 };
+// One pipeline per pass (scene_fx.cc): the pass as a specialization constant,
+// so the driver drops the other passes' code and each gets the registers it
+// needs (one pipeline for all ran every pass with the main pass's register
+// count, a fraction of the GPU's threads at a time). ~0u: the push constant.
+layout(constant_id = 0) const uint kPassSpec = 0xFFFFFFFFu;
+#define pass_mode (kPassSpec != 0xFFFFFFFFu ? kPassSpec : pass_push)
 layout(set = 0, binding = 3, std140) uniform Params {
   // NDC (x, y, depth) -> world minus the camera: camera-relative, so float
   // precision is not lost to world coordinates hundreds of metres out (that

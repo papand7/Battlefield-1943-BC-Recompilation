@@ -321,13 +321,15 @@ static_assert(sizeof(Params) <= 4096);
 constexpr uint32_t kSlots = 8;
 constexpr VkDeviceSize kSlotSize = 4096;
 constexpr VkDeviceSize kHorizonSize = (66 + 128) * 16;
+constexpr uint32_t kPasses = 12;  // scene_fx.cs.glsl passes 0-11
 struct Pipeline {
   bool tried = false, ok = false, pipeline_ok = false;
   bool rt = false;  // the ray query variant, with the TLAS in binding 6
   uint32_t rt_instances = 0;
   VkDescriptorSetLayout set_layout = VK_NULL_HANDLE;
   VkPipelineLayout layout = VK_NULL_HANDLE;
-  VkPipeline pipeline = VK_NULL_HANDLE;
+  VkPipeline pipeline = VK_NULL_HANDLE;  // all passes (only if one below failed)
+  VkPipeline pass_pipelines[kPasses] = {};  // by pass (scene_fx.cs.glsl pass_mode)
   VkDescriptorPool pool = VK_NULL_HANDLE;
   VkDescriptorSet sets[kSlots] = {};
   VkBuffer uniforms = VK_NULL_HANDLE;
@@ -554,14 +556,42 @@ bool CreatePipeline(const ui::vulkan::VulkanDevice* device) {
   if (dfn.vkCreatePipelineLayout(d, &layout_info, nullptr, &vk.layout) !=
       VK_SUCCESS)
     return false;
-  vk.pipeline =
-      vk.rt ? ui::vulkan::util::CreateComputePipeline(
-                  device, vk.layout, shaders::scene_fx_rt_cs,
-                  sizeof(shaders::scene_fx_rt_cs))
-            : ui::vulkan::util::CreateComputePipeline(
-                  device, vk.layout, shaders::scene_fx_cs,
-                  sizeof(shaders::scene_fx_cs));
-  if (vk.pipeline == VK_NULL_HANDLE) return false;
+  // One pipeline per pass (the pass a specialization constant: each compiled
+  // with only its own code and registers), built side by side; the generic
+  // one (the pass from the push constant) only if one of them fails.
+  {
+    const uint32_t* code = vk.rt ? shaders::scene_fx_rt_cs : shaders::scene_fx_cs;
+    const size_t code_size = vk.rt ? sizeof(shaders::scene_fx_rt_cs) : sizeof(shaders::scene_fx_cs);
+    VkShaderModule module = ui::vulkan::util::CreateShaderModule(device, code, code_size);
+    if (module == VK_NULL_HANDLE) return false;
+    static const VkSpecializationMapEntry kEntry = {0, 0, sizeof(uint32_t)};
+    uint32_t pass_ids[kPasses];
+    VkSpecializationInfo spec[kPasses];
+    std::thread builders[kPasses];
+    // BF_FX_ONE_PIPELINE: the old single pipeline (comparisons).
+    static const bool one = std::getenv("BF_FX_ONE_PIPELINE") != nullptr;
+    for (uint32_t i = 0; i < kPasses && !one; ++i) {
+      pass_ids[i] = i;
+      spec[i] = {1, &kEntry, sizeof(uint32_t), &pass_ids[i]};
+      if (i == 4 && !vk.rt) continue;  // the traced light: the ray query variant only
+      builders[i] = std::thread([&, i] {
+        vk.pass_pipelines[i] =
+            ui::vulkan::util::CreateComputePipeline(device, vk.layout, module, &spec[i]);
+      });
+    }
+    bool all = true;
+    for (uint32_t i = 0; i < kPasses; ++i) {
+      if (builders[i].joinable()) builders[i].join();
+      if (vk.pass_pipelines[i] == VK_NULL_HANDLE && (i != 4 || vk.rt)) all = false;
+    }
+    if (!all) {
+      if (!one) XELOGW("scenefx: a pass's own pipeline failed; one pipeline for all");
+      vk.pipeline = ui::vulkan::util::CreateComputePipeline(device, vk.layout, module);
+      for (VkPipeline& p : vk.pass_pipelines) p = vk.pipeline;
+    }
+    dfn.vkDestroyShaderModule(d, module, nullptr);
+    if (vk.pass_pipelines[0] == VK_NULL_HANDLE) return false;
+  }
 
   VkDescriptorPoolSize sizes[kBindings];
   for (uint32_t i = 0; i < binding_count; ++i) sizes[i] = {types[list[i]], kSlots};
@@ -1525,10 +1555,12 @@ void VulkanRenderTargetCache::ApplySceneFx(
   if (save_pass) stamp(1);
   if (!save_pass) stamp(2);
 
-  command_processor_.BindExternalComputePipeline(vk.pipeline);
+  command_processor_.BindExternalComputePipeline(vk.pass_pipelines[save_pass ? 0 : 3]);
   cb.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, vk.layout, 0, 1,
                              &vk.sets[slot], 0, nullptr);
   auto dispatch = [&](uint32_t pass, uint32_t groups_x, uint32_t groups_y) {
+    // (The pipelines share the layout: the descriptor set stays bound.)
+    command_processor_.BindExternalComputePipeline(vk.pass_pipelines[pass]);
     cb.CmdVkPushConstants(vk.layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
                           sizeof(pass), &pass);
     cb.CmdVkDispatch(groups_x, groups_y, 1);
