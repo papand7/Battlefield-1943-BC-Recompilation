@@ -43,6 +43,8 @@ Left the original game as it was on the Xbox 360 (`Stock`), right the **Enhanced
 
 <img width="960" alt="The looks: Enhanced, Vivid, Toon, Noir and WW2" src="docs/images/bf1943_looks.gif" />
 
+> **Low settings are the default now:** stock look, 1x render scale, no upscaling, unlimited frame rate, low shadows. A winget message about an already-installed tool no longer stops the setup.
+
 ## Features
 ### Display
 - **Resolution** - Up to 4K, with a resolution scale of 1x, 2x or 3x.
