@@ -40,6 +40,12 @@ class DrawExtentEstimator {
                         const Shader& vertex_shader,
                         bool window_offset_in_edram);
 
+  // bf: for a single axis-aligned rectangle (a kRectangleList draw of 3
+  // vertices, as Direct3D 9 draws its clears), its bounds in host pixel
+  // coordinates (the guest's after the viewport and the pixel center offset):
+  // x0, y0, x1, y1. False if it isn't one or the vertices can't be worked out.
+  bool EstimateRectangle(const Shader& vertex_shader, float bounds_out[4]);
+
  private:
   class PositionYExportSink : public ShaderInterpreter::ExportSink {
    public:
@@ -63,6 +69,19 @@ class DrawExtentEstimator {
     std::optional<float> position_w_;
     std::optional<float> point_size_;
     std::optional<uint32_t> vertex_kill_;
+  };
+
+  class PositionExportSink : public ShaderInterpreter::ExportSink {
+   public:
+    void Export(ucode::ExportRegister export_register, const float* value,
+                uint32_t value_mask) override;
+    void Reset() {
+      position_mask = 0;
+      kill = false;
+    }
+    float position[4] = {};
+    uint32_t position_mask = 0;
+    bool kill = false;
   };
 
   const RegisterFile& register_file_;

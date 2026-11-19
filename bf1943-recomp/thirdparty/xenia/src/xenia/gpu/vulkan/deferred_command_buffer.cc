@@ -30,6 +30,8 @@ DeferredCommandBuffer::DeferredCommandBuffer(
 void DeferredCommandBuffer::Reset() {
   command_stream_.clear();
   callbacks_.clear();
+  bf_zones.count = 0;
+  bf_zones.stamped = -1;
 }
 
 void DeferredCommandBuffer::Execute(VkCommandBuffer command_buffer) {
@@ -541,6 +543,14 @@ void DeferredCommandBuffer::CmdVkPipelineBarrier(
 
 void* DeferredCommandBuffer::WriteCommand(Command command,
                                           size_t arguments_size_bytes) {
+  if (bf_zones.pool && bf_zones.zone != bf_zones.stamped &&
+      bf_zones.count + 1 < kBfZoneMax) {
+    bf_zones.stamped = bf_zones.zone;
+    bf_zones.cats[bf_zones.count] = bf_zones.zone;
+    CmdVkWriteTimestamp(VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, bf_zones.pool,
+                        bf_zones.base + bf_zones.count);
+    ++bf_zones.count;
+  }
   size_t arguments_size_elements =
       (arguments_size_bytes + sizeof(uintmax_t) - 1) / sizeof(uintmax_t);
   size_t offset = command_stream_.size();

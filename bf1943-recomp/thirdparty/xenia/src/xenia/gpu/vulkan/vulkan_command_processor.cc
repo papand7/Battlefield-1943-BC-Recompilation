@@ -15,6 +15,7 @@
 #include "xenia/ui/vulkan/bf_hdr.h"
 
 #include <chrono>
+#include <deque>
 #include <map>
 #include <cstdlib>
 #include <mutex>
@@ -63,6 +64,10 @@ DEFINE_bool(vulkan_depth_bias_force_unorm, true,
 namespace xe {
 namespace gpu {
 namespace vulkan {
+
+// bf: BF_FRAME_TRACE=<n> (testing): the n-th guest frame's draws, render
+// target transfers and resolves, in order, in the log.
+bool bf_frame_trace = false;
 
 // Generated with `xb buildshaders`.
 namespace shaders {
@@ -1760,6 +1765,20 @@ void VulkanCommandProcessor::IssueSwap(uint32_t frontbuffer_ptr,
                                        uint32_t frontbuffer_width,
                                        uint32_t frontbuffer_height) {
   SCOPE_profile_cpu_f("gpu");
+  deferred_command_buffer_.BfZone(6);
+  {
+    static const int trace_at = [] {
+      const char* e = std::getenv("BF_FRAME_TRACE");
+      return e ? std::atoi(e) : -1;
+    }();
+    static int swaps = 0;
+    if (trace_at >= 0) {
+      ++swaps;
+      if (bf_frame_trace) XELOGI("bf trace: swap (end of frame {})", swaps - 1);
+      bf_frame_trace = swaps == trace_at;
+      if (bf_frame_trace) XELOGI("bf trace: frame {} begins", swaps);
+    }
+  }
   EndZPDFrame();
   bfmenu::EndFrame();
 
@@ -3251,6 +3270,8 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       regs, normalized_depth_control, normalized_color_mask, frame_current_);
 
   // Set up the render targets - this may perform dispatches and draws.
+  deferred_command_buffer_.BfZone(1);
+  render_target_cache_->SetBfPixelShader(pixel_shader);
   if (!render_target_cache_->Update(
           is_rasterization_done, normalized_depth_control,
           normalized_color_mask, *vertex_shader, window_offset_tiles)) {
@@ -3301,11 +3322,33 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
       (pixel_shader != nullptr
            ? pixel_shader->GetUsedTextureMaskAfterTranslation()
            : 0);
+  if (bf_frame_trace) {
+    static uint32_t draw_no = 0;
+    std::string rts;
+    for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+      std::string n = render_target_cache_->LastUpdateTargetName(i);
+      if (!n.empty()) rts += fmt::format(" [{}{}]", i ? "c" : "z", n);
+    }
+    XELOGI(
+        "bf trace: draw {} prim {} count {} vs {:016X} ps {:016X} depthctl {:08X} "
+        "colormask {:08X} stencil {:08X} blend0 {:08X} scissor {:08X}-{:08X} "
+        "surf {:08X} tex {:08X}{}",
+        draw_no++, uint32_t(prim_type), index_count, vertex_shader->ucode_data_hash(),
+        pixel_shader ? pixel_shader->ucode_data_hash() : 0,
+        regs[XE_GPU_REG_RB_DEPTHCONTROL], regs[XE_GPU_REG_RB_COLOR_MASK],
+        regs[XE_GPU_REG_RB_STENCILREFMASK], regs[XE_GPU_REG_RB_BLENDCONTROL0],
+        regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_TL],
+        regs[XE_GPU_REG_PA_SC_WINDOW_SCISSOR_BR], regs[XE_GPU_REG_RB_SURFACE_INFO],
+        used_texture_mask, rts);
+  }
+  deferred_command_buffer_.BfZone(2);
   texture_cache_->RequestTextures(used_texture_mask);
+  deferred_command_buffer_.BfZone(7);
   scenefx::CaptureDraw(
       vertex_shader, pixel_shader, regs,
       render_target_cache_->LastUpdateTarget(0),
       render_target_cache_->LastUpdateTarget(1), *memory_);
+  deferred_command_buffer_.BfZone(3);
   // bf1943 ultrawide (bf_menu.h g_wide): this 2D UI draw's x transform.
   float bf_ui_scale = 1.0f, bf_ui_offset = 0.0f;
   const bool bf_ui_wide = BfUiWideTransform(
@@ -3731,6 +3774,7 @@ bool VulkanCommandProcessor::IssueDraw(xenos::PrimitiveType prim_type,
   // drawing.
   uint32_t zpd_hybrid_index_before_render_pass =
       active_segment_.hybrid ? active_query_index_ : UINT32_MAX;
+  deferred_command_buffer_.BfZone(4);
   SubmitBarriersAndEnterRenderTargetCacheRenderPass(
       render_target_cache_->last_update_render_pass(),
       render_target_cache_->last_update_framebuffer());
@@ -3887,6 +3931,17 @@ bool VulkanCommandProcessor::IssueCopy() {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
 #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+  deferred_command_buffer_.BfZone(5);
+  if (bf_frame_trace) {
+    const RegisterFile& tr = *register_file_;
+    XELOGI(
+        "bf trace: resolve copyctl {:08X} dest {:08X} info {:08X} pitch {:08X} "
+        "surf {:08X} color {:08X} depth {:08X} modectl {:08X}",
+        tr[XE_GPU_REG_RB_COPY_CONTROL], tr[XE_GPU_REG_RB_COPY_DEST_BASE],
+        tr[XE_GPU_REG_RB_COPY_DEST_INFO], tr[XE_GPU_REG_RB_COPY_DEST_PITCH],
+        tr[XE_GPU_REG_RB_SURFACE_INFO], tr[XE_GPU_REG_RB_COLOR_INFO],
+        tr[XE_GPU_REG_RB_DEPTH_INFO], tr[XE_GPU_REG_RB_MODECONTROL]);
+  }
 
   if (!BeginSubmission(true)) {
     return false;
@@ -5057,6 +5112,38 @@ void VulkanCommandProcessor::CheckSubmissionCompletionAndDeviceLoss(
   }
 }
 
+// bf: BF_GPU_TIMING=1 (testing): every submission's GPU time from a
+// timestamp at its command buffer's start and end and one before each change
+// of zone (render target transfers, texture loads, draws, resolves...: see
+// the BfZone calls), read back once done (without waiting); logged every 5 s
+// per guest frame, with the submissions a frame and the CPU time this thread
+// spends turning the deferred commands into the real command buffer.
+namespace {
+struct BfGpuTiming {
+  static constexpr uint32_t kSlots = 16;
+  static constexpr uint32_t kZones = 8;
+  static constexpr uint32_t kSlotQueries = DeferredCommandBuffer::kBfZoneMax + 2;
+  bool on = std::getenv("BF_GPU_TIMING") != nullptr;
+  bool tried = false;
+  VkQueryPool pool = VK_NULL_HANDLE;
+  double tick_ms = 1e-6;
+  struct Slot {
+    bool pending = false;
+    uint64_t submission = 0;
+    uint32_t count = 0;  // zone stamps, between the start and the end one
+    uint8_t cats[DeferredCommandBuffer::kBfZoneMax];
+  } slots[kSlots];
+  std::deque<uint32_t> order;  // pending slots, oldest first
+  double gpu_ms = 0, record_ms = 0, zone_ms[kZones] = {};
+  uint64_t zone_stamps = 0;
+  uint64_t frames = 0, submissions = 0;
+  std::chrono::steady_clock::time_point at = std::chrono::steady_clock::now();
+} bf_gpu_timing;
+const char* const kBfZoneNames[BfGpuTiming::kZones] = {
+    "other", "rt-transfers", "texture-loads", "draw-setup",
+    "draws", "resolves",     "swap",          "bf-effects"};
+}  // namespace
+
 bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
 #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
   SCOPE_profile_cpu_f("gpu");
@@ -5129,6 +5216,16 @@ bool VulkanCommandProcessor::BeginSubmission(bool is_guest_command) {
     // the end of the submission (when async pipeline object creation requests
     // are fulfilled).
     deferred_command_buffer_.Reset();
+    deferred_command_buffer_.bf_zones.pool = VK_NULL_HANDLE;
+    if (bf_gpu_timing.on && bf_gpu_timing.pool) {
+      const uint32_t slot =
+          uint32_t(GetCurrentSubmission() % BfGpuTiming::kSlots);
+      if (!bf_gpu_timing.slots[slot].pending) {
+        deferred_command_buffer_.bf_zones.pool = bf_gpu_timing.pool;
+        deferred_command_buffer_.bf_zones.base =
+            slot * BfGpuTiming::kSlotQueries + 1;
+      }
+    }
 
     // Reset cached state of the command buffer.
     dynamic_viewport_update_needed_ = true;
@@ -5409,7 +5506,42 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
       XELOGE("Failed to begin a Vulkan command buffer");
       return false;
     }
+    BfGpuTiming& bft = bf_gpu_timing;
+    const auto bft_record_start = std::chrono::steady_clock::now();
+    uint32_t bft_slot = UINT32_MAX;
+    if (bft.on) {
+      if (!bft.tried) {
+        bft.tried = true;
+        VkQueryPoolCreateInfo qi = {VK_STRUCTURE_TYPE_QUERY_POOL_CREATE_INFO};
+        qi.queryType = VK_QUERY_TYPE_TIMESTAMP;
+        qi.queryCount = BfGpuTiming::kSlots * BfGpuTiming::kSlotQueries;
+        if (dfn.vkCreateQueryPool(device, &qi, nullptr, &bft.pool) != VK_SUCCESS)
+          bft.pool = VK_NULL_HANDLE;
+        VkPhysicalDeviceProperties pp = {};
+        vulkan_device->vulkan_instance()->functions().vkGetPhysicalDeviceProperties(
+            vulkan_device->physical_device(), &pp);
+        bft.tick_ms = double(pp.limits.timestampPeriod) * 1e-6;
+      }
+      const auto& z = deferred_command_buffer_.bf_zones;
+      if (z.pool) {
+        bft_slot = (z.base - 1) / BfGpuTiming::kSlotQueries;
+        BfGpuTiming::Slot& sl = bft.slots[bft_slot];
+        sl.count = z.count;
+        std::memcpy(sl.cats, z.cats, z.count);
+        dfn.vkCmdResetQueryPool(command_buffer.buffer, bft.pool, z.base - 1,
+                                z.count + 2);
+        dfn.vkCmdWriteTimestamp(command_buffer.buffer,
+                                VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, bft.pool,
+                                z.base - 1);
+      }
+    }
     deferred_command_buffer_.Execute(command_buffer.buffer);
+    if (bft_slot != UINT32_MAX) {
+      dfn.vkCmdWriteTimestamp(
+          command_buffer.buffer, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT, bft.pool,
+          deferred_command_buffer_.bf_zones.base +
+              deferred_command_buffer_.bf_zones.count);
+    }
 
     // Record query resolves before submitting.
     if (host_query_pool_) {
@@ -5455,9 +5587,69 @@ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
 
     submission_open_ = false;
 
+    if (bft.on) {
+      if (bft_slot != UINT32_MAX) {
+        bft.slots[bft_slot].pending = true;
+        bft.slots[bft_slot].submission = submission_index;
+        bft.order.push_back(bft_slot);
+      }
+      ++bft.submissions;
+      bft.record_ms += std::chrono::duration<double, std::milli>(
+                           std::chrono::steady_clock::now() - bft_record_start)
+                           .count();
+      const uint64_t done = GetCompletedSubmission();
+      while (!bft.order.empty() &&
+             bft.slots[bft.order.front()].submission <= done) {
+        const uint32_t slot = bft.order.front();
+        BfGpuTiming::Slot& sl = bft.slots[slot];
+        static uint64_t t[BfGpuTiming::kSlotQueries];
+        if (dfn.vkGetQueryPoolResults(
+                device, bft.pool, slot * BfGpuTiming::kSlotQueries,
+                sl.count + 2, sizeof(uint64_t) * (sl.count + 2), t,
+                sizeof(uint64_t), VK_QUERY_RESULT_64_BIT) == VK_SUCCESS &&
+            t[sl.count + 1] >= t[0]) {
+          bft.gpu_ms += double(t[sl.count + 1] - t[0]) * bft.tick_ms;
+          bft.zone_stamps += sl.count;
+          for (uint32_t i = 0; i < sl.count; ++i) {
+            if (t[i + 2] >= t[i + 1]) {
+              bft.zone_ms[sl.cats[i] % BfGpuTiming::kZones] +=
+                  double(t[i + 2] - t[i + 1]) * bft.tick_ms;
+            }
+          }
+        }
+        sl.pending = false;
+        bft.order.pop_front();
+      }
+    }
+
     // Process any query resolves that completed with this submission.
     PumpQueryResolves();
     PumpPendingRetire();
+  }
+
+  if (is_closing_frame && bf_gpu_timing.on) {
+    BfGpuTiming& bft = bf_gpu_timing;
+    ++bft.frames;
+    const auto now = std::chrono::steady_clock::now();
+    const double secs = std::chrono::duration<double>(now - bft.at).count();
+    if (secs >= 5.0 && bft.frames) {
+      std::string zones;
+      for (uint32_t i = 0; i < BfGpuTiming::kZones; ++i) {
+        zones += fmt::format(" {} {:.2f}", kBfZoneNames[i],
+                             bft.zone_ms[i] / bft.frames);
+        bft.zone_ms[i] = 0;
+      }
+      XELOGI(
+          "bf gpu timing: {:.1f} fps, GPU {:.2f} ms a frame (emulation "
+          "submissions; {:.0f} zone stamps a frame:{}), {:.1f} submissions a "
+          "frame, recording+submitting {:.2f} ms a frame (CPU)",
+          bft.frames / secs, bft.gpu_ms / bft.frames,
+          double(bft.zone_stamps) / bft.frames, zones,
+          double(bft.submissions) / bft.frames, bft.record_ms / bft.frames);
+      bft.gpu_ms = bft.record_ms = 0;
+      bft.frames = bft.submissions = bft.zone_stamps = 0;
+      bft.at = now;
+    }
   }
 
   if (is_closing_frame) {

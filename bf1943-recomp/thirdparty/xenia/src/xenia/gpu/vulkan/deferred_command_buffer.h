@@ -34,6 +34,19 @@ class DeferredCommandBuffer {
   void Reset();
   void Execute(VkCommandBuffer command_buffer);
 
+  // bf: BF_GPU_TIMING zones (vulkan_command_processor.cc): with a pool set, a
+  // timestamp goes in before the first command of each new zone (what the
+  // GPU is doing: render target transfers, texture loads, draws, resolves...).
+  static constexpr uint32_t kBfZoneMax = 16384;
+  struct BfZones {
+    VkQueryPool pool = VK_NULL_HANDLE;
+    uint32_t base = 0, count = 0;
+    uint8_t zone = 0;
+    int stamped = -1;
+    uint8_t cats[kBfZoneMax];
+  } bf_zones;
+  void BfZone(uint8_t zone) { bf_zones.zone = zone; }
+
   // bf1943: anything else (acceleration structure builds), recorded straight
   // into the real command buffer in order with the other commands.
   void CmdCallback(std::function<void(VkCommandBuffer)> callback) {

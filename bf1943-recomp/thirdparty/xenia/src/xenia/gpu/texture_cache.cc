@@ -9,6 +9,13 @@
 
 #include "xenia/gpu/texture_cache.h"
 
+#include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <map>
+#include <string>
+#include <vector>
+
 #include "xenia/base/clock.h"
 #include "xenia/base/cvar.h"
 #include "xenia/base/logging.h"
@@ -978,6 +985,37 @@ bool TextureCache::LoadTextureData(Texture& texture) {
   }
 
   texture.LogAction("Loaded");
+
+  // bf: BF_TEX_LOG=1 (testing): the textures loaded (or reloaded), summed by
+  // texture, logged every 5 s.
+  static const bool tex_log = std::getenv("BF_TEX_LOG") != nullptr;
+  if (tex_log) {
+    static std::map<std::string, std::pair<uint64_t, uint64_t>> loads;
+    static auto at = std::chrono::steady_clock::now();
+    auto& e = loads[fmt::format(
+        "fmt {} {}x{}x{} @{:08X}{}{}", uint32_t(texture_key.format),
+        texture_key.GetWidth(), texture_key.GetHeight(),
+        texture_key.GetDepthOrArraySize(), texture_key.base_page << 12,
+        texture_key.scaled_resolve ? " scaled-resolve" : "",
+        texture_key.tiled ? " tiled" : "")];
+    ++e.first;
+    e.second += (base_outdated ? texture.GetGuestBaseSize() : 0) +
+                (mips_outdated ? texture.GetGuestMipsSize() : 0);
+    auto now = std::chrono::steady_clock::now();
+    if (now - at > std::chrono::seconds(5)) {
+      at = now;
+      std::vector<std::pair<uint64_t, std::string>> v;
+      uint64_t n = 0, bytes = 0;
+      for (auto& [k, c] : loads) {
+        n += c.first, bytes += c.second;
+        v.push_back({c.second, fmt::format("{} x{} {} KB", k, c.first, c.second >> 10)});
+      }
+      std::sort(v.rbegin(), v.rend());
+      XELOGI("bf tex: {} loads, {} MB, {} textures in 5 s", n, bytes >> 20, v.size());
+      for (size_t k = 0; k < v.size() && k < 16; ++k) XELOGI("bf tex:   {}", v[k].second);
+      loads.clear();
+    }
+  }
 
   return true;
 }

@@ -138,6 +138,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
   const void* LastUpdateTarget(uint32_t index) const {
     return last_update_accumulated_render_targets()[index];
   }
+  // bf (BF_FRAME_TRACE): what that render target is.
+  std::string LastUpdateTargetName(uint32_t index) const {
+    const RenderTarget* rt = last_update_accumulated_render_targets()[index];
+    return rt ? rt->key().GetDebugName() : std::string();
+  }
 
   bool Update(bool is_rasterization_done,
               reg::RB_DEPTHCONTROL normalized_depth_control,

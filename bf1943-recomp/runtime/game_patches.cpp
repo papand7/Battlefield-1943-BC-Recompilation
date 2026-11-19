@@ -19,6 +19,13 @@
 #include <cstring>
 #ifdef _WIN32
 #include <excpt.h>
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
 #endif
 #include "bot_players.h"
 #include "pc_settings.h"
@@ -1355,4 +1362,99 @@ void rt::ApplyShadowSettings() {
       ApplyEmitter(pass);
     }
   }).detach();
+}
+
+// The game's busy waits. On the console a waiting hardware thread spun; here
+// each one is a whole host core (and on a Steam Deck, power its GPU shares).
+// D3D waits for the GPU in sub_8216B640 (1: keep waiting), and the main thread
+// waits for its job batch in sub_823C2430, running jobs meanwhile. A wait
+// spins as before for its first 0.2 ms (a short wait keeps its latency), then
+// yields the core each round; on Linux it then sleeps 50 us a round (a
+// millisecond into the wait). A round that ran a job (over 2 ms) starts the
+// wait anew. BF_SPIN=spin|yield|sleep chooses (spin: as before).
+namespace {
+enum class SpinMode { kSpin, kYield, kSleep };
+SpinMode SpinModeFromEnv() {
+  const char* e = std::getenv("BF_SPIN");
+  if (e && !std::strcmp(e, "spin")) return SpinMode::kSpin;
+  if (e && !std::strcmp(e, "yield")) return SpinMode::kYield;
+  if (e && !std::strcmp(e, "sleep")) return SpinMode::kSleep;
+#ifdef _WIN32
+  return SpinMode::kYield;
+#else
+  return SpinMode::kSleep;
+#endif
+}
+const SpinMode g_spin_mode = SpinModeFromEnv();
+
+void ShortSleep() {
+#ifdef _WIN32
+  thread_local HANDLE timer =
+      CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+  LARGE_INTEGER due;
+  due.QuadPart = -500;  // 50 us (relative, 100 ns units)
+  if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE)) WaitForSingleObject(timer, INFINITE);
+  else std::this_thread::yield();
+#else
+  std::this_thread::sleep_for(std::chrono::microseconds(50));
+#endif
+}
+
+struct SpinWait {
+  std::chrono::steady_clock::time_point start, last;
+  void Round() {
+    if (g_spin_mode == SpinMode::kSpin) return;
+    using namespace std::chrono;
+    const auto now = steady_clock::now();
+    if (now - last > milliseconds(2)) start = now;
+    last = now;
+    const auto spun = now - start;
+    if (spun < microseconds(200)) return;
+    if (g_spin_mode == SpinMode::kSleep && spun > milliseconds(1)) ShortSleep();
+    else std::this_thread::yield();
+  }
+};
+}  // namespace
+
+PPC_EXTERN_FUNC(sub_826068F0);  // a job batch done?
+PPC_EXTERN_FUNC(sub_82605EA0);  // run a job, if there is one
+
+// D3D's wait for the GPU: one round (r3 1 = still waiting).
+GAME_PATCH(8216B640) {
+  __imp__sub_8216B640(ctx, base);
+  if (ctx.r3.u32 == 1) {
+    thread_local SpinWait wait;
+    wait.Round();
+  }
+}
+
+// The main thread's wait for a job batch (r3: its owner): while it isn't
+// done (sub_826068F0), run a job if there is one (sub_82605EA0 on the job
+// scheduler). As the recompiled function, plus the rounds' yield.
+GAME_PATCH(823C2430) {
+  const uint32_t owner = ctx.r3.u32;
+  if (!*G<uint8_t>(owner + 2396)) return;
+  if (!Ld32(owner + 3320) || (!Ld16(owner + 3324) && !Ld64(owner + 3312))) return;
+  const uint64_t r30 = ctx.r30.u64, r31 = ctx.r31.u64;
+  ctx.r1.u32 -= 112;  // (its frame, as the original: callees save into it)
+  const uint32_t batch = owner + 3248;
+  auto done = [&] {
+    ctx.r3.u64 = batch;
+    sub_826068F0(ctx, base);
+    return (ctx.r3.u32 & 0xFF) != 0;
+  };
+  if (!done() && !done()) {
+    thread_local SpinWait wait;
+    do {
+      ctx.r30.s64 = -2100625408;
+      ctx.r31.u64 = batch;
+      ctx.r4.s64 = 1;
+      ctx.r3.u64 = Ld32(uint32_t(ctx.r30.u32 - 8344));
+      sub_82605EA0(ctx, base);
+      if (done()) break;
+      wait.Round();
+    } while (true);
+  }
+  ctx.r1.u32 += 112;
+  ctx.r30.u64 = r30, ctx.r31.u64 = r31;
 }

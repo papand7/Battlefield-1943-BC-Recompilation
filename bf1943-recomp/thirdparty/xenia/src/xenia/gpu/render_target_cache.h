@@ -43,6 +43,12 @@ namespace gpu {
 
 class RenderTargetCache {
  public:
+  // bf: the pixel shader of the draw the next Update is for (null: none), for
+  // telling a clear that overwrites everything it claims (no transfers in).
+  void SetBfPixelShader(const Shader* pixel_shader) {
+    bf_pixel_shader_ = pixel_shader;
+  }
+
   // High-level emulation logic implementation path.
   enum class Path {
     // Approximate method using conventional host render targets and copying
@@ -615,6 +621,12 @@ class RenderTargetCache {
     return last_update_accumulated_render_targets_;
   }
 
+  uint32_t bf_last_update_cutout_bits() const {
+    return bf_last_update_cutout_bits_;
+  }
+  const Transfer::Rectangle& bf_last_update_cutout() const {
+    return bf_last_update_cutout_;
+  }
   const std::vector<Transfer>* last_update_transfers() const {
     assert_true(GetPath() == Path::kHostRenderTargets);
     return last_update_transfers_;
@@ -846,6 +858,20 @@ class RenderTargetCache {
   // whether it's safe to enable depth / stencil or writing to a specific color
   // render target in the pipeline for this draw call.
   // Only valid for non-pixel-shader-interlock paths.
+  const Shader* bf_pixel_shader_ = nullptr;
+  // bf: the part of the last Update's render targets (bits: 0 depth, 1...4
+  // colour) its draw overwrites, left out of their transfers.
+  uint32_t bf_last_update_cutout_bits_ = 0;
+  Transfer::Rectangle bf_last_update_cutout_ = {};
+  // bf: which of the depth (bit 0) and colour (1...4) render targets a draw
+  // writes every bit of wherever it covers (a clear), and what it covers (in
+  // guest pixels of the render target: x0, y0, x1, y1).
+  uint32_t BfWholeOverwriteBits(reg::RB_DEPTHCONTROL normalized_depth_control,
+                                uint32_t normalized_color_mask,
+                                const Shader& vertex_shader,
+                                uint32_t rts_used_bits,
+                                const bool* rts_keep_depth_bits,
+                                float cover_out[4]);
   RenderTarget*
       last_update_accumulated_render_targets_[1 +
                                               xenos::kMaxColorRenderTargets];

@@ -416,6 +416,70 @@ const bool g_profile_started = [] {
   return true;
 }();
 
+uint64_t ProfileFrameCount();  // gpu.cpp: guest frames swapped so far
+
+// BF_CPUTIME=<after>[,<seconds>] (testing): that long after the start, every
+// thread's CPU time (its cycles) over the next <seconds> (default 15): per
+// thread, milliseconds of CPU per guest frame and the share of a core, busiest
+// first. Nothing is suspended: the frame rate it reports is the real one.
+const bool g_cputime_started = [] {
+  const char* e = getenv("BF_CPUTIME");
+  if (!e) return false;
+  int after = atoi(e), span = 15;
+  if (const char* c = strchr(e, ',')) span = std::max(1, atoi(c + 1));
+  std::thread([after, span] {
+    std::this_thread::sleep_for(std::chrono::seconds(after));
+    struct T {
+      HANDLE h;
+      std::string name;
+      ULONG64 c0;
+    };
+    std::vector<T> ts;
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPTHREAD, 0);
+    THREADENTRY32 te{sizeof(te)};
+    for (BOOL ok = snap != INVALID_HANDLE_VALUE && Thread32First(snap, &te); ok; ok = Thread32Next(snap, &te)) {
+      if (te.th32OwnerProcessID != GetCurrentProcessId() || te.th32ThreadID == GetCurrentThreadId()) continue;
+      HANDLE h = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+      if (!h) continue;
+      std::string name = "tid " + std::to_string(te.th32ThreadID);
+      PWSTR desc = nullptr;
+      if (SUCCEEDED(GetThreadDescription(h, &desc)) && desc) {
+        char n[128];
+        WideCharToMultiByte(CP_UTF8, 0, desc, -1, n, sizeof(n), nullptr, nullptr);
+        if (n[0]) name = n;
+        LocalFree(desc);
+      }
+      ULONG64 c = 0;
+      QueryThreadCycleTime(h, &c);
+      ts.push_back({h, name, c});
+    }
+    if (snap != INVALID_HANDLE_VALUE) ::CloseHandle(snap);
+    const uint64_t f0 = ProfileFrameCount();
+    auto t0 = std::chrono::steady_clock::now();
+    std::this_thread::sleep_for(std::chrono::seconds(span));
+    const uint64_t f1 = ProfileFrameCount();
+    double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+    double frames = double(std::max<uint64_t>(1, f1 - f0));
+    double hz = double(HostTicksPerSecond());
+    std::vector<std::pair<double, std::string>> rows;
+    double total = 0;
+    for (T& t : ts) {
+      ULONG64 c = 0;
+      QueryThreadCycleTime(t.h, &c);
+      ::CloseHandle(t.h);
+      double ms = double(c - t.c0) / hz * 1000.0;
+      total += ms;
+      if (ms / secs >= 1.0) rows.push_back({ms, t.name});  // (over 0.1 % of a core)
+    }
+    std::sort(rows.rbegin(), rows.rend());
+    RT_INFO("cputime: %.1f s, %.0f frames (%.1f fps), %.2f cores busy, %.2f ms of CPU a frame", secs, frames,
+            frames / secs, total / secs / 1000.0, total / frames);
+    for (auto& [ms, name] : rows)
+      RT_INFO("cputime: %6.2f ms/frame %5.1f%% of a core  %s", ms / frames, ms / secs / 10.0, name.c_str());
+  }).detach();
+  return true;
+}();
+
 // DEBUG --watch-write addr,size,seconds: logs the recompiled call stack of
 // every write to guest [addr, addr+size) (page made read-only, single step).
 namespace {

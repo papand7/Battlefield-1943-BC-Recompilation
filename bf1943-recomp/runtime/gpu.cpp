@@ -354,10 +354,18 @@ void RegisterMirrorThread() {
         xgpu::WriteRegister(i, v);
       }
     }
-    std::this_thread::sleep_for(std::chrono::microseconds(100));
+    // (A millisecond, as Windows' sleep is anyway: on Linux, where a 100 us
+    // sleep is 100 us, the scan of the 32768 registers ten thousand times a
+    // second was a good part of a core. The ring-buffer kick doesn't wait for
+    // it: RtGpuMmioWrite32.)
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
   }
 }
 }  // namespace
+
+namespace rt {
+uint64_t ProfileFrameCount() { return g_gpu.swaps; }
+}  // namespace rt
 
 // Called by the PPC_MM_STORE_U32 hook (game/ppc_overrides.h) for MMIO stores to the
 // GPU block: D3D's kick goes to the command processor without waiting ~1 ms for the
@@ -814,10 +822,27 @@ GUEST_IMPORT(VdSwap) {
     const auto period = std::chrono::nanoseconds(1000000000 / max_fps);
     auto now = clock::now();
     if (now > next + period) next = now;  // fell behind: don't catch up
-    while ((now = clock::now()) < next) {
-      if (next - now > std::chrono::microseconds(1500)) Sleep(1);
-      else std::this_thread::yield();
+    // Slept until 0.3 ms before (a high-resolution timer on Windows, where
+    // Sleep(1) can take 2 ms), then yielded: a millisecond and a half of
+    // spinning each frame was a tenth of a core at 60 fps, power a Steam Deck
+    // shares with its GPU.
+    if (next - now > std::chrono::microseconds(400)) {
+      const auto wait = std::chrono::duration_cast<std::chrono::microseconds>(next - now) -
+                        std::chrono::microseconds(300);
+#ifdef _WIN32
+      thread_local HANDLE timer =
+          CreateWaitableTimerExW(nullptr, nullptr, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION, TIMER_ALL_ACCESS);
+      LARGE_INTEGER due;
+      due.QuadPart = -int64_t(wait.count()) * 10;  // relative, 100 ns units
+      if (timer && SetWaitableTimer(timer, &due, 0, nullptr, nullptr, FALSE))
+        WaitForSingleObject(timer, INFINITE);
+      else
+        Sleep(1);
+#else
+      std::this_thread::sleep_for(wait);
+#endif
     }
+    while ((now = clock::now()) < next) std::this_thread::yield();
     next += period;
   }
   {

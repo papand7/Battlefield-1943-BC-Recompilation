@@ -43,6 +43,8 @@ DECLARE_bool(depth_float24_convert_in_pixel_shader);
 DECLARE_bool(present_letterbox);
 DECLARE_bool(vulkan_allow_present_mode_immediate);
 DECLARE_bool(vulkan_allow_present_mode_mailbox);
+DECLARE_int32(vulkan_device);
+DECLARE_string(render_target_path_vulkan);
 #include "xenia/cpu/processor.h"
 #include "xenia/gpu/command_processor.h"
 #include "xenia/gpu/vulkan/vulkan_graphics_system.h"
@@ -514,6 +516,11 @@ bool Start(uint8_t* guest_base, bool present, InterruptFn interrupt, uint32_t ti
     const char* e = std::getenv("BF_DEPTH24");
     cvars::depth_float24_convert_in_pixel_shader = e && e[0] == '1';
   }
+  // (testing) BF_VULKAN_DEVICE=<index>: another of the Vulkan devices (the
+  // log lists them); BF_RT_PATH=fsi: the EDRAM emulated in a buffer with
+  // fragment shader interlock instead of host render targets.
+  if (const char* e = std::getenv("BF_VULKAN_DEVICE"); e && *e) cvars::vulkan_device = std::atoi(e);
+  if (const char* e = std::getenv("BF_RT_PATH"); e && *e) cvars::render_target_path_vulkan = e;
   cvars::log_to_stdout = false;
   xe::InitializeLogging("xenia-gpu");
   fprintf(stderr, "[xgpu] logging up, creating Vulkan graphics system\n");

@@ -9,7 +9,12 @@
 
 #include "xenia/gpu/vulkan/vulkan_render_target_cache.h"
 
+#include <algorithm>
+#include <chrono>
 #include <cstddef>
+#include <map>
+#include <string>
+#include <vector>
 #include <cstdint>
 #include <cstring>
 
@@ -1605,9 +1610,33 @@ bool VulkanRenderTargetCache::Update(
       RenderTarget* const* depth_and_color_render_targets =
           last_update_accumulated_render_targets();
 
-      PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
-                                       depth_and_color_render_targets,
-                                       last_update_transfers());
+      // bf: the render targets a clear overwrites copy in only what it
+      // leaves (RenderTargetCache::Update), the others all.
+      if (const uint32_t cut = bf_last_update_cutout_bits()) {
+        RenderTarget* with_cutout[1 + xenos::kMaxColorRenderTargets];
+        RenderTarget* without[1 + xenos::kMaxColorRenderTargets];
+        for (uint32_t i = 0; i < 1 + xenos::kMaxColorRenderTargets; ++i) {
+          const bool c = (cut >> i) & 1;
+          with_cutout[i] = c ? depth_and_color_render_targets[i] : nullptr;
+          without[i] = c ? nullptr : depth_and_color_render_targets[i];
+        }
+        PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                         without, last_update_transfers());
+        // (testing) BF_CLEAR_POISON=1: the part left out filled with garish
+        // values first, which the clear must hide wholly.
+        static const bool poison = std::getenv("BF_CLEAR_POISON") != nullptr;
+        static const uint64_t poison_values[1 + xenos::kMaxColorRenderTargets] = {
+            0x00000055u, 0xFF00FF00FF00FF00ull, 0xFF00FF00FF00FF00ull,
+            0xFF00FF00FF00FF00ull, 0xFF00FF00FF00FF00ull};
+        PerformTransfersAndResolveClears(
+            1 + xenos::kMaxColorRenderTargets, with_cutout,
+            last_update_transfers(), poison ? poison_values : nullptr,
+            &bf_last_update_cutout());
+      } else {
+        PerformTransfersAndResolveClears(1 + xenos::kMaxColorRenderTargets,
+                                         depth_and_color_render_targets,
+                                         last_update_transfers());
+      }
 
       if (depth_and_color_render_targets[0]) {
         render_pass_key.depth_and_color_used |= 1 << 0;
@@ -4794,6 +4823,52 @@ bool VulkanRenderTargetCache::PerformTransfersAndResolveClears(
     const Transfer::Rectangle* resolve_clear_rectangle) {
   assert_true(GetPath() == Path::kHostRenderTargets);
   bool success = true;
+  // bf: BF_RT_LOG=1 (testing): the render target transfers (EDRAM ranges
+  // changing owner, copied by draws) and resolve clears, summed by source and
+  // destination, logged every 5 s.
+  extern bool bf_frame_trace;  // vulkan_command_processor.cc
+  if (bf_frame_trace) {
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      if (!render_targets[i]) continue;
+      for (const Transfer& t : render_target_transfers[i])
+        XELOGI("bf trace:   transfer {}-{}t {} -> {}{}", t.start_tiles, t.end_tiles,
+               t.source->key().GetDebugName(), render_targets[i]->key().GetDebugName(),
+               t.host_depth_source ? " (+host depth)" : "");
+    }
+    if (render_target_resolve_clear_values && resolve_clear_rectangle)
+      XELOGI("bf trace:   resolve clear {}x{} at {},{}", resolve_clear_rectangle->width_pixels,
+             resolve_clear_rectangle->height_pixels, resolve_clear_rectangle->x_pixels,
+             resolve_clear_rectangle->y_pixels);
+  }
+  static const bool rt_log = std::getenv("BF_RT_LOG") != nullptr;
+  if (rt_log) {
+    static std::map<std::string, std::pair<uint64_t, uint64_t>> pairs;
+    static uint64_t clears = 0;
+    static auto at = std::chrono::steady_clock::now();
+    if (render_target_resolve_clear_values && resolve_clear_rectangle) ++clears;
+    for (uint32_t i = 0; i < render_target_count; ++i) {
+      if (!render_targets[i]) continue;
+      for (const Transfer& t : render_target_transfers[i]) {
+        auto& e = pairs[t.source->key().GetDebugName() + " -> " +
+                        render_targets[i]->key().GetDebugName() +
+                        (t.host_depth_source ? " (+host depth)" : "")];
+        ++e.first;
+        e.second += t.end_tiles - t.start_tiles;
+      }
+    }
+    auto now = std::chrono::steady_clock::now();
+    if (now - at > std::chrono::seconds(5)) {
+      at = now;
+      std::vector<std::pair<uint64_t, std::string>> v;
+      for (auto& [k, e] : pairs)
+        v.push_back({e.second, fmt::format("{} x{} {}t", k, e.first, e.second)});
+      std::sort(v.rbegin(), v.rend());
+      XELOGI("bf rt: {} resolve clears, {} transfer kinds in 5 s", clears, v.size());
+      for (size_t k = 0; k < v.size() && k < 16; ++k) XELOGI("bf rt:   {}", v[k].second);
+      pairs.clear();
+      clears = 0;
+    }
+  }
 
   const ui::vulkan::VulkanDevice* const vulkan_device =
       command_processor_.GetVulkanDevice();
