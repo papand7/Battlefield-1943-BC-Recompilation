@@ -32,6 +32,8 @@ FLAGS=(-arch x86_64 -mmacosx-version-min=14.4 -march=x86-64-v3 -std=c++20 -fsynt
 FILES=(
   runtime/memory.cpp
   runtime/threads.cpp
+  runtime/pad.cpp
+  runtime/linux_input.cpp
   runtime/xenia_shims/window_sdl.cc
   thirdparty/xenia/src/xenia/base/threading_posix.cc
   thirdparty/xenia/src/xenia/base/memory_posix.cc

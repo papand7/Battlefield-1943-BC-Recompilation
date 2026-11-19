@@ -13,8 +13,9 @@
 #include <windows.h>
 #include <xinput.h>
 #else
-#include "posix_input.h"  // XInput types, no pads; keyboard and mouse below are Windows-only
+#include "posix_input.h"  // XInput types; the pads are pad.h's, keyboard and mouse below the client's
 #endif
+#include "pad.h"
 
 #include <algorithm>
 #include <chrono>
@@ -140,7 +141,7 @@ GUEST_IMPORT(XamInputGetCapabilities) {
   uint32_t user = ARG32(3) & 0xFF, caps = ARG32(5);
   XINPUT_CAPABILITIES c{};
   // User 0 always reports a pad so the game can start without one plugged in.
-  if (user != 0 && user != 0xFF && XInputGetCapabilities(user, 0, &c) != ERROR_SUCCESS)
+  if (user != 0 && user != 0xFF && rt::pad::GetCapabilities(user, 0, &c) != ERROR_SUCCESS)
     RETURN(ERROR_DEVICE_NOT_CONNECTED);
   memset(G(caps), 0, 0x14);
   St8(caps + 0, 1);  // XINPUT_DEVTYPE_GAMEPAD
@@ -821,14 +822,15 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
         // Only a fresh Enter, Space or click opens the PC pages below (one
         // still held from the screen before must not).
         static bool accept_before = true;
-        bool accept_now = Down(VK_RETURN) || Down(VK_SPACE) || Down(VK_LBUTTON);
+        const bool pad_a = (g.wButtons & XINPUT_GAMEPAD_A) != 0;  // (the pad's own A, or Enter's)
+        bool accept_now = Down(VK_RETURN) || Down(VK_SPACE) || Down(VK_LBUTTON) || pad_a;
         bool accept = accept_now && !accept_before;
         accept_before = accept_now;
         // The main menu (four rows in the middle): HOST GAME and JOIN GAME
         // open the LAN pages instead of the game's online matchmaking.
         // (bf1943's menus only: Bad Company's have other rows; CustomMenus is false there)
         if (CustomMenus() && g_in_menus && count == 4 && rows[0][0] > 0.3f && (selected == 0 || selected == 1) && accept &&
-            (Down(VK_RETURN) || Down(VK_SPACE) ||
+            (Down(VK_RETURN) || Down(VK_SPACE) || pad_a ||
              (Down(VK_LBUTTON) && mx >= rows[selected][0] && mx <= rows[selected][2] &&
               my >= rows[selected][1] && my <= rows[selected][3]))) {
           g.wButtons = 0;
@@ -839,7 +841,7 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
         // Help & Options (five rows on the left): its last, PC SETTINGS,
         // opens the PC settings page instead of the credits.
         if (CustomMenus() && g_in_menus && count == 5 && rows[0][0] < 0.2f && selected == 4 && accept &&
-            (Down(VK_RETURN) || Down(VK_SPACE) ||
+            (Down(VK_RETURN) || Down(VK_SPACE) || pad_a ||
              (Down(VK_LBUTTON) && mx >= rows[4][0] && mx <= rows[4][2] && my >= rows[4][1] &&
               my <= rows[4][3]))) {
           // (A was set above for Enter: the game must not see it.)
@@ -1004,7 +1006,7 @@ GUEST_IMPORT(XamInputGetState) {
   if (user == 0xFF) user = 0;
   if (user > 3) RETURN(ERROR_DEVICE_NOT_CONNECTED);
   XINPUT_STATE s{};
-  if (XInputGetState(user, &s) != ERROR_SUCCESS) {
+  if (rt::pad::GetState(user, &s) != ERROR_SUCCESS) {
     if (user != 0) RETURN(ERROR_DEVICE_NOT_CONNECTED);
     s = {};  // virtual pad on user 0
   }
@@ -1079,7 +1081,7 @@ GUEST_IMPORT(XamInputSetState) {
   uint32_t user = ARG32(3) & 0xFF, vib = ARG32(5);
   if (user <= 3 && vib) {
     XINPUT_VIBRATION v{Ld16(vib), Ld16(vib + 2)};
-    XInputSetState(user, &v);
+    rt::pad::SetState(user, &v);
   }
   RETURN(ERROR_SUCCESS);
 }

@@ -34,17 +34,10 @@ enum : WORD {
   XINPUT_GAMEPAD_LEFT_SHOULDER = 0x0100, XINPUT_GAMEPAD_RIGHT_SHOULDER = 0x0200,
   XINPUT_GAMEPAD_A = 0x1000, XINPUT_GAMEPAD_B = 0x2000, XINPUT_GAMEPAD_X = 0x4000, XINPUT_GAMEPAD_Y = 0x8000,
 };
-#ifndef BF1943_CLIENT
-inline DWORD XInputGetState(DWORD, XINPUT_STATE*) { return 1167; }  // ERROR_DEVICE_NOT_CONNECTED
-inline DWORD XInputSetState(DWORD, XINPUT_VIBRATION*) { return 1167; }
-inline DWORD XInputGetCapabilities(DWORD, DWORD, XINPUT_CAPABILITIES*) { return 1167; }
-#else
-// The Linux game (BF1943_CLIENT): pads, keys and the mouse through SDL3
-// (linux_input.cpp), behind the few Windows calls xam.cpp's PC controls make.
-DWORD XInputGetState(DWORD user, XINPUT_STATE* state);
-DWORD XInputSetState(DWORD user, XINPUT_VIBRATION* vibration);
-DWORD XInputGetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* caps);
-
+#ifdef BF1943_CLIENT
+// The Linux and macOS game: keys and the mouse through SDL3 (linux_input.cpp),
+// behind the few Windows calls xam.cpp's PC controls make. The pads are
+// pad.h's (SDL3's gamepads, XInput's view of them).
 struct HWND__;
 using HWND = HWND__*;
 struct POINT { long x, y; };
