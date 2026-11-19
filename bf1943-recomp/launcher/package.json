@@ -22,6 +22,7 @@
   },
   "build": {
     "appId": "io.github.papand7.battlefield.launcher",
+    "publish": [{ "provider": "github", "owner": "papand7", "repo": "Battlefield-Recompilation-Project" }],
     "productName": "BF1943 Launcher",
     "directories": {
       "output": "dist"
