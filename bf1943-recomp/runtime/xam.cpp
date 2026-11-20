@@ -171,6 +171,7 @@ std::vector<ScriptedPress> g_scripted_presses;
 std::atomic<uint16_t> g_auto_buttons{0};  // held by the game-side automation (bfbc1_game.cpp), OR-ed into pad 0
 float g_mouse_sensitivity = 1.0f;  // --mouse-sens
 bool g_mouse_invert = false;       // --invert-mouse
+bool g_mouse_pitch_by_stick = false;  // (kernel.h: Bad Company sets it, bfbc1_game.cpp)
 float g_plane_mouse_sensitivity = 1.0f;
 float g_aim_mouse_sensitivity = 1.0f;
 bool g_plane_mouse_invert = false;
@@ -665,7 +666,9 @@ float rt::MouseLookAxis(int axis) {
   }
   // On foot the mouse turns the aim itself (pc_look.cpp): no stick push as
   // well, which would turn twice with the stick's curve.
-  if (!g_local_flying.load(std::memory_order_relaxed) && rt::AimMouseOwnsLook()) return 0;
+  if (!g_local_flying.load(std::memory_order_relaxed) && rt::AimMouseOwnsLook() &&
+      !(axis == 1 && rt::g_mouse_pitch_by_stick))
+    return 0;
   float v = axis == 0 ? look.rx : look.ry;
   // Planes (the right stick is pitch and roll): their own sensitivity, and
   // optionally mouse forward pulls the nose up.

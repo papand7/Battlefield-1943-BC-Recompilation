@@ -4768,7 +4768,11 @@ PPC_FUNC(sub_824ADEE8) {
         constexpr double kPi = 3.14159265358979323846;
         const double k = 0.07 * kPi / 180.0 * sens;  // a count at sensitivity 1
         double heading = -double(LdF(ctx.r4.u32 + 0x34)) + dx * k * yaw_sign;
-        double pitch = std::clamp(double(LdF(ctx.r4.u32 + 0x38)) + (g_mouse_invert ? dy : -dy) * k, -1.5, 1.5);
+        // Pitch by the stick's up/down read instead (bfbc1_game.cpp sets it): the mouse's
+        // up/down then goes through the same input the controller's look uses.
+        double pitch = std::clamp(double(LdF(ctx.r4.u32 + 0x38)) +
+                                      (rt::g_mouse_pitch_by_stick ? 0.0 : (g_mouse_invert ? dy : -dy) * k),
+                                  -1.5, 1.5);
         if (std::isfinite(heading) && std::isfinite(pitch)) {
           auto put = [](uint32_t a, float f) {
             uint32_t u;
