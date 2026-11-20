@@ -151,6 +151,10 @@ void Configure(const char* settings);
 // Host or server weather and time of day, live (the other settings stay).
 void SetWeather(float rain, float time_hours);
 bool Enabled();
+// The effects' pipelines (and the ray tracer's) are being built ahead, on
+// their own thread (started at the first resolve, in a menu): PREWARM waits
+// for them while a level loads, so its first frames have the effects.
+bool PipelinesBuilding();
 const Settings& GetSettings();
 // The eye (world position) of the main view, from the last lit draw; false
 // when no level view was drawn in the last half second.

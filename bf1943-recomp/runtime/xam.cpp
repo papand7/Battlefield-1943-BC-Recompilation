@@ -438,6 +438,26 @@ bool Down(int vk) {
   return (GetAsyncKeyState(vk) & 0x8000) != 0 || TestKeyDown(vk);
 }
 
+// A key or mouse button newly down (looked at every 25 ms): the keyboard and
+// mouse are the device in use (pad.h, the button prompts' AUTO).
+void NoteKeysPressed() {
+  static std::mutex m;
+  std::unique_lock lock(m, std::try_to_lock);
+  if (!lock) return;
+  static auto next = std::chrono::steady_clock::now();
+  static bool held[256] = {};
+  const auto now = std::chrono::steady_clock::now();
+  if (now < next) return;
+  next = now + std::chrono::milliseconds(25);
+  bool pressed = false;
+  for (int vk = 1; vk < 0xFF; ++vk) {
+    const bool down = (GetAsyncKeyState(vk) & 0x8000) != 0;
+    pressed |= down && !held[vk];
+    held[vk] = down;
+  }
+  if (pressed) rt::pad::NoteKeyboardMouse();
+}
+
 // Raw mouse movement, collected on a hidden message-only window (and the
 // test key file's "m <dx> <dy>" lines). Linux: from the game window's events.
 
@@ -574,6 +594,15 @@ MouseLook SampleMouse() {
     g_mouse_dx = g_mouse_dy = g_mouse_wheel = 0;
   }
   dt = std::min(dt, 0.05);
+  {
+    // A real move (a few counts within a quarter second, not a bump) or a
+    // wheel notch: the keyboard and mouse are in use (the button prompts).
+    static long moved = 0;
+    static auto since = now;
+    if (now - since > std::chrono::milliseconds(250)) moved = 0, since = now;
+    moved += std::labs(dx) + std::labs(dy);
+    if (moved > 8 || wheel) moved = 0, rt::pad::NoteKeyboardMouse();
+  }
   // The free camera (free_camera.h) takes the mouse while it flies.
   if (rt::freecam::Active() && !g_in_menus && !g_level_menu && !rt::pcset::IsOpen()) {
     rt::freecam::AddMouse(dx, dy, wheel);
@@ -717,6 +746,11 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
     return;
   }
   HWND w = OurForegroundWindow();
+  // BUTTON PROMPTS = AUTO: a key or mouse button pressed in our window makes
+  // the keyboard and mouse the device in use (pad.h; the mouse's moves count
+  // in SampleMouse); the icons follow (pc_ui.cpp).
+  if (w) NoteKeysPressed();
+  rt::PollPcUi();
   // In front (tests count as in front): the background frame cap and mute.
   rt::g_window_focused = w != nullptr || TestKeysActive();
   {
