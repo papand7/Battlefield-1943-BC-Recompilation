@@ -183,6 +183,7 @@ std::atomic<int64_t> g_disconnect_ms{0};
 std::atomic<int64_t> g_press_a_until{0};
 bool g_present_vsync = false;
 int g_prompt_style = 0;
+bool g_keyboard_with_pad = true;  // PC settings: off = the keyboard and mouse are no input while a pad is connected
 bool g_motion_blur = true;
 uint32_t g_background_fps = 30;
 bool g_background_mute = true;
@@ -544,6 +545,9 @@ std::mutex g_aim_mouse_mutex;
 double g_aim_dx = 0, g_aim_dy = 0;           // counts since that update last took them
 std::chrono::steady_clock::time_point g_aim_last{};
 std::atomic<bool> g_aim_seen{false};         // the local aim update has run (until then the stick stays)
+// The PC setting KEYBOARD WITH A CONTROLLER set OFF with a pad connected: the
+// keyboard and the mouse are no game input (the PC settings page keeps them).
+bool KeyboardAndMouseOff() { return !g_keyboard_with_pad && rt::pad::Connected(); }
 MouseLook SampleMouse() {
   static std::once_flag started;
   std::call_once(started, [] { std::thread(MouseThread).detach(); });
@@ -552,7 +556,7 @@ MouseLook SampleMouse() {
   static auto last = std::chrono::steady_clock::now();
   static int wheel_pending = 0;
   std::lock_guard lock(m);
-  if (rt::admin::Typing()) {  // (chat: no look, and the mouse movement is dropped)
+  if (rt::admin::Typing() || (KeyboardAndMouseOff() && !rt::pcset::IsOpen())) {  // (chat: no look, and the mouse movement is dropped)
     std::lock_guard l2(g_mouse_mutex);
     g_mouse_dx = g_mouse_dy = 0;
     return MouseLook{};
@@ -688,7 +692,11 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g);
 // gets none of the keys (only the menu and the score).
 static void AddKeyboard(XINPUT_GAMEPAD& g) {
   const bool menus = g_in_menus || g_level_menu;
-  if (OurForegroundWindow() || TestKeysActive()) rt::freecam::PollKeys(menus || pcset::ControlsPad());
+  // The setting OFF with a pad connected: the free camera (F3, keyboard only)
+  // is given back, and its keys are not polled (AddKeyboardKeys: the rest).
+  const bool off = KeyboardAndMouseOff() && !pcset::IsOpen();
+  if (off && rt::freecam::Active()) rt::freecam::Toggle();
+  if (!off && (OurForegroundWindow() || TestKeysActive())) rt::freecam::PollKeys(menus || pcset::ControlsPad());
   AddKeyboardKeys(g);
   if (rt::freecam::Active() && !menus) {
     g.wButtons &= XINPUT_GAMEPAD_START | XINPUT_GAMEPAD_BACK;
@@ -721,10 +729,13 @@ static void AddKeyboardKeys(XINPUT_GAMEPAD& g) {
   menus_before = menus;
   // The PC settings page takes all input while it is open (F10 opens it).
   bool page = pcset::Update(w, g_title_passed);
-  bool free_cursor = Down(VK_MENU) || menus || page;
+  bool free_cursor = Down(VK_MENU) || menus || page || KeyboardAndMouseOff();
   CaptureCursor(w, w && !free_cursor && g_present);
   MouseLook look = SampleMouse();
   if (page) return;
+  // The setting OFF with a controller connected: no keyboard or mouse input
+  // (the PC settings page, above, still takes them; the pad plays).
+  if (KeyboardAndMouseOff()) return;
   if (!w && g_test_mouse_at <= 0 && !TestKeysActive()) return;
   // The title screen asks for Start: any key or mouse button gives it, until
   // the game has taken it (it then reads the profile; a click to focus the

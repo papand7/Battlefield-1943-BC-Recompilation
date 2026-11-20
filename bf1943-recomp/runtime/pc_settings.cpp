@@ -376,6 +376,10 @@ void Build() {
   v.push_back(Choice(kControls, "plane_invert", L"INVERT PLANE MOUSE",
                      L"On: mouse forward pulls the nose up. Off: it pushes it down, like a stick.", kOffOn,
                      {"0", "1"}, 0));
+  v.push_back(Choice(kControls, "keyboard_with_pad", L"KEYBOARD WITH A CONTROLLER",
+                     L"ON: the keyboard and mouse always play. OFF: while a controller is connected, the game ignores "
+                     L"the keyboard and mouse. F10 still opens this page.",
+                     kOffOn, {"0", "1"}, 1));
   // Keys.
   for (int a = 0; a < kActionCount; ++a) {
     Setting s;
@@ -853,6 +857,7 @@ void ApplyLive() {
   g_fps_overlay = std::atoi(Value("fps_overlay").c_str());
   g_skip_intro = Value("skip_intro") != "0";
   g_prompt_style = std::atoi(Value("prompts").c_str());
+  g_keyboard_with_pad = Value("keyboard_with_pad") != "0";
   g_motion_blur = Value("motion_blur") == "1";  // the game's own (LOW / HIGH: ours instead)
   g_sprint_toggle = Value("sprint_toggle") == "1";
   g_background_fps = uint32_t(std::atoi(Value("background_fps").c_str()));

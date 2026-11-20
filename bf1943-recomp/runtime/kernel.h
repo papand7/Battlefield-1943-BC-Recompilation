@@ -111,6 +111,7 @@ extern float g_aim_mouse_sensitivity;    // PC settings: times the mouse sensiti
 extern std::atomic<bool> g_aiming;        // game_patches.cpp: the infantry camera zoomed in (sights)
 extern std::atomic<float> g_fov_now_deg, g_fov_own_deg;  // the view now and unzoomed (aim sensitivity)
 extern float g_plane_mouse_sensitivity;  // PC settings: mouse in planes (1 = default)
+extern bool g_keyboard_with_pad;         // PC settings: KEYBOARD WITH A CONTROLLER (off: keyboard and mouse ignored while a pad is connected)
 extern int g_prompt_style;               // PC settings: button prompts (0 auto, 1 keys, 2 Xbox 360, 3 Xbox Series, 4 PS3, 5 PS5, 6 Steam Deck)
 extern bool g_present_vsync;              // --present-vsync (or the VSYNC setting)
 extern int g_fps_overlay;                // PC settings / F2: 0 off, 1 FPS, 2 FULL (fps_overlay.cpp)

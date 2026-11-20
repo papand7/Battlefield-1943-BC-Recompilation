@@ -285,6 +285,15 @@ const char* ActiveName() {
   return g_pads.empty() ? "Xbox controller" : g_pads[0].name.c_str();
 }
 
+bool Connected() {
+  Init();
+  std::lock_guard l(g_mutex);
+  if (!g_pads.empty()) return true;
+  for (bool x : g_xinput)
+    if (x) return true;
+  return false;
+}
+
 }  // namespace rt::pad
 
 #else  // no SDL: XInput alone on Windows, no pads on the Linux server
@@ -325,6 +334,14 @@ Kind ActiveKind() {
   return Kind::kNone;
 }
 const char* ActiveName() { return "Xbox controller"; }
+bool Connected() {
+#ifdef _WIN32
+  XINPUT_STATE s;
+  for (DWORD i = 0; i < 4; ++i)
+    if (::XInputGetState(i, &s) == ERROR_SUCCESS) return true;
+#endif
+  return false;
+}
 
 }  // namespace rt::pad
 

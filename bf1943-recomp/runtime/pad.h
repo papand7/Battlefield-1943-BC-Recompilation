@@ -38,6 +38,9 @@ DWORD SetState(DWORD user, XINPUT_VIBRATION* vibration);
 DWORD GetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* caps);
 // The pad that was used last (else the first connected); kNone with none connected.
 Kind ActiveKind();
+// A controller is connected (any user, XInput or SDL). No side effects: the
+// keyboard and mouse setting reads it every poll.
+bool Connected();
 // A short name for the log and the PC settings ("DualSense", "Xbox controller").
 const char* ActiveName();
 // The set the menus' pad prompts use: the BUTTON PROMPTS setting (0 auto, 1 keys,
