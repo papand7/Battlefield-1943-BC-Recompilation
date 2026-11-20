@@ -668,6 +668,12 @@ void Configure(const char* text) {
 
 bool Enabled() { return enabled; }
 
+// The pipelines built ahead (ApplySceneFx): 0 not started, 1 building, 2 done.
+namespace {
+std::atomic<int> warm_state{0};
+}  // namespace
+bool PipelinesBuilding() { return enabled && warm_state.load() == 1; }
+
 // Host or server weather and time of day: live, the other settings stay.
 void SetWeather(float rain, float time_hours) {
   weather.rain = std::clamp(rain, 0.0f, 1.0f);
@@ -900,11 +906,13 @@ void VulkanRenderTargetCache::ApplySceneFx(
   if (!warm_started) {
     warm_started = true;
     const ui::vulkan::VulkanDevice* wdevice = command_processor_.GetVulkanDevice();
+    warm_state = 1;
     warm = std::thread([wdevice] {
       int64_t t0 = NowMs();
       vk.rt = GetSettings().rt > 0.0f && rt::Init(wdevice);
       vk.pipeline_ok = CreatePipeline(wdevice);
       XELOGI("scenefx: pipeline built ahead in {} ms", NowMs() - t0);
+      warm_state = 2;
     });
   }
   // Two passes: when the game copies the world's depth out (it clears it

@@ -14,14 +14,20 @@
 #include "posix_gdiplus.h"  // (Linux: GDI's text calls, XInput)
 #endif
 #include "pad.h"
+#include "pc_settings.h"
 
 #include <algorithm>
+#include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <cwctype>
 #include <mutex>
+#include <string>
 #include <string_view>
+#include <thread>
 #include <unordered_map>
 #include <vector>
 
@@ -178,12 +184,104 @@ std::vector<uint8_t> RenderMouse(wchar_t part, int w, int h) {
   return cover;
 }
 
+// ---- the keys bound now ---------------------------------------------------
+// An icon's default label stands for a pad button, and so for the game action
+// on it (xam.cpp's kBinds; Bad Company names two of them differently, GRENADE /
+// GADGET and SWITCH WEAPON / LAUNCHER, the actions are the same): the key cap
+// shows the key bound to that action on the PC settings page. The menu keys
+// (Enter, Backspace, the arrows), the look (the mouse) and the wheel (it
+// always switches weapons) are fixed.
+
+// A key as an icon label: a short name, or a mouse picture ("@L", "@R"; the
+// middle button "@W").
+std::wstring KeyLabel(int vk) {
+  switch (vk) {
+    case 0: return L"-";
+    case VK_LBUTTON: return L"@L";
+    case VK_RBUTTON: return L"@R";
+    case VK_MBUTTON: return L"@W";
+    case VK_XBUTTON1: return L"M4";
+    case VK_XBUTTON2: return L"M5";
+    case VK_SHIFT: case VK_LSHIFT: case VK_RSHIFT: return L"SHIFT";
+    case VK_CONTROL: case VK_LCONTROL: case VK_RCONTROL: return L"CTRL";
+    case VK_MENU: case VK_LMENU: case VK_RMENU: return L"ALT";
+    case VK_SPACE: return L"SPACE";
+    case VK_TAB: return L"TAB";
+    case VK_ESCAPE: return L"ESC";
+    case VK_RETURN: return L"↵";
+    case VK_BACK: return L"⌫";
+    case VK_UP: return L"↑";
+    case VK_DOWN: return L"↓";
+    case VK_LEFT: return L"←";
+    case VK_RIGHT: return L"→";
+    case VK_CAPITAL: return L"CAPS";
+    case VK_INSERT: return L"INS";
+    case VK_DELETE: return L"DEL";
+    case VK_HOME: return L"HOME";
+    case VK_END: return L"END";
+    case VK_PRIOR: return L"PGUP";
+    case VK_NEXT: return L"PGDN";
+  }
+  if ((vk >= '0' && vk <= '9') || (vk >= 'A' && vk <= 'Z')) return std::wstring(1, wchar_t(vk));
+  if (vk >= VK_F1 && vk <= VK_F1 + 11) return L"F" + std::to_wstring(vk - VK_F1 + 1);
+  if (vk >= VK_NUMPAD0 && vk <= VK_NUMPAD0 + 9) return L"NUM" + std::to_wstring(vk - VK_NUMPAD0);
+  // Punctuation and the rest: the key's name in this keyboard layout.
+  UINT scan = MapVirtualKeyW(UINT(vk), MAPVK_VK_TO_VSC);
+  wchar_t name[32] = {};
+  if (scan && GetKeyNameTextW(LONG(scan << 16), name, 32) > 0) {
+    std::wstring s = name;
+    for (wchar_t& c : s) c = wchar_t(towupper(c));
+    return s;
+  }
+  return L"?";
+}
+
+// The label an icon gets drawn with in the key style.
+std::wstring IconLabel(const Icon& icon) {
+  using namespace rt::pcset;
+  const std::wstring_view label = icon.label;
+  auto bound = [](Action a) {
+    int vk = Key(a, 0);
+    return KeyLabel(vk ? vk : Key(a, 1));
+  };
+  static const std::pair<std::wstring_view, Action> kActions[] = {
+      {L"SPACE", kJump},  {L"E", kUse},         {L"R", kReload},    {L"F", kKnife},
+      {L"G", kGrenade},   {L"1", kNextWeapon},  {L"@L", kFire},     {L"@R", kZoom},
+      {L"ESC", kMenu},    {L"TAB", kScore},     {L"SHIFT", kSprint}, {L"CTRL", kCrouch}};
+  for (const auto& [name, action] : kActions)
+    if (label == name) return bound(action);
+  // The movement keys: together when each is one character, else as they were.
+  auto join = [&](std::initializer_list<Action> actions, const wchar_t* between) {
+    std::wstring out;
+    for (Action a : actions) {
+      std::wstring k = bound(a);
+      if (k.size() != 1) return std::wstring(label);
+      if (!out.empty()) out += between;
+      out += k;
+    }
+    return out;
+  };
+  if (label == L"WASD") return join({kForward, kLeft, kBack, kRight}, L"");
+  if (label == L"W/S") return join({kForward, kBack}, L"/");
+  if (label == L"A/D") return join({kLeft, kRight}, L"/");
+  return std::wstring(label);
+}
+
+// The bindings and the style the icons are drawn with: a redraw when it changes.
+uint64_t Signature(int style) {
+  uint64_t h = 0xcbf29ce484222325ull ^ uint64_t(style);
+  for (int a = 0; a < rt::pcset::kActionCount; ++a)
+    for (int slot = 0; slot < 2; ++slot)
+      h = (h ^ uint64_t(rt::pcset::Key(rt::pcset::Action(a), slot) + 1)) * 0x100000001b3ull;
+  return h;
+}
+
 // Dark key cap with a light rim and the label, written over the icon's box in
 // a tiled big-endian ARGB8 texture.
-void DrawKeyCap(uint8_t* tex, uint32_t pitch, const Icon& icon) {
+void DrawKeyCap(uint8_t* tex, uint32_t pitch, const Icon& icon, const std::wstring& label) {
   int w = icon.x1 - icon.x0 + 1, h = icon.y1 - icon.y0 + 1;
-  std::vector<uint8_t> text = icon.label[0] == L'@' ? RenderMouse(icon.label[1], w, h)
-                                                    : RenderLabel(icon.label, w, h);
+  std::vector<uint8_t> text = label.size() == 2 && label[0] == L'@' ? RenderMouse(label[1], w, h)
+                                                                    : RenderLabel(label.c_str(), w, h);
   float r = std::min(w, h) * 0.28f;
   for (int y = 0; y < h; ++y) {
     for (int x = 0; x < w; ++x) {
@@ -212,6 +310,7 @@ const char* PadButton(std::wstring_view label) {
   static const std::pair<std::wstring_view, const char*> kButtons[] = {
       {L"↵", "a"},       {L"SPACE", "a"},        {L"⌫", "b"},       {L"E", "b"},
       {L"R", "x"},            {L"F", "y"},            {L"G", "lb"},           {L"@W", "rb"},
+      {L"1", "rb"},  // (Bad Company's switch weapon key)
       {L"@R", "lt"},          {L"@L", "rt"},          {L"ESC", "start"},      {L"TAB", "back"},
       {L"@M", "rs"},          {L"SHIFT", "ls_click"}, {L"CTRL", "rs_click"},  {L"WASD", "ls"},
       {L"W/S", "ls_ud"},      {L"A/D", "ls_lr"},      {L"↑", "dpad_up"}, {L"↓", "dpad_down"},
@@ -394,15 +493,16 @@ void DrawPadIcon(uint8_t* tex, uint32_t pitch, const Icon& icon, Style style, st
   c.Write(tex, pitch, icon.x0, icon.y0);
 }
 
-// AUTO: the keys with no controller; with one, the buttons of its make
-// (pad.cpp: Xbox 360 or Series, PlayStation 3 or 4/5, Steam Deck; a Switch
-// pad gets the Series set, any other pad the 360's). The game draws its icon
-// atlases when its textures load: a pad plugged in later shows from the next
-// load (a new level, the front end).
+// AUTO: the device the player last used (pad.h UsedKind): the keys until a
+// pad is pressed, then the buttons of its make (pad.cpp: Xbox 360 or Series,
+// PlayStation 3 or 4/5, Steam Deck; a Switch pad gets the Series set, any
+// other pad the 360's), the keys again on a key, click or mouse move. A
+// connected pad that is never pressed (a ghost or virtual one) never counts.
+// The atlases drawn already are drawn again on a change (PollPcUi).
 Style ResolvedStyle() {
   Style style = Style(std::clamp(g_prompt_style, 0, int(kSteamDeck)));
   if (style == kAuto) {
-    switch (rt::pad::ActiveKind()) {
+    switch (rt::pad::UsedKind()) {
       case rt::pad::Kind::kNone: style = kKeys; break;
       case rt::pad::Kind::kXboxSeries:
       case rt::pad::Kind::kSwitch: style = kXboxSeries; break;
@@ -411,9 +511,12 @@ Style ResolvedStyle() {
       case rt::pad::Kind::kSteamDeck: style = kSteamDeck; break;
       default: style = kXbox360; break;
     }
-    RT_INFO("ui: button prompts AUTO -> %s (%s)", style == kKeys ? "keys" : style == kPs3 ? "PlayStation 3"
-            : style == kPs5 ? "PlayStation 5" : style == kSteamDeck ? "Steam Deck"
-            : style == kXboxSeries ? "Xbox Series" : "Xbox 360", rt::pad::ActiveName());
+    static std::atomic<int> logged{-1};
+    if (logged.exchange(int(style)) != int(style)) {
+      RT_INFO("ui: button prompts AUTO -> %s (%s)", style == kKeys ? "keys" : style == kPs3 ? "PlayStation 3"
+              : style == kPs5 ? "PlayStation 5" : style == kSteamDeck ? "Steam Deck"
+              : style == kXboxSeries ? "Xbox Series" : "Xbox 360", style == kKeys ? "keyboard and mouse" : rt::pad::ActiveName());
+    }
   }
   return style;
 }
@@ -516,6 +619,50 @@ void EncodeDxt5(const uint8_t* argb, uint32_t width, uint32_t bx, uint32_t by, u
   for (int i = 0; i < 16; i += 2) block[i] = b[i + 1], block[i + 1] = b[i];
 }
 
+const char* StyleName(Style style) {
+  return style == kKeys ? "PC key" : style == kXboxSeries ? "Xbox Series" : style == kPs3 ? "PlayStation 3"
+         : style == kPs5 ? "PlayStation 5" : style == kSteamDeck ? "Steam Deck" : "Xbox 360";
+}
+
+// An atlas's icons in a style, into the texture's data (the game's own, as
+// loaded): the Xbox 360's are the game's own pictures, left as they are.
+void DrawIcons(const Atlas& a, uint8_t* tex, Style style) {
+  if (style == kXbox360) return;
+  const uint32_t width = a.width;
+  auto draw = [&](uint8_t* argb, const Icon& icon) {
+    const char* button = style == kKeys ? nullptr : PadButton(icon.label);
+    if (button) DrawPadIcon(argb, width, icon, style, button);
+    else DrawKeyCap(argb, width, icon, IconLabel(icon));
+  };
+  if (!a.dxt5) {
+    for (const Icon& icon : a.icons) draw(tex, icon);
+    return;
+  }
+  // DXT5: through a tiled 8888 copy of the icons' blocks, drawn there, encoded back.
+  std::vector<uint8_t> argb(size_t(width) * a.height * 4);
+  for (const Icon& icon : a.icons) {
+    for (uint32_t by = icon.y0 / 4; by <= icon.y1 / 4u; ++by)
+      for (uint32_t bx = icon.x0 / 4; bx <= icon.x1 / 4u; ++bx) DecodeDxt5(DxtBlock(tex, width, bx, by), argb.data(), width, bx, by);
+    draw(argb.data(), icon);
+    for (uint32_t by = icon.y0 / 4; by <= icon.y1 / 4u; ++by)
+      for (uint32_t bx = icon.x0 / 4; bx <= icon.x1 / 4u; ++bx) EncodeDxt5(argb.data(), width, bx, by, DxtBlock(tex, width, bx, by));
+  }
+}
+
+// The atlases drawn (the latest few), kept for a redraw when the style or the
+// bindings change: the game's own data, and a hash of the texture as drawn
+// (so a redraw only touches it while it is still there, unchanged).
+struct Drawn {
+  const Atlas* atlas;
+  uint32_t physical;
+  size_t bytes;
+  std::vector<uint8_t> original;
+  uint64_t hash;       // the texture as drawn
+  uint64_t signature;  // the style and bindings it was drawn with
+};
+std::mutex g_drawn_mutex;
+std::vector<Drawn> g_drawn;
+
 void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t width, uint32_t height,
                    uint32_t format, bool tiled) {
   constexpr uint32_t k_8_8_8_8 = 6, k_DXT4_5 = 20;
@@ -527,41 +674,58 @@ void OnTextureLoad(uint32_t physical, uint32_t size, uint32_t width, uint32_t he
     if (a.width != width || a.height != height || a.dxt5 != (format == k_DXT4_5) || size < bytes) continue;
     uint8_t* tex = G<uint8_t>(0xA0000000u + (physical & 0x1FFFFFFF));
     if (Fnv1a(tex, bytes) != a.hash) continue;
-    if (a.dxt5) {
-      // Through a tiled 8888 copy of the icons' blocks: drawn there, encoded back.
-      const Style style = ResolvedStyle();
-      if (style == kXbox360) return;
-      std::vector<uint8_t> argb(size_t(width) * height * 4);
-      for (const Icon& icon : a.icons) {
-        for (uint32_t by = icon.y0 / 4; by <= icon.y1 / 4u; ++by)
-          for (uint32_t bx = icon.x0 / 4; bx <= icon.x1 / 4u; ++bx) DecodeDxt5(DxtBlock(tex, width, bx, by), argb.data(), width, bx, by);
-        const char* button = style == kKeys ? nullptr : PadButton(icon.label);
-        if (button) DrawPadIcon(argb.data(), width, icon, style, button);
-        else DrawKeyCap(argb.data(), width, icon);
-        for (uint32_t by = icon.y0 / 4; by <= icon.y1 / 4u; ++by)
-          for (uint32_t bx = icon.x0 / 4; bx <= icon.x1 / 4u; ++bx) EncodeDxt5(argb.data(), width, bx, by, DxtBlock(tex, width, bx, by));
-      }
-      RT_INFO("ui: button icons drawn into %s atlas (DXT5, %08X)", a.name, physical);
-      return;
-    }
+    std::lock_guard lock(g_drawn_mutex);
     const Style style = ResolvedStyle();
-    if (style == kXbox360) {  // the game's own pictures
-      RT_INFO("ui: %s atlas left with the Xbox 360's buttons", a.name);
-      return;
+    Drawn d{&a, physical, bytes, std::vector<uint8_t>(tex, tex + bytes), 0, Signature(style)};
+    DrawIcons(a, tex, style);
+    d.hash = Fnv1a(tex, bytes);
+    std::erase_if(g_drawn, [&](const Drawn& o) { return o.physical == physical; });
+    if (g_drawn.size() >= 12) g_drawn.erase(g_drawn.begin());
+    g_drawn.push_back(std::move(d));
+    // The Back key: its prompts can be clicked (xam.cpp), in every style.
+    if (!a.dxt5) {
+      for (const Icon& icon : a.icons)
+        if (std::wstring_view(icon.label) == L"⌫")
+          xgpu::AddBackIcon(physical, width, height, icon.x0, icon.y0, icon.x1 + 1, icon.y1 + 1);
     }
-    for (const Icon& icon : a.icons) {
-      const char* button = style == kKeys ? nullptr : PadButton(icon.label);
-      if (button) DrawPadIcon(tex, width, icon, style, button);
-      else DrawKeyCap(tex, width, icon);
-      // The Back key: its prompts can be clicked (xam.cpp).
-      if (std::wstring_view(icon.label) == L"⌫") {
-        xgpu::AddBackIcon(physical, width, height, icon.x0, icon.y0, icon.x1 + 1, icon.y1 + 1);
-      }
-    }
-    RT_INFO("ui: %s button icons drawn into %s atlas (%08X)",
-            style == kKeys ? "PC key" : style == kXboxSeries ? "Xbox Series" : style == kPs3 ? "PlayStation 3"
-            : style == kPs5 ? "PlayStation 5" : "Steam Deck", a.name, physical);
+    if (style == kXbox360) RT_INFO("ui: %s atlas left with the Xbox 360's buttons", a.name);
+    else RT_INFO("ui: %s button icons drawn into %s atlas (%s%08X)", StyleName(style), a.name, a.dxt5 ? "DXT5, " : "", physical);
     return;
+  }
+}
+
+// Draws the atlases again in the style and with the bindings of now, in guest
+// memory, where they changed: the writes trip the GPU's write watches, so the
+// texture cache loads them again (OnTextureLoad then leaves them: they no
+// longer hash as the game's own).
+void Redraw() {
+  std::lock_guard lock(g_drawn_mutex);
+  const Style style = ResolvedStyle();
+  const uint64_t signature = Signature(style);
+  for (size_t i = 0; i < g_drawn.size();) {
+    Drawn& d = g_drawn[i];
+    if (d.signature == signature) {
+      ++i;
+      continue;
+    }
+    const uint32_t guest = 0xA0000000u + (d.physical & 0x1FFFFFFF);
+    bool there = IsCommitted(guest + uint32_t(d.bytes) - 1);
+    for (size_t off = 0; off < d.bytes && there; off += 0x1000) there = IsCommitted(guest + uint32_t(off));
+    uint8_t* tex = G<uint8_t>(guest);
+    if (!there || Fnv1a(tex, d.bytes) != d.hash) {  // freed, or something else there now
+      g_drawn.erase(g_drawn.begin() + long(i));
+      continue;
+    }
+    std::vector<uint8_t> next = d.original;
+    DrawIcons(*d.atlas, next.data(), style);
+    for (size_t off = 0; off < d.bytes; off += 0x1000) {
+      const size_t n = std::min<size_t>(0x1000, d.bytes - off);
+      if (std::memcmp(tex + off, next.data() + off, n)) std::memcpy(tex + off, next.data() + off, n);
+    }
+    d.hash = Fnv1a(next.data(), d.bytes);
+    d.signature = signature;
+    RT_INFO("ui: %s atlas drawn again (%s buttons)", d.atlas->name, StyleName(style));
+    ++i;
   }
 }
 
@@ -655,6 +819,29 @@ const std::unordered_map<std::string_view, std::string_view>& PcText() {
 
 namespace rt {
 void InstallPcUi() { xe::gpu::g_texture_load_hook = OnTextureLoad; }
+
+void PollPcUi() {
+  static std::atomic<int64_t> next{0};
+  static std::atomic<bool> busy{false};
+  const int64_t now = std::chrono::duration_cast<std::chrono::milliseconds>(
+                          std::chrono::steady_clock::now().time_since_epoch()).count();
+  if (now < next.load() || busy.load()) return;
+  next = now + 100;
+  const uint64_t signature = Signature(ResolvedStyle());
+  {
+    std::unique_lock lock(g_drawn_mutex, std::try_to_lock);  // (an atlas being drawn: next time)
+    if (!lock) return;
+    bool stale = false;
+    for (const Drawn& d : g_drawn) stale |= d.signature != signature;
+    if (!stale) return;
+  }
+  // On a thread of its own: the text rendering takes a few milliseconds an atlas.
+  busy = true;
+  std::thread([] {
+    Redraw();
+    busy = false;
+  }).detach();
+}
 
 // Rewrites the console strings in a block read from build_overlay-00.fbrb (the
 // localization tables are stored uncompressed there). Only strings that are

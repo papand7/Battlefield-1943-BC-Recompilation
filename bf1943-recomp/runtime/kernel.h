@@ -200,6 +200,7 @@ extern double g_test_mouse_at;     // --test-mouse <s>
 // Mouse look for this poll, in right-stick units (1 = full deflection, may exceed 1).
 float MouseLookAxis(int axis);
 void InstallPcUi();                // pc_ui.cpp: PC key icons in the UI atlases
+void PollPcUi();                   // pc_ui.cpp: the icons drawn again when the prompts or bindings change (input polls)
 void PatchPcText(uint8_t* data, size_t size);  // pc_ui.cpp: PC wording in the string tables
 extern int g_bot_count;              // --bots N: extra clients that join the --host game
 void StartBotDirector();               // bots.cpp: the bot players' AI (bot_players.cpp starts it)

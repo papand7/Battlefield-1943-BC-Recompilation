@@ -36,8 +36,60 @@ Kind PromptKind(int style) {
     case 6: return Kind::kSteamDeck;
     default: break;
   }
-  Kind k = style == 1 ? Kind::kNone : ActiveKind();
+  Kind k = Kind::kNone;
+  if (style != 1) k = UsedKind() != Kind::kNone ? UsedKind() : ActiveKind();
   return k == Kind::kNone || k == Kind::kGeneric ? Kind::kXbox360 : k;
+}
+
+// ---- the device last used (BUTTON PROMPTS = AUTO) -------------------------
+// Only real use counts: a press (a button, a trigger pulled past a quarter,
+// a stick pushed past a dead zone) that was not held at the last read, so a
+// ghost or virtual pad (Steam Input, ViGEm leftovers) that is connected but
+// never pressed, or one that reports a stuck value, never takes the prompts.
+namespace {
+std::atomic<int> g_used{-1};  // -1 the keyboard and mouse (also before any input), else a Kind
+std::mutex g_used_mutex;
+struct Held {
+  bool seen = false;
+  uint32_t bits = 0;
+} g_held[4];
+
+// The pad's inputs as press bits: the buttons, the triggers, the sticks' four directions.
+uint32_t PressBits(const XINPUT_GAMEPAD& g) {
+  constexpr int kTrigger = 64, kStick = 12000;  // (XInput's own dead zones are 7849 and 8689)
+  uint32_t bits = g.wButtons;
+  if (g.bLeftTrigger > kTrigger) bits |= 1u << 16;
+  if (g.bRightTrigger > kTrigger) bits |= 1u << 17;
+  const SHORT axes[4] = {g.sThumbLX, g.sThumbLY, g.sThumbRX, g.sThumbRY};
+  for (int i = 0; i < 4; ++i) {
+    if (axes[i] > kStick) bits |= 1u << (18 + 2 * i);
+    if (axes[i] < -kStick) bits |= 1u << (19 + 2 * i);
+  }
+  return bits;
+}
+
+void SetUsed(int used) {
+  if (g_used.exchange(used) == used) return;
+  RT_INFO("input: %s used (button prompts AUTO follow it)", used < 0 ? "keyboard and mouse" : "controller");
+}
+}  // namespace
+
+void NotePad(DWORD user, const XINPUT_GAMEPAD& g, Kind kind) {
+  if (user >= 4) return;
+  const uint32_t bits = PressBits(g);
+  bool pressed;
+  {
+    std::lock_guard l(g_used_mutex);
+    Held& h = g_held[user];
+    pressed = h.seen && (bits & ~h.bits) != 0;  // (the first read only records what is held)
+    h.seen = true, h.bits = bits;
+  }
+  if (pressed) SetUsed(int(kind == Kind::kNone ? Kind::kGeneric : kind));
+}
+void NoteKeyboardMouse() { SetUsed(-1); }
+Kind UsedKind() {
+  const int used = g_used.load();
+  return used < 0 ? Kind::kNone : Kind(used);
 }
 
 }  // namespace rt::pad
@@ -210,6 +262,7 @@ DWORD GetState(DWORD user, XINPUT_STATE* state) {
     g_xinput[user] = r == ERROR_SUCCESS;
     if (r == ERROR_SUCCESS) {
       if (state->dwPacketNumber != g_xinput_packet[user]) g_xinput_packet[user] = state->dwPacketNumber, g_last_kind = Kind::kXbox360, g_last_id = 0;
+      NotePad(user, state->Gamepad, Kind::kXbox360);
       return r;
     }
     g_xinput_packet[user] = 0;
@@ -227,6 +280,7 @@ DWORD GetState(DWORD user, XINPUT_STATE* state) {
     g_last_kind = pad->kind, g_last_id = pad->id;
   }
   state->dwPacketNumber = pad->packet;
+  NotePad(user, state->Gamepad, pad->kind);
   return 0;
 }
 
@@ -294,7 +348,9 @@ namespace rt::pad {
 void Init() {}
 DWORD GetState(DWORD user, XINPUT_STATE* state) {
 #ifdef _WIN32
-  return ::XInputGetState(user, state);
+  DWORD r = ::XInputGetState(user, state);
+  if (r == ERROR_SUCCESS) NotePad(user, state->Gamepad, Kind::kXbox360);
+  return r;
 #else
   (void)user, (void)state;
   return 1167;

@@ -621,6 +621,21 @@ void PrewarmPipelines(uint32_t timeout_ms) {
     xe::threading::Sleep(std::chrono::milliseconds(5));
   }
   cp->PrewarmPipelines(timeout_ms);
+  // The scene effects' pipelines are built on a thread of their own (from the
+  // first resolve, in a menu): until they are ready a level's first frames
+  // draw without them (black skies), and the first world frame would wait for
+  // them (ApplySceneFx joins the thread), a stall there that made BF1943 drop
+  // to its low vegetation LOD. Waited for here instead, while the loading
+  // screen is still up, within the same time budget.
+  if (xe::gpu::scenefx::PipelinesBuilding()) {
+    const uint64_t t0 = xe::Clock::QueryHostTickCount();
+    while (xe::gpu::scenefx::PipelinesBuilding() && xe::Clock::QueryHostTickCount() < deadline) {
+      xe::threading::Sleep(std::chrono::milliseconds(5));
+    }
+    XELOGI("prewarm: scene effects' pipelines {} after {} ms",
+           xe::gpu::scenefx::PipelinesBuilding() ? "still building" : "ready",
+           (xe::Clock::QueryHostTickCount() - t0) * 1000 / frequency);
+  }
 }
 
 void InitializeRingBuffer(uint32_t ptr, uint32_t size_log2) {

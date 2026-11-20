@@ -40,9 +40,17 @@ DWORD GetCapabilities(DWORD user, DWORD flags, XINPUT_CAPABILITIES* caps);
 Kind ActiveKind();
 // A short name for the log and the PC settings ("DualSense", "Xbox controller").
 const char* ActiveName();
+// The device the player last used, for BUTTON PROMPTS = AUTO: kNone for the
+// keyboard and mouse (also before any input), else the pad's make. A pad
+// counts on a real press (GetState: a button, a trigger, a stick past a dead
+// zone, newly), the keyboard and mouse on a key, a click or a move (xam.cpp).
+Kind UsedKind();
+void NoteKeyboardMouse();
+void NotePad(DWORD user, const XINPUT_GAMEPAD& gamepad, Kind kind);
 // The set the menus' pad prompts use: the BUTTON PROMPTS setting (0 auto, 1 keys,
 // 2 Xbox 360, 3 Xbox Series, 4 PS3, 5 PS5, 6 Steam Deck; g_prompt_style), AUTO
-// the connected pad's make; never kNone (no pad, or a plain pad: Xbox 360).
+// the pad last used (else the connected pad's make); never kNone (no pad, or a
+// plain pad: Xbox 360).
 Kind PromptKind(int style);
 // A button's name in the prompt set of a kind: "a" "b" "x" "y" "lb" "rb" "start" "back".
 // PlayStation pads: the cross, circle, square and triangle read X, O, [], /\ in text.
