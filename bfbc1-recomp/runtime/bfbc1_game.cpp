@@ -117,6 +117,11 @@ bool CustomMenus() { return false; }
 // PC settings rows that do nothing here (pc_settings.cpp hides them): PLANT
 // WIND sways BF1943's plant vertex shaders (a vec4 mad with c213.w, see
 // spirv_shader_translator.h IsWindConstant); none of Bad Company's has it.
+// On foot the mouse's pitch goes through the right stick's up/down read, as the
+// controller's does (xam.cpp MouseLookAxis): the aim setter hook (bc_bots.cpp)
+// then turns by the mouse only. Looking up and down did not move with the
+// setter's pitch in gameplay (it works in the cutscenes, where this path is used).
+static const bool g_bc_mouse_pitch = (g_mouse_pitch_by_stick = true, true);
 static const bool g_bc_settings_hidden = (g_setting_hidden = [](const char* key) {
   return !std::strcmp(key, "wind");
 }, true);

@@ -162,6 +162,10 @@ void AimMouseReset();
 bool AimMouseTake(double& dx, double& dy, bool& stale);
 void AimMouseSeen();
 bool AimMouseOwnsLook();
+// Set by a game whose mouse pitch on foot goes through the right stick's up/down
+// read (xam.cpp MouseLookAxis) instead of its aim record (Bad Company's setter
+// hook, bc_bots.cpp): the aim keeps the mouse's turn only.
+extern bool g_mouse_pitch_by_stick;
 // The thread the client's timers were made on (game_patches.cpp): the local
 // player's simulation runs there; the server's runs on its own thread.
 uint32_t ClientThreadId();
