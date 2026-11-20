@@ -238,6 +238,11 @@ extern std::string g_aspect_override, g_wide_hud_override;
 extern float g_fov;                      // --fov: horizontal degrees at 16:9 (0: the game's 85.6)
 extern std::string g_emitter;            // --emitter "Field=value,..." (EmitterSystemSettings)
 void ApplyEmitterNow();                   // g_emitter to the EmitterSystemSettings now (a setting changed)
+// FILM GRAIN (pc_settings.cpp; true: the game's own grain). Bad Company sets
+// g_apply_film_grain (bfbc1_game.cpp: GlobalPostProcessSettings.FilmGrainEnable
+// now); the row is shown only in a game that sets it.
+extern bool g_film_grain;
+extern void (*g_apply_film_grain)();
 extern std::string g_worldrender;         // --worldrender "Field=value,..." (all WorldRender copies)
 void ApplyShadowSettings();               // game_patches.cpp: to every WorldRender copy
 extern std::atomic<bool> g_in_menus;     // files.cpp: front-end menus (not in a level)

@@ -50,6 +50,8 @@ extern std::mutex g_host_map_mutex;  // game_patches.cpp (g_server_name, g_serve
 
 bool (*rt::g_setting_hidden)(const char* key) = nullptr;
 const wchar_t* (*rt::g_action_name)(int action) = nullptr;
+bool rt::g_film_grain = true;
+void (*rt::g_apply_film_grain)() = nullptr;
 
 namespace rt::pcset {
 namespace {
@@ -218,6 +220,12 @@ void Build() {
   v.push_back(Choice(kGraphics, "sharpness", L"SHARPNESS",
                      L"Sharpening after upscaling (FSR 3 / CAS). OFF: none.",
                      {L"OFF", L"LOW", L"MEDIUM", L"HIGH"}, {"0", "0.3", "0.5", "0.8"}, 1));
+  // The game's own film grain (Bad Company: the post-process settings'
+  // FilmGrainEnable; only in a game that sets g_apply_film_grain).
+  if (g_apply_film_grain)
+    v.push_back(Choice(kGraphics, "film_grain", L"FILM GRAIN",
+                       L"The game's own grainy film noise over the picture. OFF: a clean picture.", kOffOn,
+                       {"0", "1"}, 1));
   // The sun's shadow map: its size and how far it reaches (--shadowmap,
   // --shadow-distance; the launcher passes them). 1600 is the most the
   // console's EDRAM holds in one pass.
@@ -825,6 +833,10 @@ void ApplyLive() {
     }
     xgpu::SetExplosionEffects(Value("explosion_smoke") == "1");
     xgpu::SetSoftParticles(Value("soft_particles") != "0");
+  }
+  if (g_apply_film_grain) {
+    const bool grain = Value("film_grain") != "0";
+    if (grain != g_film_grain) g_film_grain = grain, g_apply_film_grain();
   }
   const std::string& look = Value("preset");
   if (g_running_look != 0 && look != "stock") {

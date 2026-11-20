@@ -1040,6 +1040,57 @@ void rt::ApplyEmitterNow() {
   if (g_in_menus) return;  // the level's settings object is made with the level
   std::thread([] { ApplyEmitter(1); }).detach();
 }
+// GlobalPostProcessSettings (vtable 820671E0, getType 82B76FC0 -> type
+// 82EB52B8, registered by 82B776E8 with the name record 82EB5288 and the
+// field table 82E8B0B8 that 82B77074 fills; 0x110 bytes): FILM GRAIN
+// (pc_settings.cpp) is its FilmGrainEnable, a bool at +100, as the PC mod's
+// "PostProcess.FilmGrainEnable false". OFF writes 0 to every copy; ON puts
+// back the game's value in the copies it changed.
+const WorldRenderField kPostProcessFields[] = {
+    {"FilmGrainEnable", 0x100, 'b'},          {"FilmGrainLinearFilteringEnable", 0xFB, 'b'},
+    {"FilmGrainTextureScale", 0x90, 'f'},     {"FilmGrainColorScale", 0x10, 'f'},
+    {"HdrBloomEnable", 0xF7, 'b'},            {"HdrBlurEnable", 0xF8, 'b'},
+};
+namespace {
+std::mutex g_grain_mutex;
+std::map<uint32_t, uint8_t> g_grain_game;  // copy -> the game's FilmGrainEnable
+}  // namespace
+void ApplyPostProcess(int pass) {
+  std::lock_guard<std::mutex> lock(g_grain_mutex);
+  // (the game's own and nothing changed: only looked at once, for the log)
+  if (rt::g_film_grain && g_grain_game.empty() && pass != 0) return;
+  int found = 0;
+  for (uint32_t page = 0x40000000; page < 0xC0000000; page += 0x1000) {
+    if (!IsCommitted(page)) continue;
+    for (uint32_t o = page; o + 0x110 <= page + 0x1000; o += 4) {
+      if (Ld32(o) != 0x820671E0) continue;
+      bool bools = true;  // (its bools, +F4..+103: 0 or 1 in a real copy)
+      for (uint32_t b = 0xF4; b < 0x104 && bools; ++b) bools = *G<uint8_t>(o + b) <= 1;
+      if (!bools) continue;
+      ++found;
+      uint8_t* grain = G<uint8_t>(o + 0x100);
+      if (pass == 0 || pass == 29 || pass < 0) {
+        std::string all;
+        for (const auto& f : kPostProcessFields) all += std::string(" ") + f.name + "=" + WorldRenderValue(o, f);
+        RT_INFO("postprocess %08X:%s", o, all.c_str());
+      }
+      if (!rt::g_film_grain) {
+        g_grain_game.emplace(o, *grain);  // (the first value seen: the game's)
+        *grain = 0;
+      } else if (auto it = g_grain_game.find(o); it != g_grain_game.end()) {
+        *grain = it->second;
+      }
+    }
+  }
+  if (rt::g_film_grain) g_grain_game.clear();
+  if (pass == 0 || pass == 29 || pass < 0)
+    RT_INFO("postprocess: %d copies, film grain %s", found, rt::g_film_grain ? "the game's" : "off");
+}
+// FILM GRAIN changed (pc_settings.cpp): now, in the level's copies.
+static const bool g_bc_film_grain = (g_apply_film_grain = [] {
+  if (g_in_menus) return;
+  std::thread([] { ApplyPostProcess(-1); }).detach();
+}, true);
 // Every OvergrowthSettings copy gets --overgrowth (logged before and after).
 void ApplyOvergrowth(int pass) {
   // The engine's GlobalLodScale shrinks the vegetation LOD distances: 1 at
@@ -1119,6 +1170,7 @@ void rt::ApplyShadowSettings() {
       if (pass == 0 || pass == 29) RT_INFO("shadows: %d WorldRender settings copies set", found);
       ApplyOvergrowth(pass);
       ApplyEmitter(pass);
+      ApplyPostProcess(pass);
     }
   }).detach();
 }
