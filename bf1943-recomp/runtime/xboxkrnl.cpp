@@ -17,6 +17,7 @@
 #include <unordered_map>
 
 #include <xex.h>
+#include "md5.h"
 
 namespace rt {
 std::string g_guest_args;
@@ -684,5 +685,42 @@ GUEST_IMPORT(XeCryptSha) {
   sha.Finish(digest);
 #endif
   if (ARG32(9)) memcpy(G(ARG32(9)), digest, std::min<uint32_t>(ARG32(10), 20));
+  RETURN(0);
+}
+
+// XeCryptMd5Init(state*), XeCryptMd5Update(state*, input, size), XeCryptMd5Final(state*, out, out_size).
+// XECRYPT_MD5_STATE (as Xenia's): +0 byte count, +4 A..D, +0x14 the partial block.
+// (Before these were implemented the imports only logged a warning and left the
+// digest zero; whether a title's own check depends on it is not verified here.)
+static rt::Md5 LoadMd5(uint32_t s) {
+  rt::Md5 m;
+  m.total = Ld32(s);
+  for (int i = 0; i < 4; ++i) m.h[i] = Ld32(s + 4 + i * 4);
+  memcpy(m.block, G(s + 0x14), 64);
+  return m;
+}
+static void StoreMd5(uint32_t s, const rt::Md5& m) {
+  St32(s, uint32_t(m.total));
+  for (int i = 0; i < 4; ++i) St32(s + 4 + i * 4, m.h[i]);
+  memcpy(G(s + 0x14), m.block, 64);
+}
+GUEST_IMPORT(XeCryptMd5Init) {
+  if (ARG32(3)) StoreMd5(ARG32(3), rt::Md5{});
+  RETURN(0);
+}
+GUEST_IMPORT(XeCryptMd5Update) {
+  if (!ARG32(3)) RETURN(0);
+  rt::Md5 m = LoadMd5(ARG32(3));
+  if (ARG32(4) && ARG32(5)) m.Update(G<uint8_t>(ARG32(4)), ARG32(5));
+  StoreMd5(ARG32(3), m);
+  RETURN(0);
+}
+GUEST_IMPORT(XeCryptMd5Final) {
+  if (!ARG32(3)) RETURN(0);
+  rt::Md5 m = LoadMd5(ARG32(3));
+  uint8_t digest[16];
+  m.Finish(digest);
+  if (ARG32(4)) memcpy(G(ARG32(4)), digest, std::min<uint32_t>(ARG32(5), 16));
+  memcpy(G(ARG32(3) + 4), digest, 16);  // the digest is left in the state words (as Xenia)
   RETURN(0);
 }

@@ -18,6 +18,7 @@
 #include "pad.h"
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstring>
 #include <fstream>
@@ -1172,10 +1173,75 @@ static uint32_t NewEmptyEnumerator() {
   return CreateHandle(o);
 }
 
-// XamContentCreateEnumerator(user, device, type, flags, items, buffer_size*, handle*)
+// Content (saves) on the host: <user root>/content/<type as %08X>/<file name>/, a
+// folder per package, its display name (the guest's wchar[128], as is) in
+// <file name>.name next to it. The file name is matched without regard to case
+// (Linux: the game may not always spell it the same way).
+static std::filesystem::path ContentTypeDir(uint32_t type) {
+  char t[16];
+  snprintf(t, sizeof(t), "%08X", type);
+  return g_user_root / "content" / t;
+}
+static std::string LowerAscii(std::string s) {
+  for (char& c : s) c = char(tolower((unsigned char)c));
+  return s;
+}
+static std::filesystem::path ContentDir(uint32_t type, const std::string& file) {
+  std::filesystem::path dir = ContentTypeDir(type);
+  std::error_code ec;
+  const std::string low = LowerAscii(file);
+  for (auto it = std::filesystem::directory_iterator(dir, ec); !ec && it != std::filesystem::directory_iterator();
+       it.increment(ec))
+    if (it->is_directory(ec) && LowerAscii(it->path().filename().string()) == low) return it->path();
+  return dir / file;
+}
+
+// An XamContentCreateEnumerator's packages: XCONTENT_DATA records (0x134 bytes:
+// +0 device, +4 type, +8 display name wchar[128], +0x108 file name char[42]).
+struct ContentEnumerator : HostObject {
+  std::vector<std::array<uint8_t, 0x134>> items;
+  size_t next = 0;
+  uint32_t per_call = 1;
+};
+
+// XamContentCreateEnumerator(user, device, type, flags, items, buffer_size*, handle*):
+// the saves this title made before (every device id the game asks for is the one hard drive).
 GUEST_IMPORT(XamContentCreateEnumerator) {
-  Out32(ARG32(8), ARG32(7) * 0x134);  // XCONTENT_DATA per item
-  Out32(ARG32(9), NewEmptyEnumerator());
+  uint32_t device = ARG32(4), type = ARG32(5), per_call = std::max<uint32_t>(ARG32(7), 1);
+  Out32(ARG32(8), per_call * 0x134);
+  auto e = std::make_shared<ContentEnumerator>();
+  e->per_call = per_call;
+  std::error_code ec;
+  std::vector<uint32_t> types;
+  if (type) types.push_back(type);
+  else
+    for (auto it = std::filesystem::directory_iterator(g_user_root / "content", ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
+      if (it->is_directory(ec)) types.push_back(uint32_t(strtoul(it->path().filename().string().c_str(), nullptr, 16)));
+  for (uint32_t t : types) {
+    std::vector<std::filesystem::path> dirs;
+    for (auto it = std::filesystem::directory_iterator(ContentTypeDir(t), ec);
+         !ec && it != std::filesystem::directory_iterator(); it.increment(ec))
+      if (it->is_directory(ec) && it->path().filename().string().size() <= 42) dirs.push_back(it->path());
+    std::sort(dirs.begin(), dirs.end());
+    for (auto& d : dirs) {
+      std::string name = d.filename().string();
+      auto& item = e->items.emplace_back();
+      item.fill(0);
+      auto put32 = [&](size_t o, uint32_t v) {
+        for (int i = 0; i < 4; ++i) item[o + i] = uint8_t(v >> (24 - 8 * i));
+      };
+      put32(0, device ? device : 1);
+      put32(4, t);
+      std::ifstream dn(d.parent_path() / (name + ".name"), std::ios::binary);
+      if (!dn.read(reinterpret_cast<char*>(item.data() + 8), 0x100))  // none: the file name, as big-endian wchar
+        for (size_t i = 0; i < name.size(); ++i) item[8 + i * 2] = 0, item[9 + i * 2] = uint8_t(name[i]);
+      item[8 + 0xFE] = item[8 + 0xFF] = 0;
+      memcpy(item.data() + 0x108, name.data(), name.size());
+    }
+  }
+  RT_INFO("XamContentCreateEnumerator(device %u, type %08X): %zu package(s)", device, type, e->items.size());
+  Out32(ARG32(9), CreateHandle(0, e));
   RETURN(ERROR_SUCCESS);
 }
 // XamUserCreateAchievementEnumerator(title, user, xuid, flags, offset, count, buffer_size*, handle*)
@@ -1195,9 +1261,32 @@ GUEST_IMPORT(XamGetPrivateEnumStructureFromHandle) {
 }
 
 // XamEnumerate(handle, flags, buffer, size, items_returned*, overlapped*)
+// A content enumerator hands out up to its items-per-call records that fit the
+// buffer; once none are left, ERROR_NO_MORE_FILES (through an XOVERLAPPED, as
+// Xenia: ERROR_FUNCTION_FAILED with the extended error at +0x18). Other
+// enumerators are empty.
 GUEST_IMPORT(XamEnumerate) {
-  Out32(ARG32(7), 0);
-  RETURN(CompleteOverlapped(ARG32(8), ERROR_NO_MORE_FILES));
+  uint32_t buffer = ARG32(5), size = ARG32(6), returned = ARG32(7), overlapped = ARG32(8);
+  Out32(returned, 0);
+  auto e = std::dynamic_pointer_cast<ContentEnumerator>(HandleToHost(ARG32(3)));
+  uint32_t count = 0;
+  if (e && buffer) {
+    while (e->next < e->items.size() && count < e->per_call && (count + 1) * 0x134 <= size) {
+      memcpy(G(buffer + count * 0x134), e->items[e->next].data(), 0x134);
+      ++e->next, ++count;
+    }
+  }
+  uint32_t result = count ? ERROR_SUCCESS : ERROR_NO_MORE_FILES;
+  if (e) RT_INFO("XamEnumerate(content): %u package(s)", count);
+  if (!overlapped) {
+    Out32(returned, count);
+    RETURN(result);
+  }
+  if (e && result) {
+    St32(overlapped + 0x18, 0x80070000u | result);
+    result = 0x65B;  // ERROR_FUNCTION_FAILED
+  }
+  RETURN(CompleteOverlapped(overlapped, result, count));
 }
 // XamContentGetCreator(user, XCONTENT_DATA*, is_creator*, xuid*, overlapped): our saves
 // are always made by the local user. Bad Company checks this after creating its
@@ -1233,7 +1322,7 @@ GUEST_IMPORT(XamContentCreateEx) {
   while (!root.empty() && root.back() == ':') root.pop_back();
   char type[16];
   snprintf(type, sizeof(type), "%08X", Ld32(data + 4));
-  auto host = g_user_root / "content" / type / file;
+  auto host = ContentDir(Ld32(data + 4), file);
   std::error_code ec;
   bool exists = std::filesystem::is_directory(host, ec);
   uint32_t result = 0, disposition = 0;
@@ -1250,6 +1339,10 @@ GUEST_IMPORT(XamContentCreateEx) {
   }
   if (result == 0) {
     std::filesystem::create_directories(host, ec);
+    if (disposition == 1) {  // made: its display name, for XamContentCreateEnumerator
+      std::ofstream dn(host.parent_path() / (host.filename().string() + ".name"), std::ios::binary);
+      dn.write(G<char>(data + 8), 0x100);
+    }
     MountContentRoot(root, host);
     Out32(ARG32(7), disposition);
     Out32(ARG32(8), 0xFFFFFFFF);
