@@ -72,7 +72,10 @@ target_compile_options(xenia_apu PRIVATE -march=x86-64-v3 -w)
 target_link_libraries(xenia_apu PUBLIC bf1943_ffmpeg)
 
 file(GLOB DETOUR_SOURCES CONFIGURE_DEPENDS ${ROOT}/thirdparty/recastnavigation/Detour/Source/*.cpp)
-add_executable(bf1943_server ${RUNTIME_SOURCES} ${ROOT}/runtime/bots/brain.cpp ${ROOT}/runtime/bots/nav.cpp
+# The free camera is a player's (keys and mouse): the server has no window.
+set(SERVER_SOURCES ${RUNTIME_SOURCES})
+list(REMOVE_ITEM SERVER_SOURCES ${ROOT}/runtime/free_camera.cpp)
+add_executable(bf1943_server ${SERVER_SOURCES} ${ROOT}/runtime/bots/brain.cpp ${ROOT}/runtime/bots/nav.cpp
                ${DETOUR_SOURCES} ${STUBS})
 target_include_directories(bf1943_server PRIVATE ${ROOT}/thirdparty/recastnavigation/Detour/Include)
 target_include_directories(bf1943_server PRIVATE ${ROOT}/runtime ${ROOT}/runtime/xenia_shims)

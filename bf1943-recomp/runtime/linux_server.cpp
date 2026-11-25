@@ -25,6 +25,8 @@ void SetLook(int) {}
 void SetGrade(float) {}
 float Grade() { return 0.0f; }
 void SetWind(float) {}
+void SetWeather(float, float) {}
+void PrewarmPipelines(uint32_t) {}
 void SetRtFoliage(bool) {}
 void SetSharpness(float) {}
 void SetHideUi(bool, bool) {}
@@ -84,9 +86,30 @@ bool Enabled() { return false; }
 namespace rt {
 void InstallPcUi() {}
 void PatchPcText(uint8_t*, size_t) {}
+// The PC settings page's hooks (pc_settings.cpp is not in the server): the game
+// code may set them, but nothing shows them.
+bool g_film_grain = true;
+bool (*g_setting_hidden)(const char*) = nullptr;
+const wchar_t* (*g_action_name)(int) = nullptr;
+void (*g_apply_film_grain)() = nullptr;
+}  // namespace rt
+// The free camera and the mouse aim are the player's: the server's game patches
+// still call them, so they are no-ops here.
+namespace rt::freecam {
+bool Active() { return false; }
+void FrameStep() {}
+void NoteFov(float) {}
+bool Override(const float*, float*) { return false; }
+}  // namespace rt::freecam
+namespace rt {
+void AimMouseReset() {}
+bool AimMouseTake(double&, double&, bool& stale) { stale = true; return false; }
+void AimMouseSeen() {}
 }  // namespace rt
 namespace rt::pcset {
 void Load() {}
+void GovernorFrame() {}
+void QuitToMenu() {}
 bool SavedFrameGen() { return false; }
 int Key(Action, int) { return 0; }
 bool IsOpen() { return false; }

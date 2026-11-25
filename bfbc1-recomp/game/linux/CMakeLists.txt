@@ -80,9 +80,12 @@ target_compile_definitions(bfbc1_xenia_apu PUBLIC FMT_HEADER_ONLY XXH_INLINE_ALL
 target_compile_options(bfbc1_xenia_apu PRIVATE -march=x86-64-v3 -w)
 target_link_libraries(bfbc1_xenia_apu PUBLIC bfbc1_ffmpeg)
 
-add_executable(bfbc1_server ${RUNTIME_SOURCES} ${BC_RUNTIME_SOURCES} ${DETOUR_SOURCES} ${STUBS})
+# The free camera is a player's (keys and mouse): the server has no window.
+set(SERVER_SOURCES ${RUNTIME_SOURCES})
+list(REMOVE_ITEM SERVER_SOURCES ${ROOT}/runtime/free_camera.cpp)
+add_executable(bfbc1_server ${SERVER_SOURCES} ${BC_RUNTIME_SOURCES} ${DETOUR_SOURCES} ${STUBS})
 target_include_directories(bfbc1_server PRIVATE ${ROOT}/runtime ${ROOT}/runtime/xenia_shims
-                           ${ROOT}/thirdparty/recastnavigation/Detour/Include)
+                           ${ROOT}/tools/msvc_compat ${ROOT}/thirdparty/recastnavigation/Detour/Include)
 target_compile_options(bfbc1_server PRIVATE -march=x86-64-v3 -fno-strict-aliasing)
 target_link_libraries(bfbc1_server PRIVATE bfbc1_ppc bfbc1_xexload bfbc1_xenia_apu Threads::Threads ${CMAKE_DL_LIBS})
 target_link_options(bfbc1_server PRIVATE -rdynamic)  # symbol names in crash stacks

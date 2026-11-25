@@ -397,12 +397,14 @@ void Command(const std::string& line) {
     if (commander::Available()) AddLine(L"/commander us|japan|leave (anyone: the team's commander seat)");
     return;
   }
+#ifdef _WIN32
   if (cmd == "login") {
     // A joiner: the host's admin password, sent along with its commands.
     g_login = arg;
     AddLine(arg.empty() ? L"logged out" : L"admin password kept: the host's commands go to it");
     return;
   }
+#endif
   if (cmd == "say") {
 #ifdef _WIN32
     if (!arg.empty()) BroadcastChat(arg);
@@ -566,9 +568,11 @@ void ConsoleThread() {
 
 void Start() {
   if (const char* m = getenv("BF_ADMIN_RESTARTED")) RT_INFO("admin: started again for /map %s", m);
+#ifdef _WIN32
   commander::SetRawSender([](uint32_t ip, uint16_t port, const std::string& packet) {  // (markers, blasts)
     SendRaw(ip, port, packet);
   });
+#endif
   commander::Start(
       [](const std::string& note) {  // (a seat freed: everyone hears it)
 #ifdef _WIN32

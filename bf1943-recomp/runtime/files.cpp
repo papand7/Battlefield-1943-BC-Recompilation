@@ -199,7 +199,9 @@ uint32_t OpenFile(uint32_t handle_out, uint32_t access, uint32_t attrs, uint32_t
   if (low.find("reduced-level-00.fbrb") != std::string::npos || low.find("\\level-00.fbrb") != std::string::npos) {
     g_in_menus = false;
     g_level_open_ms = now_ms;
-    ApplyShadowSettings();
+#if defined(_WIN32) || defined(BF1943_CLIENT)
+    ApplyShadowSettings();  // (the server has no renderer: nothing to set)
+#endif
   }
   static bool logged = true;
   if (bool now = g_in_menus; now != logged) {
