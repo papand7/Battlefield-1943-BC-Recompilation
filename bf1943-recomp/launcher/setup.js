@@ -34,7 +34,8 @@ const kGames = {
     title: 'Battlefield: Bad Company',
     sha1: 'c1ad8ac5c18b1b0b23a4c3476721462852af1a93',  // default.xex of the US disc
     wrongSha1: {},
-    expected: 'Battlefield: Bad Company (USA disc)',
+    titleId: 0x454107F9,  // every Bad Company disc: tells it from an edited or other game's file
+    expected: 'the Battlefield: Bad Company USA disc',
     unpacker: 'xiso_extract.py',
     data: 'original/bfbc1', gameDir: 'game-bfbc1', exe: 'bfbc1.exe', config: 'bfbc1_config.toml',
   },
@@ -68,9 +69,36 @@ function readAt(fd, pos, len) {
   const b = Buffer.alloc(len);
   return b.subarray(0, fs.readSync(fd, b, 0, len, pos));
 }
-// A disc image (XDVDFS, as tools/xiso_extract.py): the SHA-1 of default.xex in its
-// root directory, or null. Tells Bad Company's disc from any other game's.
-function isoXexSha1(file) {
+// XEX2 header facts: the title ID, version (BF1943: 0x106 = 1.06) and media ID of
+// a default.xex, or null. Read from the bytes; nothing is executed or unpacked.
+function xexInfo(buf) {
+  if (!buf || buf.length < 0x20 || buf.toString('latin1', 0, 4) !== 'XEX2') return null;
+  const n = buf.readUInt32BE(20);
+  for (let i = 0; i < Math.min(n, 64); ++i) {
+    const o = 0x18 + i * 8;
+    if (o + 8 > buf.length) break;
+    if (buf.readUInt32BE(o) !== 0x00040006) continue;  // EXECUTION_INFO
+    const e = buf.readUInt32BE(o + 4);
+    if (e + 16 > buf.length) return null;
+    return { mediaId: buf.readUInt32BE(e), version: buf.readUInt32BE(e + 4), titleId: buf.readUInt32BE(e + 12) };
+  }
+  return null;
+}
+const versionText = (v) => `${v >>> 28}.${(v >>> 24) & 0xF}.${(v >>> 8) & 0xFFFF}.${v & 0xFF}`;
+const mediaText = (v) => v.toString(16).toUpperCase().padStart(8, '0');
+// Why a default.xex of the right game cannot be built: the ports' code addresses
+// are for one build each, and Bad Company's Gold Edition, Platinum Hits and other
+// regions (like BF1943 1.05) are different code.
+function unsupportedBuild(g, info, h) {
+  const build = info ? `version ${versionText(info.version)}, media ID ${mediaText(info.mediaId)}` : 'a different build';
+  return `This is ${g.title} (${build}), but not ${g.expected}: other editions and regions (Gold Edition, `
+    + `Platinum Hits, ...) contain different code and cannot be used. The file this port needs has SHA-1 `
+    + `${g.sha1}; this one is ${h}.`;
+}
+// A disc image (XDVDFS, as tools/xiso_extract.py): default.xex in its root
+// directory as { sha1, xex } (its bytes), or null. Tells Bad Company's disc from
+// any other game's.
+function isoXexInfo(file) {
   const fd = fs.openSync(file, 'r');
   try {
     for (const base of [0, 0xFD90000, 0x2080000, 0x18300000]) {
@@ -86,7 +114,7 @@ function isoXexSha1(file) {
         const name = dir.toString('latin1', o + 14, o + 14 + dir[o + 13]);
         if (name.toLowerCase() === 'default.xex' && !(dir[o + 12] & 0x10)) {
           const xex = readAt(fd, base + dir.readUInt32LE(o + 4) * 2048, dir.readUInt32LE(o + 8));
-          return crypto.createHash('sha1').update(xex).digest('hex');
+          return { sha1: crypto.createHash('sha1').update(xex).digest('hex'), xex };
         }
         if (dir.readUInt16LE(o)) stack.push(dir.readUInt16LE(o));
         if (dir.readUInt16LE(o + 2)) stack.push(dir.readUInt16LE(o + 2));
@@ -117,11 +145,24 @@ function identify(file, st) {
     let what = null;
     try {
       if (/\.iso$/i.test(file)) {
-        if (isoXexSha1(file) === kGames.bfbc1.sha1) what = { game: 'bfbc1' };
+        const disc = isoXexInfo(file);
+        if (disc) {
+          if (disc.sha1 === kGames.bfbc1.sha1) what = { game: 'bfbc1' };
+          else {
+            const x = xexInfo(disc.xex);
+            if (x && x.titleId === kGames.bfbc1.titleId)
+              what = { game: 'bfbc1', wrong: unsupportedBuild(kGames.bfbc1, x, disc.sha1) };
+          }
+        }
       } else if (path.basename(file).toLowerCase() === 'default.xex') {
         const h = sha1(file);
         what = h === kGames.bfbc1.sha1 ? { game: 'bfbc1' } : h === kGames.bf1943.sha1 ? { game: 'bf1943' }
           : kGames.bf1943.wrongSha1[h] ? { game: 'bf1943', wrong: kGames.bf1943.wrongSha1[h] } : null;
+        if (!what) {
+          const x = xexInfo(fs.readFileSync(file));
+          if (x && x.titleId === kGames.bfbc1.titleId)
+            what = { game: 'bfbc1', wrong: unsupportedBuild(kGames.bfbc1, x, h) };
+        }
       } else if (st.size > 1 << 20) {
         const info = stfsInfo(file);
         if (info && info.title === kBf1943Title)
@@ -155,6 +196,17 @@ function findGameFiles(dir, game) {
     }
   }
   return wrong;
+}
+// Why this default.xex cannot be used for game, or null (the setup step; the
+// launcher's own look-around is identify/findGameFiles).
+function checkDefaultXex(game, xex) {
+  const g = kGames[game];
+  const h = sha1(xex);
+  if (g.wrongSha1[h]) return g.wrongSha1[h];
+  if (h === g.sha1) return null;
+  const info = xexInfo(fs.readFileSync(xex));
+  if (g.titleId && info && info.titleId === g.titleId) return unsupportedBuild(g, info, h);
+  return `This default.xex is not ${g.expected} (SHA-1 ${h}).`;
 }
 
 // ---- tools ------------------------------------------------------------------------
@@ -294,9 +346,8 @@ async function setup(launcherDir, game, gamePath, send) {
       }
     }
     if (!fs.existsSync(xex)) throw new Error('No default.xex found in the game files.');
-    const h = sha1(xex);
-    if (p.game.wrongSha1[h]) throw new Error(p.game.wrongSha1[h]);
-    if (h !== p.game.sha1) throw new Error(`This default.xex is not ${p.game.expected} (SHA-1 ${h}).`);
+    const why = checkDefaultXex(game, xex);
+    if (why) throw new Error(why);
   });
 
   // 2. Build tools.
@@ -421,4 +472,5 @@ function patchMenu(launcherDir, gameData, userDir) {
   });
 }
 
-module.exports = { paths, findGameFiles, status, setup, patchMenu, findTools, buildNavgen, kToolNames, kGames };
+module.exports = { paths, findGameFiles, checkDefaultXex, status, setup, patchMenu, findTools, buildNavgen,
+  kToolNames, kGames };

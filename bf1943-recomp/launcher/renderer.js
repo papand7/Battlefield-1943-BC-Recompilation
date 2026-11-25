@@ -24,30 +24,30 @@ const rows = [
 const offOn = [['Off', '0'], ['On', '1']];
 const fxRows = [
   ['fx_quality', 'Quality preset', [['Low', 'low'], ['Medium', 'medium'], ['High', 'high'], ['Ultra', 'ultra'],
-    ['Custom', 'custom']], 'high'],
+    ['Custom', 'custom']], 'low'],
   ['fx_governor', 'Adaptive quality', [['Off', '0'], ['60 FPS', '60'], ['30 FPS', '30']], '0'],
   ['fx_leaves', 'Drifting leaves', [['Off', '0'], ['Few', '0.5'], ['Normal', '1'], ['Many', '1.6']], '0'],
   ['fx_motes', 'Dust motes', [['Off', '0'], ['Few', '0.5'], ['Normal', '1'], ['Many', '1.6']], '0'],
-  ['fx_rt', 'Ray-traced shadows', offOn, '1'],
+  ['fx_rt', 'Ray-traced shadows', offOn, '0'],
   ['fx_rt_foliage', 'Ray-traced foliage', offOn, '0'],
-  ['fx_shadows', 'Screen shadows', [['Off', '0'], ['Low', '0.5'], ['Full', '1']], '1'],
-  ['fx_gi', 'Bounce light', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
-  ['fx_ao', 'Ambient occlusion', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '1'],
-  ['fx_clouds', 'Clouds', [['Off', '0'], ['Few', '0.3'], ['Normal', '0.45'], ['Many', '0.65']], '0.45'],
-  ['fx_cloud_shadows', 'Cloud shadows', [['Off', '0'], ['On', '0.55']], '0.55'],
+  ['fx_shadows', 'Screen shadows', [['Off', '0'], ['Low', '0.5'], ['Full', '1']], '0'],
+  ['fx_gi', 'Bounce light', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '0'],
+  ['fx_ao', 'Ambient occlusion', [['Off', '0'], ['Low', '0.5'], ['Normal', '1'], ['High', '1.5']], '0'],
+  ['fx_clouds', 'Clouds', [['Off', '0'], ['Few', '0.3'], ['Normal', '0.45'], ['Many', '0.65']], '0.3'],
+  ['fx_cloud_shadows', 'Cloud shadows', [['Off', '0'], ['On', '0.55']], '0'],
   ['fx_density', 'Fog', [['Light', '0.0009'], ['Normal', '0.0018'], ['Thick', '0.0036']], '0.0018'],
-  ['fx_shafts', 'Light shafts', [['Off', '0'], ['Normal', '0.6'], ['Strong', '0.9']], '0.6'],
-  ['fx_reflect', 'Sea reflections', offOn, '1'],
-  ['fx_gloss', 'Surface reflections', offOn, '1'],
-  ['fx_water_foam', 'Water foam', offOn, '1'],
-  ['fx_water_refract', 'Water refraction', offOn, '1'],
-  ['fx_water_shallow', 'Shallow water', offOn, '1'],
-  ['fx_detail', 'Surface detail', [['Off', '0'], ['On', '1'], ['Strong', '1.5']], '1'],
-  ['fx_particle_quality', 'Particle quality', [['Game', '0'], ['High', '1']], '1'],
-  ['fx_soft_particles', 'Soft particles', offOn, '1'],
+  ['fx_shafts', 'Light shafts', [['Off', '0'], ['Normal', '0.6'], ['Strong', '0.9']], '0'],
+  ['fx_reflect', 'Sea reflections', offOn, '0'],
+  ['fx_gloss', 'Surface reflections', offOn, '0'],
+  ['fx_water_foam', 'Water foam', offOn, '0'],
+  ['fx_water_refract', 'Water refraction', offOn, '0'],
+  ['fx_water_shallow', 'Shallow water', offOn, '0'],
+  ['fx_detail', 'Surface detail', [['Off', '0'], ['On', '1'], ['Strong', '1.5']], '0'],
+  ['fx_particle_quality', 'Particle quality', [['Game', '0'], ['High', '1']], '0'],
+  ['fx_soft_particles', 'Soft particles', offOn, '0'],
   ['fx_explosion_smoke', 'Explosion smoke', offOn, '0'],
   ['fx_flash', 'Muzzle flash light', offOn, '1'],
-  ['fx_wind', 'Plant wind', [['Off', '0'], ['Light', '0.2'], ['Normal', '0.4'], ['Strong', '0.8']], '0.4', ['bf1943']],
+  ['fx_wind', 'Plant wind', [['Off', '0'], ['Light', '0.2'], ['Normal', '0.4'], ['Strong', '0.8']], '0', ['bf1943']],
 ];
 // (A fifth item: the games the row is for; Bad Company's plants have no wind,
 // as its PC SETTINGS page leaves the row out too: bfbc1_game.cpp g_setting_hidden.)
@@ -181,6 +181,7 @@ const setupText = {
     + 'package of Battlefield 1943 (version 1.06), or <b>default.xex</b> in a folder you unpacked.'],
   bfbc1: ['Set up Bad Company', 'The game is built on this PC from your own copy. Choose your game files: the disc image '
     + '(<b>.iso</b>) of Battlefield: Bad Company (USA), or <b>default.xex</b> in a folder you unpacked. '
+    + 'The Gold Edition, Platinum Hits and other regions are different code and are not supported. '
     + 'The game files take about 5 GB.'],
 };
 const foundHint = ' Put them next to the launcher and they are found by themselves.';
@@ -321,6 +322,11 @@ $('play').onclick = async () => {
   settings.blood = $('blood').checked;
   settings.hdr = $('hdr').checked;
   settings.scale = { ...settings.scale, [settings.game]: settings.resolution };
+  // Effects never chosen here or in the game's page (no fx_ key at all): the
+  // low defaults (each row's def), saved with the rest so they are what runs.
+  if (!Object.keys(settings).some((k) => k.startsWith('fx_')))
+    for (const [key, , , def, only] of fxRows)
+      if (!only || only.includes(settings.game)) settings[key] = def;
   $('play').disabled = true;
   setStatus('Starting…');
   const result = await window.launcher.play(settings);

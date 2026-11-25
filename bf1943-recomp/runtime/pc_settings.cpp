@@ -137,7 +137,7 @@ void Build() {
                      {"stock", "enhanced", "vivid", "toon", "noir", "ww2"}, 0, false, "preset"));
   v.push_back(Choice(kGraphics, "resolution", L"RESOLUTION SCALE",
                      L"The game drawn at 1, 2 or 3 times its own 1280x720.",
-                     {L"1X (720P)", L"2X (1440P)", L"3X (2160P)"}, {"1", "2", "3"}, 1, true,
+                     {L"1X (720P)", L"2X (1440P)", L"3X (2160P)"}, {"1", "2", "3"}, 0, true,
                      "resolution"));
   v.push_back(Choice(kGraphics, "upscaling", L"UPSCALING",
                      L"How the frame is fitted to the window. FSR 3 and DLSS (NVIDIA RTX; AUTO picks): "
@@ -231,16 +231,17 @@ void Build() {
   // console's EDRAM holds in one pass.
   v.push_back(Choice(kGraphics, "shadow_detail", L"SHADOW DETAIL",
                      L"The sun's shadows: their sharpness and how far they reach (next start).",
-                     {L"LOW", L"MEDIUM", L"HIGH", L"ULTRA"}, {"low", "medium", "high", "ultra"}, 2, true,
+                     {L"LOW", L"MEDIUM", L"HIGH", L"ULTRA"}, {"low", "medium", "high", "ultra"}, 0, true,
                      "shadowDetail"));
-  // Effects (the scene effects, live).
+  // Effects (the scene effects, live). The defaults are the LOW preset (the
+  // launcher's defaults too): a fresh install must not start on the costly ones.
   v.push_back(Choice(kEffects, "quality", L"QUALITY PRESET",
                      L"Sets every effect below at once. LOW: the game's own look with a few extras; "
                      L"ULTRA: more rays and steps. Changing an effect makes it CUSTOM.",
                      {L"LOW", L"MEDIUM", L"HIGH", L"ULTRA", L"CUSTOM"}, {"low", "medium", "high", "ultra", "custom"},
-                     2));
+                     0));
   v.push_back(Choice(kEffects, "rt", L"RAY-TRACED SHADOWS",
-                     L"Sun shadows from every object, on screen or not.", kOffOn, {"0", "1"}, 1));
+                     L"Sun shadows from every object, on screen or not.", kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "rt_foliage", L"RAY-TRACED FOLIAGE",
                      L"Palms, bushes and masked leaves cast ray-traced shadows too. Costs frame rate (next start).",
                      kOffOn, {"0", "1"}, 0, true));
@@ -255,39 +256,39 @@ void Build() {
                      L"Fine specks drifting in the sunlit air, brighter looking towards the sun.",
                      {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.5", "1", "1.6"}, 0));
   v.push_back(Choice(kEffects, "shadows", L"SCREEN SHADOWS", L"Contact shadows from the depth.",
-                     {L"OFF", L"LOW", L"FULL"}, {"0", "0.5", "1"}, 2));
+                     {L"OFF", L"LOW", L"FULL"}, {"0", "0.5", "1"}, 0));
   v.push_back(Choice(kEffects, "gi", L"BOUNCE LIGHT", L"Light bouncing off nearby surfaces.",
-                     {L"OFF", L"LOW", L"NORMAL", L"HIGH"}, {"0", "0.5", "1", "1.5"}, 2));
+                     {L"OFF", L"LOW", L"NORMAL", L"HIGH"}, {"0", "0.5", "1", "1.5"}, 0));
   v.push_back(Choice(kEffects, "ao", L"AMBIENT OCCLUSION",
                      L"Contact shading in corners and under objects.",
-                     {L"OFF", L"LOW", L"NORMAL", L"HIGH"}, {"0", "0.5", "1", "1.5"}, 2));
+                     {L"OFF", L"LOW", L"NORMAL", L"HIGH"}, {"0", "0.5", "1", "1.5"}, 0));
   v.push_back(Choice(kEffects, "clouds", L"CLOUDS", L"Volumetric clouds.",
-                     {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.3", "0.45", "0.65"}, 2));
+                     {L"OFF", L"FEW", L"NORMAL", L"MANY"}, {"0", "0.3", "0.45", "0.65"}, 1));
   v.push_back(Choice(kEffects, "cloud_shadows", L"CLOUD SHADOWS",
-                     L"Clouds shadow the ground.", kOffOn, {"0", "0.55"}, 1));
+                     L"Clouds shadow the ground.", kOffOn, {"0", "0.55"}, 0));
   v.push_back(Choice(kEffects, "density", L"FOG", L"Height fog over the sea.",
                      {L"LIGHT", L"NORMAL", L"THICK"}, {"0.0009", "0.0018", "0.0036"}, 1));
   v.push_back(Choice(kEffects, "shafts", L"LIGHT SHAFTS", L"Shadowed air in the fog.",
-                     {L"OFF", L"NORMAL", L"STRONG"}, {"0", "0.6", "0.9"}, 1));
+                     {L"OFF", L"NORMAL", L"STRONG"}, {"0", "0.6", "0.9"}, 0));
   v.push_back(Choice(kEffects, "reflect", L"SEA REFLECTIONS", L"Ships and islands mirrored in the sea.",
-                     kOffOn, {"0", "1"}, 1));
+                     kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "gloss", L"SURFACE REFLECTIONS",
-                     L"Smooth surfaces reflect what is around them.", kOffOn, {"0", "1"}, 1));
+                     L"Smooth surfaces reflect what is around them.", kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "water_foam", L"WATER FOAM", L"Foam along hulls and beaches.", kOffOn,
-                     {"0", "1"}, 1));
+                     {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "water_refract", L"WATER REFRACTION",
-                     L"What is under the water bent by the waves.", kOffOn, {"0", "1"}, 1));
+                     L"What is under the water bent by the waves.", kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "water_shallow", L"SHALLOW WATER",
-                     L"Clear turquoise water over sand.", kOffOn, {"0", "1"}, 1));
+                     L"Clear turquoise water over sand.", kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "detail", L"SURFACE DETAIL",
                      L"Pebbles, cracks and grime on the ground.", {L"OFF", L"ON", L"STRONG"},
-                     {"0", "1", "1.5"}, 1));
+                     {"0", "1", "1.5"}, 0));
   v.push_back(Choice(kEffects, "particle_quality", L"PARTICLE QUALITY",
                      L"The game's smoke, dust and sparks. High: full resolution, finer shading.",
-                     {L"GAME", L"HIGH"}, {"0", "1"}, 1));
+                     {L"GAME", L"HIGH"}, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "soft_particles", L"SOFT PARTICLES",
                      L"Smoke fades where it meets the ground and walls (next start).", kOffOn,
-                     {"0", "1"}, 1, true));
+                     {"0", "1"}, 0, true));
   v.push_back(Choice(kEffects, "explosion_smoke", L"EXPLOSION SMOKE",
                      L"Lingering, lit smoke and bouncing debris at explosions.", kOffOn, {"0", "1"}, 0));
   v.push_back(Choice(kEffects, "flash", L"MUZZLE FLASH LIGHT",
@@ -295,7 +296,7 @@ void Build() {
                      {"0", "1"}, 1));
   v.push_back(Choice(kEffects, "wind", L"PLANT WIND",
                      L"Gusts sway palms and bushes; their ray-traced shadows sway with them.",
-                     {L"OFF", L"LIGHT", L"NORMAL", L"STRONG"}, {"0", "0.2", "0.4", "0.8"}, 2));
+                     {L"OFF", L"LIGHT", L"NORMAL", L"STRONG"}, {"0", "0.2", "0.4", "0.8"}, 0));
   // The effects are the launcher's too (its EFFECTS card): fx_<key> there.
   static std::deque<std::string> fx_keys;
   for (Setting& s : v)

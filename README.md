@@ -9,7 +9,7 @@ This port was created using the [XenonRecomp](https://github.com/hedge-dev/Xenon
 ## Installation
 The latest version of the launcher can be found in the [Releases](https://github.com/papand7/Battlefield-Recompilation-Project/releases) page.
 
-- Put `BattlefieldLauncher-<version>.exe` in a folder together with your game files: Battlefield 1943 **version 1.06** (the game package, or `default.xex` in an unpacked folder), and/or Battlefield: Bad Company (the **USA disc** `.iso`, or `default.xex` in an unpacked folder).
+- Put `BattlefieldLauncher-<version>.exe` in a folder together with your game files: Battlefield 1943 **version 1.06** (the game package, or `default.xex` in an unpacked folder), and/or Battlefield: Bad Company (the **USA disc** `.iso`, or `default.xex` in an unpacked folder). Bad Company's Gold Edition, Platinum Hits and other regions are different code and are not supported.
 - Run it, pick a game at the top and press **INSTALL** (or **Choose game files…** first, if your files are somewhere else). It checks your files, installs the free build tools it needs through winget, and compiles the game's code for your PC, which takes about 5 to 60 minutes and only happens once.
 - Press **Play**. Settings can be adjusted in the launcher, or in game under **Settings**, opened with <kbd>F10</kbd> at any time.
 - The launcher takes the mouse, the keyboard (arrows, <kbd>Enter</kbd>, <kbd>Esc</kbd>, <kbd>Q</kbd> / <kbd>E</kbd> for the pages) or a controller (D-pad or stick, A to press, B to go back, the bumpers for the pages, the triggers for the game); on a row of settings, left and right change the value, as in the game's menus.

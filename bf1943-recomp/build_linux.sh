@@ -289,7 +289,16 @@ XEX=$GAME_DIR/default.xex
 h=$(sha1 "$XEX")
 [ -z "$XEX_SHA1_105" ] || [ "$h" != $XEX_SHA1_105 ] ||
   die "this is version 1.05 of the game: use the 1.06 package (the game updated on the console)"
-[ "$h" = $XEX_SHA1 ] || die "$XEX is not $TITLE (SHA-1 $h)"
+if [ "$h" != $XEX_SHA1 ]; then
+  if [ $BC = 1 ]; then
+    xinfo=$(python3 -I "$TREE/tools/xex_info.py" "$XEX" 2>/dev/null || true)
+    if printf '%s\n' "$xinfo" | grep -q "title_id 454107F9"; then
+      bver=$(printf '%s\n' "$xinfo" | sed -n 's/.* version \([^ ]*\) base_version.*/\1/p')
+      die "this is Battlefield: Bad Company${bver:+ version $bver}, but not the USA disc this port is built for: the Gold Edition, Platinum Hits and other regions have different code and cannot be used (SHA-1 of the USA disc default.xex: $XEX_SHA1)"
+    fi
+  fi
+  die "$XEX is not $TITLE (SHA-1 $h)"
+fi
 echo "$TITLE: $GAME_DIR"
 finish
 
