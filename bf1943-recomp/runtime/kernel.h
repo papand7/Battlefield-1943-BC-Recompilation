@@ -166,6 +166,10 @@ bool AimMouseOwnsLook();
 // read (xam.cpp MouseLookAxis) instead of its aim record (Bad Company's setter
 // hook, bc_bots.cpp): the aim keeps the mouse's turn only.
 extern bool g_mouse_pitch_by_stick;
+// Set by a game whose scene effects cannot supply the world's sun shadows (Bad
+// Company: the ray tracer uses BF1943's shader patterns): the effects keep the
+// game's own shadow map (pc_settings.cpp: own_shadows=0, no ray tracer).
+extern bool g_scene_fx_own_shadows;
 // The thread the client's timers were made on (game_patches.cpp): the local
 // player's simulation runs there; the server's runs on its own thread.
 uint32_t ClientThreadId();

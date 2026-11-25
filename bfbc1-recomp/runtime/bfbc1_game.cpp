@@ -122,6 +122,10 @@ bool CustomMenus() { return false; }
 // then turns by the mouse only. Looking up and down did not move with the
 // setter's pitch in gameplay (it works in the cutscenes, where this path is used).
 static const bool g_bc_mouse_pitch = (g_mouse_pitch_by_stick = true, true);
+// The scene effects cannot draw Bad Company's world sun shadows (the ray
+// tracer's mesh capture uses BF1943's shader patterns): the game's own shadow
+// map draws them, so the effects keep it (pc_settings.cpp: own_shadows=0).
+static const bool g_bc_own_shadows = (g_scene_fx_own_shadows = false, true);
 static const bool g_bc_settings_hidden = (g_setting_hidden = [](const char* key) {
   return !std::strcmp(key, "wind");
 }, true);
@@ -1166,8 +1170,11 @@ void rt::ApplyShadowSettings() {
           }
           if (g_shadow_size) St32(o + 0xA8, g_shadow_size), St32(o + 0x78, g_shadow_size);
           if (g_shadow_distance > 0) {
+            // Bad Company's shadow budgets overflow past 200 m (its own map is
+            // about 100 m): further than that and the shadows drop out.
+            float distance = std::min(g_shadow_distance, 200.0f);
             uint32_t d;
-            memcpy(&d, &g_shadow_distance, 4);
+            memcpy(&d, &distance, 4);
             St32(o + 0xAC, d);
           }
         }

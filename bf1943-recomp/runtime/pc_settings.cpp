@@ -661,6 +661,13 @@ bool g_gov_started = false;
 // What each level cuts (on top of the user's own settings).
 const char* const kGovLevels[] = {
     "", "rt=0", "rt=0,shafts=0,gi=0", "rt=0,shafts=0,gi=0,ao=0,shadows=0"};
+// A game whose scene effects cannot draw the world's sun shadows (Bad Company:
+// the ray tracer knows BF1943's shader patterns) keeps the game's own shadow
+// map: own_shadows=0, and no ray tracer to build for nothing.
+std::string SceneFxForGame(std::string fx) {
+  if (!g_scene_fx_own_shadows) fx += ",own_shadows=0,rt=0";
+  return fx;
+}
 }  // namespace
 
 void ApplyLive();
@@ -787,7 +794,7 @@ void GovernorFrame() {
   if (g_gov_level == 0) {
     ApplyLive();
   } else {
-    xgpu::ApplySceneFx(kGovLevels[g_gov_level]);
+    xgpu::ApplySceneFx(SceneFxForGame(kGovLevels[g_gov_level]).c_str());
   }
 }
 
@@ -816,8 +823,8 @@ void ApplyLive() {
     const std::string& mb = Value("motion_blur");
     fx += mb == "low" ? ",motion_blur=1" : mb == "high" ? ",motion_blur=2" : ",motion_blur=0";
   }
-  xgpu::ApplySceneFx(fx.c_str());
-  if (g_gov_level) xgpu::ApplySceneFx(kGovLevels[g_gov_level]);
+  xgpu::ApplySceneFx(SceneFxForGame(fx).c_str());
+  if (g_gov_level) xgpu::ApplySceneFx(SceneFxForGame(kGovLevels[g_gov_level]).c_str());
   // --wind on the command line wins (test runs).
   xgpu::SetRtFoliage(Value("rt_foliage") == "1");
   xgpu::SetSharpness(float(std::atof(Value("sharpness").c_str())));

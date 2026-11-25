@@ -173,6 +173,7 @@ std::atomic<uint16_t> g_auto_buttons{0};  // held by the game-side automation (b
 float g_mouse_sensitivity = 1.0f;  // --mouse-sens
 bool g_mouse_invert = false;       // --invert-mouse
 bool g_mouse_pitch_by_stick = false;  // (kernel.h: Bad Company sets it, bfbc1_game.cpp)
+bool g_scene_fx_own_shadows = true;   // (kernel.h: Bad Company keeps the game's shadow map)
 float g_plane_mouse_sensitivity = 1.0f;
 float g_aim_mouse_sensitivity = 1.0f;
 bool g_plane_mouse_invert = false;
@@ -565,7 +566,11 @@ std::atomic<bool> g_mouse_looks{false};      // the last mouse-look read was liv
 // which turns the aim itself instead of pushing the stick.
 std::mutex g_aim_mouse_mutex;
 double g_aim_dx = 0, g_aim_dy = 0;           // counts since that update last took them
-std::chrono::steady_clock::time_point g_aim_last{};
+// When that update last ran (steady ns, 0 before the first). A game's aim update
+// can stop for a while (a scripted campaign moment, a death, a state change) and
+// then the stick must carry the mouse again: see AimMouseOwnsLook.
+constexpr int64_t kAimStaleNs = 250000000;   // 0.25 s
+std::atomic<int64_t> g_aim_last_ns{0};
 std::atomic<bool> g_aim_seen{false};         // the local aim update has run (until then the stick stays)
 // The PC setting KEYBOARD WITH A CONTROLLER set OFF with a pad connected: the
 // keyboard and the mouse are no game input (the PC settings page keeps them).
@@ -660,18 +665,36 @@ bool rt::AimMouseTake(double& dx, double& dy, bool& stale) {
     dx = g_aim_dx, dy = g_aim_dy;
     g_aim_dx = g_aim_dy = 0;
   }
-  const auto now = std::chrono::steady_clock::now();
+  const int64_t now = SteadyNs();
   // The first update of a level, and any after a pause, a death or a spawn,
   // drops what was gathered rather than turning by all of it at once.
-  stale = g_aim_last.time_since_epoch().count() == 0 ||
-          std::chrono::duration<double>(now - g_aim_last).count() > 0.25;
-  g_aim_last = now;
+  const int64_t last = g_aim_last_ns.load(std::memory_order_relaxed);
+  stale = last == 0 || now - last > kAimStaleNs;
+  g_aim_last_ns.store(now, std::memory_order_relaxed);
   return true;
 }
 void rt::AimMouseSeen() { g_aim_seen.store(true, std::memory_order_relaxed); }
+// Whether a controller was connected when this run started. A mouse-only
+// machine keeps the mouse on the aim path: it never falls back to the right
+// stick (a pad plugged in later does not change this run).
+static bool PadAtLaunch() {
+  static const bool pad = [] {
+    const bool p = rt::pad::Connected();
+    RT_INFO("input: controller at launch: %s", p ? "yes" : "no (the mouse keeps the aim, not the stick)");
+    return p;
+  }();
+  return pad;
+}
 bool rt::AimMouseOwnsLook() {
   static const bool off = std::getenv("BF_NO_MOUSE_AIM") != nullptr;
-  return !off && g_aim_seen.load(std::memory_order_relaxed) && g_present &&
+  // With a pad, only while the aim update still runs: once it stops (a campaign
+  // moment, a death, a scripted camera), the stick carries the mouse again
+  // instead of both paths waiting for an update that is not coming. Without one,
+  // the aim owns the mouse even before its first update and when it goes quiet.
+  const int64_t last = g_aim_last_ns.load(std::memory_order_relaxed);
+  const bool fresh = last != 0 && SteadyNs() - last <= kAimStaleNs;
+  const bool pad = PadAtLaunch();
+  return !off && (pad ? fresh && g_aim_seen.load(std::memory_order_relaxed) : true) && g_present &&
          !g_in_menus.load(std::memory_order_relaxed) && !g_level_menu.load(std::memory_order_relaxed) &&
          LocalVehicle() == kOnFoot;
 }
@@ -699,10 +722,17 @@ float rt::MouseLookAxis(int axis) {
     if (rt::g_vehicle_mouse_stick(&x, &y)) return axis == 0 ? x : y;
   }
   // On foot the mouse turns the aim itself (pc_look.cpp): no stick push as
-  // well, which would turn twice with the stick's curve.
-  if (!g_local_flying.load(std::memory_order_relaxed) && rt::AimMouseOwnsLook() &&
-      !(axis == 1 && rt::g_mouse_pitch_by_stick))
-    return 0;
+  // well, which would turn twice with the stick's curve. With a pad, a stopped
+  // update lets the stick carry the mouse instead (its counts are then dropped);
+  // without one at launch, the aim keeps it, stale or not.
+  const bool flying = g_local_flying.load(std::memory_order_relaxed);
+  const bool aim_owns = !flying && rt::AimMouseOwnsLook();
+  if (aim_owns && !(axis == 1 && rt::g_mouse_pitch_by_stick)) return 0;
+  // (Only once the aim path had taken over: before its first movement the
+  // counts must reach it, or it never learns the mouse is in use.)
+  if (!flying && !aim_owns && g_aim_seen.load(std::memory_order_relaxed) &&
+      g_aim_last_ns.load(std::memory_order_relaxed) != 0)
+    rt::AimMouseReset();
   float v = axis == 0 ? look.rx : look.ry;
   // Planes (the right stick is pitch and roll): their own sensitivity, and
   // optionally mouse forward pulls the nose up.
