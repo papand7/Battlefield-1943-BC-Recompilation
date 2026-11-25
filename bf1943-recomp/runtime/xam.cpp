@@ -674,27 +674,16 @@ bool rt::AimMouseTake(double& dx, double& dy, bool& stale) {
   return true;
 }
 void rt::AimMouseSeen() { g_aim_seen.store(true, std::memory_order_relaxed); }
-// Whether a controller was connected when this run started. A mouse-only
-// machine keeps the mouse on the aim path: it never falls back to the right
-// stick (a pad plugged in later does not change this run).
-static bool PadAtLaunch() {
-  static const bool pad = [] {
-    const bool p = rt::pad::Connected();
-    RT_INFO("input: controller at launch: %s", p ? "yes" : "no (the mouse keeps the aim, not the stick)");
-    return p;
-  }();
-  return pad;
-}
 bool rt::AimMouseOwnsLook() {
   static const bool off = std::getenv("BF_NO_MOUSE_AIM") != nullptr;
-  // With a pad, only while the aim update still runs: once it stops (a campaign
-  // moment, a death, a scripted camera), the stick carries the mouse again
-  // instead of both paths waiting for an update that is not coming. Without one,
-  // the aim owns the mouse even before its first update and when it goes quiet.
+  // Only while the aim update still runs: once it stops (a campaign moment, a
+  // map transition, a death, a scripted camera), the right stick carries the
+  // mouse instead of both paths waiting for an update that is not coming. This
+  // is what keeps horizontal look alive in the campaign, where the aim setter
+  // does not run at all; a mouse-only run must not drop it.
   const int64_t last = g_aim_last_ns.load(std::memory_order_relaxed);
   const bool fresh = last != 0 && SteadyNs() - last <= kAimStaleNs;
-  const bool pad = PadAtLaunch();
-  return !off && (pad ? fresh && g_aim_seen.load(std::memory_order_relaxed) : true) && g_present &&
+  return !off && fresh && g_aim_seen.load(std::memory_order_relaxed) && g_present &&
          !g_in_menus.load(std::memory_order_relaxed) && !g_level_menu.load(std::memory_order_relaxed) &&
          LocalVehicle() == kOnFoot;
 }
@@ -722,9 +711,9 @@ float rt::MouseLookAxis(int axis) {
     if (rt::g_vehicle_mouse_stick(&x, &y)) return axis == 0 ? x : y;
   }
   // On foot the mouse turns the aim itself (pc_look.cpp): no stick push as
-  // well, which would turn twice with the stick's curve. With a pad, a stopped
-  // update lets the stick carry the mouse instead (its counts are then dropped);
-  // without one at launch, the aim keeps it, stale or not.
+  // well, which would turn twice with the stick's curve. A stopped update lets
+  // the stick carry the mouse instead (its counts are then dropped): that is
+  // what keeps horizontal look alive in the campaign.
   const bool flying = g_local_flying.load(std::memory_order_relaxed);
   const bool aim_owns = !flying && rt::AimMouseOwnsLook();
   if (aim_owns && !(axis == 1 && rt::g_mouse_pitch_by_stick)) return 0;
